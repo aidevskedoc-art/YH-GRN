@@ -1,0 +1,2483 @@
+/* ==========================================================================
+   Yashoda Hospitals - GRN Reconciliation
+   Design system: brand tokens, materials, app shell, and shared components.
+
+   ---------------------------------------------------------------------------
+   THE MATERIAL IDEA
+   ---------------------------------------------------------------------------
+   The app is staged like a photographed object: a dark drape of cloth as the
+   room, and cast-concrete slabs standing on it holding the numbers. Three
+   assets do the whole job, and nothing here is decoration for its own sake -
+   each layer is solving a legibility problem the flat version had.
+
+     assets/bg-drape-dark.svg   the room. Soft folds of cloth lit from the top
+     assets/bg-drape-light.svg  right, with the brand orange bleeding in as the
+                                only light source in the scene. Fixed to the
+                                viewport, so the page slides over a still room
+                                instead of dragging its own background along.
+
+     assets/wall-grain.svg      the material. A seamless concrete tile that is
+                                mid-grey on average, so it is BLENDED into a
+                                surface colour rather than painted over it -
+                                which is why one tile can skin both the warm
+                                dark slabs and the pale plaster of the light
+                                theme without a second asset.
+
+   Every panel is a slab: a lit chamfer along its top edge, a shaded underside,
+   and a solid extruded lip beneath it (`0 Npx 0 -1px`) that gives the card real
+   thickness rather than a drop shadow pretending to. The lip is what separates
+   a card from the drape behind it; a blurred shadow alone disappears against a
+   dark, textured ground.
+
+   ---------------------------------------------------------------------------
+   WHY THE GROUND IS WARM
+   ---------------------------------------------------------------------------
+   The skin follows the house style set by the Non-erg Pendings tool, so the two
+   finance apps read as one product: a warm dark ground (espresso and taupe
+   rather than navy or near-black), generously rounded panels that float as
+   cards, pill buttons, and the brand orange #f58633 sampled from the hospital
+   app icon.
+
+   The ground is warm on purpose. The brand orange is a warm colour, and on a
+   cool navy - its direct complement - every accent has to fight the page to be
+   seen. On a brown of the same hue family the orange is simply the saturated
+   end of the page's own colour, so it reads as emphasis rather than as an
+   alarm, and the status colours get the contrast budget spent on THEM.
+
+   A warm dark ground has less headroom than a near-black one: #130e0a is a
+   colour rather than an absence of one, so the surfaces have to step up in
+   visible increments or they smear together. Every neutral carries the same
+   hue, because one grey rung in a warm ladder reads as dirt on the screen.
+
+   Colour lives in one of the two palettes below and is only ever consumed
+   through a token, so a component written once works in both skins. Dark is the
+   default and sits on bare :root, so a missing data-theme attribute - a failed
+   inline bootstrap, a saved page - still lands on the intended design.
+   ========================================================================== */
+
+:root {
+  /* --- Brand. The orange is fixed; what changes between skins is the direction
+     its variants travel. On a dark ground the "strong" tint has to get LIGHTER
+     to stay legible, so --brand-700 is a highlight here and a shadow in light. */
+  --brand: #f58633;
+  --brand-600: #ff9448;
+  --brand-700: #ffab6e;
+  --brand-200: rgba(245, 134, 51, 0.30);
+  --brand-100: rgba(245, 134, 51, 0.18);
+  --brand-50: rgba(245, 134, 51, 0.10);
+
+  /* The chrome ink - used where something sits BELOW the page rather than on
+     it (the rail, the login aside). Umber: the same hue, taken almost to black. */
+  --umber-900: #0d0906;
+  --umber-800: #171009;
+  --umber-700: #241a11;
+
+  /* Neutrals - an elevation ladder, not a set of near-identical darks. Each
+     rung is a visible step up in lightness AND a step up the page.
+
+     They are translucent rather than solid so the drape shows faintly through
+     a slab, the way light passes the edge of a thick sheet. The alpha stays
+     high (0.90+) because these panels carry dense numeric tables, and anything
+     more transparent puts the fold of a curtain behind a column of rupees.
+
+     --bg is the ground the drape plate is painted on, so it is only ever seen
+     if that SVG fails to load - but it has to match the plate, and it has to
+     match index.html's pre-paint literal and theme.js's theme-color. No token
+     can reach either of those, so all three are kept in step by hand. */
+  --bg: #130e0a;
+  --surface: rgba(40, 32, 24, 0.90);
+  --surface-2: rgba(54, 43, 33, 0.92);
+  --surface-3: rgba(67, 54, 40, 0.94);
+  --border: #4b3d2d;
+  --border-strong: #64533e;
+
+  /* The table's own ground, in its four states: normal row, alternate row,
+     hovered row, header band.
+
+     Opaque, unlike the panel it sits in. The frozen GRN No column has the rest
+     of its row sliding underneath it, so that column has to paint something
+     solid -- and a solid fill can only match what is beside it if what is
+     beside it is solid too. The panel's face is a diagonal gradient, which no
+     flat colour matches anywhere but one point along it; so the table lays its
+     own flat ground over that gradient and every cell, pinned or not, takes its
+     colour from these four and from nowhere else.
+
+     The values are the old translucent tones composited down over --surface and
+     --bg, so the table reads as it did. Change --surface, --bg or --brand-50 and
+     these have to be worked out again by hand: CSS cannot compute a composite. */
+  --table-bg: #261e17;
+  --table-bg-alt: #2b231c;
+  --table-bg-hover: #3d2a1c;
+  --table-head-bg: #413527;
+
+  /* Cream, not white. #fff on warm brown reads blue-ish and harsh - the eye
+     takes the ground as neutral and pushes everything else the other way. */
+  --text: #f6efe2;
+  --text-2: #cdbfa9;
+  --muted: #a4957f;
+  --placeholder: #7e7160;
+  --scroll-thumb: #4e4132;
+  --scroll-thumb-hover: #66553f;
+
+  /* Semantic. Saturated foregrounds over translucent fills, so a status pill
+     tints the panel it lands on instead of punching a light hole in it. */
+  --ok: #4fd39b;
+  --ok-soft: rgba(79, 211, 155, 0.14);
+  --ok-line: rgba(79, 211, 155, 0.32);
+  --danger: #f9706e;
+  --danger-soft: rgba(249, 112, 110, 0.14);
+  --danger-line: rgba(249, 112, 110, 0.34);
+  /* The filled variant, for the one button in a confirmation panel that goes
+     through with it. The soft pair above tints a surface; this one IS the
+     surface, so it needs a body the translucent fill cannot give it. */
+  --danger-solid: #e2564f;
+  --danger-solid-top: #f4736c;
+  --danger-solid-bottom: #c8433d;
+  --warn: #efc84e;
+  --warn-soft: rgba(239, 200, 78, 0.14);
+  --warn-line: rgba(239, 200, 78, 0.32);
+  --info: #6cb6f5;
+  --info-soft: rgba(108, 182, 245, 0.14);
+  --info-line: rgba(108, 182, 245, 0.34);
+
+  /* The three reconciliation states. Pending is the one the report exists to
+     surface, so it takes the warning colour rather than the danger one: it is
+     work outstanding, not an error. */
+  --st-pending: var(--warn);
+  --st-pending-soft: var(--warn-soft);
+  --st-pending-line: var(--warn-line);
+  --st-matched: var(--ok);
+  --st-matched-soft: var(--ok-soft);
+  --st-matched-line: var(--ok-line);
+  --st-review: var(--info);
+  --st-review-soft: var(--info-soft);
+  --st-review-line: var(--info-line);
+
+  --shadow-1: 0 2px 4px rgba(9, 5, 2, 0.40), 0 6px 16px rgba(9, 5, 2, 0.32);
+  --shadow-2: 0 4px 10px rgba(9, 5, 2, 0.46), 0 18px 44px rgba(9, 5, 2, 0.52);
+  --shadow-3: 0 24px 60px rgba(9, 5, 2, 0.62);
+  --ring: 0 0 0 3px rgba(245, 134, 51, 0.34);
+
+  --scrim: rgba(9, 5, 2, 0.70);
+
+  /* --- Materials -------------------------------------------------------- */
+
+  /* The room, and the fixed vignette that sits over it. The vignette is what
+     stops the drape competing with the content: it drains the corners so the
+     eye lands on the lit centre where the slabs are. It is cast in the same
+     espresso the plate is, because it is part of the same background layer -
+     a neutral black vignette over a warm plate greys out all four corners of
+     it, which reads as the image being dirty rather than as falloff. */
+  --room: url('./assets/bg-drape-dark.svg');
+  --room-vignette: radial-gradient(118% 88% at 68% 4%, rgba(6, 4, 2, 0) 30%, rgba(6, 4, 2, 0.34) 76%, rgba(3, 2, 1, 0.62) 100%);
+
+  /* The concrete. --tex-blend is the whole trick: `overlay` on a dark slab
+     lets the tile's light flecks lift and its dark flecks bite, around an
+     average that leaves the surface colour where the palette put it. */
+  --tex: url('./assets/wall-grain.svg');
+  --tex-size: 420px;
+  --tex-blend: overlay;
+
+  /* The cast face of a slab, lit from the same top-right the drape is. Panels
+     override --face locally where they need a different pour (the rail, the
+     table header) and inherit the texture plumbing unchanged. */
+  --face: linear-gradient(152deg, rgba(120, 98, 74, 0.34) 0%, rgba(58, 46, 34, 0.16) 38%, rgba(12, 8, 5, 0.30) 100%);
+
+  /* The edges of a slab, kept separate so a component can take the chamfer
+     without the thickness (the top bar) or both (a card). */
+  --lip: inset 0 1px 0 rgba(255, 226, 195, 0.13), inset 0 -1px 0 rgba(0, 0, 0, 0.42);
+  --edge: rgba(10, 6, 3, 0.92);
+  --edge-h: 7px;
+
+  --glass: saturate(135%) blur(18px);
+
+  /* --- Geometry */
+  --r-sm: 8px;
+  --r: 14px;
+  --r-lg: 22px;
+  --r-pill: 999px;
+  --sidebar-w: 258px;
+  --sidebar-w-collapsed: 76px;
+  --topbar-h: 62px;
+}
+
+/* ------------------------------------------------------------------
+   Palette - light skin
+
+   The same concrete tile, blended with `soft-light` instead of `overlay`.
+   Overlay on a pale surface blows the light flecks out to white and the
+   plaster turns to static; soft-light keeps the grain as tooth in the
+   surface, which is what a limewashed wall actually looks like.
+   ------------------------------------------------------------------ */
+
+[data-theme="light"] {
+  --brand: #f58633;
+  --brand-600: #dd6f1b;
+  --brand-700: #b95a10;
+  --brand-200: #f6d3ac;
+  --brand-100: #fae5cd;
+  --brand-50: #fbeeda;
+
+  --umber-900: #241b12;
+  --umber-800: #33271b;
+  --umber-700: #453626;
+
+  /* Paper, not screen. The page takes the tone of an unbleached sheet; the
+     cards are cream, one clear step above it. Nothing here is pure #fff. */
+  --bg: #ece3d3;
+  --surface: rgba(253, 248, 238, 0.90);
+  --surface-2: rgba(247, 239, 224, 0.94);
+  --surface-3: rgba(240, 229, 210, 0.96);
+  --border: #e0d3bd;
+  --border-strong: #c9b79b;
+
+  /* The same four, flattened over the paper. See the dark set above. */
+  --table-bg: #fbf6eb;
+  --table-bg-alt: #f6f1e5;
+  --table-bg-hover: #fbeeda;
+  --table-head-bg: #f0e6d3;
+
+  --text: #2a231b;
+  --text-2: #5a4e40;
+  --muted: #8b7c69;
+  --placeholder: #ab9d8a;
+  --scroll-thumb: #cfc0a8;
+  --scroll-thumb-hover: #b3a086;
+
+  /* Soft fills are warmed towards the paper they land on. A cool #e6f5ed chip
+     on a cream card reads as a hole punched through to a different document. */
+  --ok: #12704a;
+  --ok-soft: #e7f1e3;
+  --ok-line: #bdd8bb;
+  --danger: #b93a2c;
+  --danger-soft: #fbe9e1;
+  --danger-line: #f0c9ba;
+  --danger-solid: #b93a2c;
+  --danger-solid-top: #cc4a37;
+  --danger-solid-bottom: #9d2e21;
+  --warn: #8a6212;
+  --warn-soft: #f9eed6;
+  --warn-line: #e8d3a4;
+  --info: #1f5fae;
+  --info-soft: #e9eef7;
+  --info-line: #c6d6ec;
+
+  --shadow-1: 0 1px 2px rgba(58, 40, 22, 0.05), 0 1px 3px rgba(58, 40, 22, 0.07);
+  --shadow-2: 0 2px 4px rgba(58, 40, 22, 0.06), 0 8px 20px rgba(58, 40, 22, 0.11);
+  --shadow-3: 0 18px 48px rgba(40, 26, 12, 0.20);
+  --ring: 0 0 0 3px rgba(245, 134, 51, 0.26);
+
+  --scrim: rgba(40, 26, 12, 0.44);
+
+  --room: url('./assets/bg-drape-light.svg');
+  --room-vignette: radial-gradient(115% 85% at 68% 4%, rgba(120, 96, 62, 0) 30%, rgba(120, 96, 62, 0.16) 76%, rgba(96, 76, 48, 0.28) 100%);
+
+  --tex-blend: soft-light;
+  --face: linear-gradient(152deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 251, 243, 0.30) 40%, rgba(174, 152, 120, 0.16) 100%);
+
+  --lip: inset 0 1px 0 rgba(255, 255, 255, 0.85), inset 0 -1px 0 rgba(120, 96, 62, 0.14);
+  --edge: rgba(186, 165, 134, 0.85);
+}
+
+/* ==========================================================================
+   Base
+   ========================================================================== */
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  color: var(--text);
+
+  /* The room. Fixed attachment so the drape belongs to the window rather than
+     to the document - scrolling a long pending list must not drag the folds up
+     with it, or the slabs stop reading as objects standing in front of them.
+     The vignette rides on the same fixed layer for the same reason. */
+  background-color: var(--bg);
+  background-image: var(--room-vignette), var(--room);
+  background-size: cover, cover;
+  background-position: center, center top;
+  background-repeat: no-repeat, no-repeat;
+  background-attachment: fixed, fixed;
+
+  /* Poppins matches the house style but is not fetched from a CDN - this tool
+     has to keep working on a hospital network with no outbound internet - so it
+     is used when installed locally and otherwise falls back to the platform UI
+     face. */
+  font-family: "Poppins", "Segoe UI Variable Text", "Segoe UI", system-ui,
+    -apple-system, Roboto, Helvetica, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+code, .mono {
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 0.92em;
+}
+
+::selection { background: var(--brand-200); color: var(--text); }
+
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: var(--r-pill);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); background-clip: content-box; }
+
+:focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
+
+/* ==========================================================================
+   The cast surface
+
+   One rule skins every panel in the app. The texture is layer 1 and the cast
+   face is layer 2, so `background-blend-mode: var(--tex-blend), normal` blends
+   the concrete INTO the face and the face onto the panel's own colour. Two
+   layers and two blend values, deliberately: the list repeats to fill extra
+   layers, so a third background on any of these would silently be blended too.
+   A panel that needs a tint on top of the concrete uses an inset shadow (see
+   --stat-tint) rather than a third layer.
+   ========================================================================== */
+
+.card,
+.stat,
+.table-wrap,
+.empty--page,
+.toolbar__tabs,
+.drop,
+.topbar,
+.sidebar,
+.login__panel,
+.sheet__panel,
+.ped__face,
+.table th {
+  background-image: var(--tex), var(--face);
+  background-size: var(--tex-size) var(--tex-size), auto;
+  background-repeat: repeat, no-repeat;
+  background-blend-mode: var(--tex-blend), normal;
+}
+
+/* ==========================================================================
+   App shell
+   ========================================================================== */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  min-height: 100vh;
+  transition: grid-template-columns 0.18s ease;
+}
+.app-shell.collapsed { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  /* The rail is the one slab standing edge-on to the room, so it is poured
+     darker than the cards and lit only along its inner edge. */
+  --face: linear-gradient(180deg, rgba(46, 33, 21, 0.72) 0%, rgba(13, 9, 6, 0.86) 100%);
+  background-color: rgba(11, 8, 5, 0.72);
+  -webkit-backdrop-filter: var(--glass);
+  backdrop-filter: var(--glass);
+  box-shadow: inset -1px 0 0 rgba(255, 226, 195, 0.09), 12px 0 40px rgba(6, 3, 1, 0.45);
+  color: #fff;
+  overflow: hidden;
+  z-index: 40;
+}
+/* A warm glow at the top of the rail, so the darkest surface in the app still
+   carries the brand hue rather than reading as a black bar. */
+.sidebar::before {
+  content: "";
+  position: absolute;
+  inset: -40% -60% auto -40%;
+  height: 320px;
+  background: radial-gradient(circle at 30% 30%, rgba(245, 134, 51, 0.26), transparent 62%);
+  pointer-events: none;
+}
+
+.sidebar-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--topbar-h);
+  padding: 0 14px 0 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  flex: none;
+}
+
+.brand-lockup { display: flex; align-items: center; gap: 10px; min-width: 0; }
+/* The mark is a physical tile on the rail rather than a floating PNG: a lit
+   top edge and a shadow beneath give it the same thickness as everything else. */
+.brand-lockup img {
+  flex: none;
+  border-radius: 7px;
+  box-shadow: 0 1px 0 rgba(255, 226, 195, 0.22), 0 3px 8px rgba(0, 0, 0, 0.5);
+}
+.brand-text { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+.brand-name {
+  font-weight: 650;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.brand-sub { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.brand-lockup.on-dark .brand-name { color: #fff; }
+.brand-lockup.on-dark .brand-sub { color: rgba(255, 255, 255, 0.55); }
+
+.rail-toggle {
+  margin-left: auto;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  box-shadow: none;
+  transition: background 0.14s, color 0.14s;
+}
+.rail-toggle:hover { background: var(--brand-200); color: #fff; }
+
+.sidenav {
+  position: relative;
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.nav-section {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.42);
+  padding: 16px 12px 6px;
+}
+.nav-section:first-child { padding-top: 2px; }
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: var(--r);
+  color: rgba(255, 255, 255, 0.76);
+  font-weight: 550;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background 0.14s, color 0.14s, box-shadow 0.14s;
+}
+.nav-item:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
+.nav-item svg { flex: none; opacity: 0.9; }
+.nav-item.active {
+  background: linear-gradient(90deg, rgba(245, 134, 51, 0.26), rgba(245, 134, 51, 0.05));
+  color: #fff;
+  /* Chiselled in, not stuck on: light on the top edge, shadow underneath. */
+  box-shadow: inset 0 1px 0 rgba(255, 210, 170, 0.22), inset 0 -1px 0 rgba(0, 0, 0, 0.34);
+}
+.nav-item.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--brand);
+  box-shadow: 0 0 12px rgba(245, 134, 51, 0.75);
+}
+.nav-item.active svg { color: var(--brand); opacity: 1; }
+.nav-label { overflow: hidden; text-overflow: ellipsis; }
+.nav-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.sidebar-foot {
+  position: relative;
+  flex: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  padding: 12px;
+}
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border-radius: var(--r);
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 1px 0 rgba(255, 226, 195, 0.10);
+  min-width: 0;
+}
+.avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--brand), var(--brand-700));
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  /* A sphere rather than a disc: a specular highlight up top, a shaded
+     underside, and the brand glow it would actually throw onto the rail. */
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), inset 0 -3px 6px rgba(120, 45, 0, 0.45),
+    0 3px 10px rgba(245, 134, 51, 0.35);
+}
+.user-meta { min-width: 0; line-height: 1.25; }
+.user-meta .user-name {
+  font-weight: 650;
+  color: #fff;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.user-meta .user-role { font-size: 11px; color: rgba(255, 255, 255, 0.55); }
+
+.icon-btn-dark {
+  margin-left: auto;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+  cursor: pointer;
+  box-shadow: none;
+}
+.icon-btn-dark:hover:not(:disabled) { background: var(--brand-200); color: #fff; }
+
+/* Collapsed rail: icons only, labels removed from flow. Desktop only - below
+   the drawer breakpoint the sidebar is an overlay and always shows its labels,
+   so the collapse rules are scoped rather than undone. */
+@media (min-width: 941px) {
+  .app-shell.collapsed .sidebar-head { padding: 0; justify-content: center; }
+  .app-shell.collapsed .brand-text,
+  .app-shell.collapsed .nav-label,
+  .app-shell.collapsed .nav-count,
+  .app-shell.collapsed .nav-section,
+  .app-shell.collapsed .user-meta,
+  .app-shell.collapsed .sidebar-foot .icon-btn-dark { display: none; }
+  .app-shell.collapsed .nav-item { justify-content: center; padding: 11px 0; }
+  .app-shell.collapsed .user-chip { justify-content: center; padding: 8px 0; }
+}
+
+.app-main { position: relative; z-index: 1; display: flex; flex-direction: column; min-width: 0; }
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: var(--topbar-h);
+  padding: 0 24px;
+  /* Glass, not a solid bar: the page scrolls under it and the drape stays
+     visible through it, which is what keeps the room continuous behind the
+     chrome. The blur is what makes the text passing under it unreadable
+     enough to ignore. */
+  background-color: rgba(28, 21, 15, 0.72);
+  -webkit-backdrop-filter: var(--glass);
+  backdrop-filter: var(--glass);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 rgba(255, 226, 195, 0.06), 0 12px 30px rgba(6, 3, 1, 0.32);
+}
+[data-theme="light"] .topbar {
+  background-color: rgba(253, 248, 238, 0.78);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7), 0 10px 26px rgba(58, 40, 22, 0.08);
+}
+.topbar-title { min-width: 0; line-height: 1.25; }
+.topbar-title h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar-title .crumb { font-size: 12px; color: var(--muted); }
+.topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.nav-toggle { flex: none; }
+
+/* min-width:0 so a wide child (the table, the tab strip) can never push the
+   page wider than the shell column it sits in. */
+.page { padding: 24px; max-width: 1720px; width: 100%; min-width: 0; margin: 0 auto; flex: 1; }
+
+/* Mobile: sidebar becomes an overlay drawer. */
+@media (max-width: 940px) {
+  .app-shell, .app-shell.collapsed { grid-template-columns: minmax(0, 1fr); }
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: var(--sidebar-w);
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: var(--shadow-3);
+  }
+  .app-shell.drawer-open .sidebar { transform: none; }
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: var(--scrim);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+    z-index: 35;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+    box-shadow: none;
+  }
+  .page { padding: 16px; }
+  .topbar { padding: 0 14px; }
+  .new-run .btn-label { display: none; }
+}
+
+/* ==========================================================================
+   Controls
+   ========================================================================== */
+
+button, .btn {
+  font: inherit;
+  font-weight: 600;
+  border-radius: var(--r-pill);
+  padding: 9px 18px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  cursor: pointer;
+  box-shadow: var(--lip);
+  transition: background 0.22s ease, border-color 0.22s ease, color 0.22s ease,
+    box-shadow 0.22s ease, transform 0.22s ease;
+}
+button:disabled, .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+button:hover:not(:disabled), .btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-3); }
+
+button.primary, .btn--primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  /* Not a flat fill: a lit top, a shaded bottom, and the glow the colour would
+     actually cast - the primary action is the one lamp on a dark stage. */
+  background: linear-gradient(180deg, var(--brand-600) 0%, var(--brand) 55%, #e0741f 100%);
+  border-color: rgba(255, 178, 120, 0.55);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 224, 198, 0.60), inset 0 -2px 4px rgba(122, 48, 0, 0.35),
+    0 4px 14px rgba(245, 134, 51, 0.30);
+}
+button.primary:hover:not(:disabled), .btn--primary:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ffa25c 0%, var(--brand-600) 55%, #ef8028 100%);
+  border-color: rgba(255, 198, 150, 0.70);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 232, 212, 0.70), inset 0 -2px 4px rgba(122, 48, 0, 0.30),
+    0 8px 22px rgba(245, 134, 51, 0.42);
+}
+/* Pressed means pressed IN: the highlight goes, the inset shadow arrives. */
+button.primary:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 5px rgba(110, 42, 0, 0.50), 0 2px 6px rgba(245, 134, 51, 0.24);
+}
+
+button.ghost, .btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-2);
+  box-shadow: none;
+}
+button.ghost:hover:not(:disabled), .btn--ghost:hover:not(:disabled) {
+  background: var(--surface-3);
+  color: var(--text);
+  border-color: transparent;
+  box-shadow: var(--lip);
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+/* The commit in a confirmation panel. Shaped like .primary -- it is the
+   primary action of that panel -- but in the danger register, so the button
+   that goes through with a delete never wears the same orange as New upload. */
+button.danger--solid {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(180deg, var(--danger-solid-top) 0%, var(--danger-solid) 55%,
+    var(--danger-solid-bottom) 100%);
+  border-color: var(--danger-line);
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 219, 215, 0.50), inset 0 -2px 4px rgba(104, 22, 16, 0.35),
+    0 4px 14px rgba(200, 67, 61, 0.26);
+}
+button.danger--solid:hover:not(:disabled) {
+  background: linear-gradient(180deg, #ff8a83 0%, var(--danger-solid-top) 55%, var(--danger-solid) 100%);
+  border-color: var(--danger-line);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 230, 227, 0.60), inset 0 -2px 4px rgba(104, 22, 16, 0.30),
+    0 8px 22px rgba(200, 67, 61, 0.38);
+}
+button.danger--solid:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 5px rgba(94, 18, 12, 0.50), 0 2px 6px rgba(200, 67, 61, 0.22);
+}
+
+.icon-btn { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; flex: none; }
+.btn--block { width: 100%; justify-content: center; }
+
+/* --- fields */
+.field { display: block; margin-bottom: 18px; }
+.field--inline { margin-bottom: 0; }
+.field__label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 12.5px; color: var(--text-2); }
+.field__input, select.field__input {
+  width: 100%;
+  padding: 10px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  /* An input is cut INTO the slab, so its lighting is the inverse of a
+     button's: shadow along the top edge, light along the bottom. */
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.28), inset 0 -1px 0 rgba(255, 226, 195, 0.07);
+  transition: border-color 0.18s, box-shadow 0.18s;
+}
+[data-theme="light"] .field__input, [data-theme="light"] select.field__input {
+  box-shadow: inset 0 2px 4px rgba(120, 96, 62, 0.09), inset 0 -1px 0 rgba(255, 255, 255, 0.80);
+}
+.field__input::placeholder { color: var(--placeholder); }
+.field__input:focus { outline: none; border-color: var(--brand); box-shadow: var(--ring); }
+.field__hint { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
+
+.alert { padding: 11px 15px; border-radius: var(--r-sm); margin-bottom: 16px; font-size: 13px; }
+.alert--error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border: 1px solid var(--danger-line);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.loading, .empty { padding: 44px; text-align: center; color: var(--muted); }
+/* The same message as .empty, but as a row inside the table so the header and
+   the table's own frame stay on the page. */
+.table__empty { padding: 44px; text-align: center; color: var(--muted); }
+.empty--page {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--lip), 0 var(--edge-h) 0 -1px var(--edge), var(--shadow-2);
+}
+.empty--page h2 { margin: 0 0 6px; color: var(--text); font-size: 18px; }
+
+/* --- the slab -----------------------------------------------------------
+   A card is a poured panel standing on the drape. The `0 Npx 0 -1px` shadow is
+   not a glow - it is a hard, unblurred lip that reads as the thickness of the
+   slab, and it is the reason a card separates from a dark textured ground that
+   a blurred shadow alone would dissolve into. */
+.card {
+  position: relative;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 22px;
+  box-shadow: var(--lip), 0 var(--edge-h) 0 -1px var(--edge), var(--shadow-2);
+}
+
+/* ==========================================================================
+   Three-dimensional pieces
+
+   Two objects are actually built in 3D rather than drawn to look it: the login
+   cube and the plinth it floats above. Both use the same box construction -
+   six faces, each rotated onto its own plane and then pushed out along its new
+   Z by half the box's depth in that direction - so the browser does the
+   perspective and the shape stays correct at any scene angle.
+
+   Left and right faces are styled identically, as are front and back, so the
+   lighting still reads correctly whichever pair the scene angle reveals.
+   ========================================================================== */
+
+.stage {
+  /* The object is the same dark, lit-from-one-side thing in both skins, so
+     the stage keeps the dark blend even when the room around it is plaster. */
+  --tex-blend: overlay;
+  position: relative;
+  height: 460px;
+  perspective: 1400px;
+  perspective-origin: 52% 42%;
+}
+
+/* The lamp in the scene. Everything else is lit as though this is where the
+   light comes from, which is what stops the 3D reading as clip-art. */
+.stage__glow {
+  position: absolute;
+  left: 50%;
+  top: 90px;
+  width: 460px;
+  height: 460px;
+  margin-left: -230px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(245, 134, 51, 0.34) 0%, rgba(245, 134, 51, 0.10) 38%, transparent 68%);
+  filter: blur(14px);
+  pointer-events: none;
+}
+
+.box3d { position: absolute; transform-style: preserve-3d; }
+.box3d > * { position: absolute; left: 0; top: 0; }
+
+/* --- the plinth: 300 wide, 132 tall, 190 deep. */
+.plinth {
+  left: 50%;
+  top: 236px;
+  width: 300px;
+  height: 132px;
+  margin-left: -214px;
+  z-index: 9;
+  /* transform: rotateX(15deg) rotateY(-26deg); */
+  transform: rotateX(9deg) rotateY(22deg);
+}
+.ped__face {
+  background-color: #1c140e;
+  border: 1px solid rgba(255, 226, 195, 0.07);
+}
+
+.ped__face--front{
+    font-size: 38px;
+    line-height: 44px;
+    font-weight: 600;
+    color: #fc8f41;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    letter-spacing: 3px;
+}
+/* Front and back: the shaded vertical planes. */
+.ped__face--front, .ped__face--back {
+  --face: linear-gradient(180deg, rgba(96, 76, 56, 0.30) 0%, rgba(10, 7, 4, 0.55) 100%);
+  width: 300px;
+  height: 132px;
+}
+.ped__face--front { transform: translateZ(95px); }
+.ped__face--back { transform: translateZ(-95px) rotateY(180deg); }
+/* The sides are turned further from the light, so darker still. */
+.ped__face--left, .ped__face--right {
+  --face: linear-gradient(180deg, rgba(70, 55, 40, 0.26) 0%, rgba(6, 4, 2, 0.66) 100%);
+  width: 190px;
+  height: 132px;
+  left: 55px;
+}
+.ped__face--right { transform: rotateY(90deg) translateZ(150px); }
+.ped__face--left { transform: rotateY(-90deg) translateZ(150px); display: flex; align-items: center; justify-content: center; }
+/* The top catches the light square-on: the only lit plane in the block. */
+.ped__face--top {
+  --face: linear-gradient(158deg, rgba(214, 182, 146, 0.66) 0%, rgba(132, 106, 78, 0.40) 42%, rgba(52, 39, 27, 0.42) 100%);
+  background-color: #3a2c1f;
+  width: 300px;
+  height: 190px;
+  top: -29px;
+  transform: rotateX(90deg) translateZ(66px);
+}
+.ped__face--bottom {
+  --face: linear-gradient(180deg, rgba(0, 0, 0, 0.80), rgba(0, 0, 0, 0.90));
+  width: 300px;
+  height: 190px;
+  top: -29px;
+  transform: rotateX(-90deg) translateZ(66px);
+}
+/* The cube's contact shadow, painted onto the plinth's top face so it lies in
+   the same plane and takes the same perspective the face does. */
+.ped__shadow {
+  position: absolute;
+  left: 50%;
+  top: 46%;
+  width: 150px;
+  height: 118px;
+  margin: -59px 0 0 -75px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.28) 46%, transparent 72%);
+  filter: blur(8px);
+  animation: contact 7s ease-in-out infinite;
+}
+
+/* --- the cube: 100 on a side, so every face is pushed out by 50. */
+.lift {
+  position: absolute;
+  left: 50%;
+  top: 105px;
+  width: 100px;
+  height: 100px;
+  margin-left: -110px;
+  transform-style: preserve-3d;
+  animation: float 7s ease-in-out infinite;
+  z-index: 1;
+}
+.cube {
+  position: relative;
+  width: 100px;
+  height: 100px;
+  transform-style: preserve-3d;
+  animation: tumble 26s linear infinite;
+}
+.cube__face {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100px;
+  height: 100px;
+  border: 1px solid rgba(255, 186, 130, 0.55);
+  border-radius: 8px;
+  /* Glass with a hot inner rim. The faces are translucent enough to see the
+     far side of the cube through, which is what sells it as one solid object
+     rather than six squares that happen to be arranged in a box. */
+  background: linear-gradient(150deg, rgba(255, 173, 112, 0.26) 0%, rgba(245, 134, 51, 0.10) 45%, rgba(120, 52, 8, 0.20) 100%);
+  box-shadow: inset 0 0 20px rgba(245, 134, 51, 0.42), inset 0 1px 0 rgba(255, 226, 198, 0.50),
+    0 0 18px rgba(245, 134, 51, 0.16);
+}
+.cube__face--front { transform: translateZ(50px); }
+.cube__face--back { transform: rotateY(180deg) translateZ(50px); }
+.cube__face--right { transform: rotateY(90deg) translateZ(50px); }
+.cube__face--left { transform: rotateY(-90deg) translateZ(50px); }
+.cube__face--top { transform: rotateX(90deg) translateZ(50px); }
+.cube__face--bottom { transform: rotateX(-90deg) translateZ(50px); }
+/* What is suspended inside the box: the hospital mark, backlit by a filament.
+
+   The pair sits at z=0 as a SIBLING of .cube (see Login.jsx), so it is never
+   rotated - the glass turns around it. That is deliberate: an emblem parented
+   to the cube would turn edge-on twice per revolution and vanish, and the point
+   of putting a logo in here is that it can be read.
+
+   Both halves are needed. The mark alone on a translucent face has nothing
+   behind it and reads as a sticker; the filament alone was the old abstract
+   glow. Backlit, the mark is the thing the lantern is lit FOR. */
+.cube__mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 100px;
+  height: 100px;
+  margin: -50px 0 0 -50px;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+/* The filament, as a RING rather than a disc. A centre-hot glow puts its
+   brightest point exactly where the emblem is and washes the petals out; pushed
+   out to the rim it lights the glass around the mark and leaves dark behind it,
+   which is the contrast the orange petals need. */
+.cube__core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 88px;
+  height: 88px;
+  margin: -44px 0 0 -44px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 46% 42%, rgba(255, 226, 198, 0) 0%, rgba(255, 200, 150, 0.06) 30%, rgba(255, 170, 92, 0.44) 56%, rgba(240, 116, 26, 0.20) 74%, rgba(158, 60, 0, 0) 90%);
+  filter: blur(10px);
+  animation: pulse 4.5s ease-in-out infinite;
+}
+/* The mark itself, lit from within the lantern rather than printed on it: the
+   brightness/saturate lift is the light falling ON it, and the two drop-shadows
+   are the light coming OFF it - a tight warm one for the halo tight to the
+   petals, a wide one for the spill onto the glass. */
+.cube__emblem {
+  position: relative;
+  filter: saturate(1.16) contrast(1.06)
+    drop-shadow(0 0 6px rgba(255, 156, 74, 0.95))
+    drop-shadow(0 0 19px rgba(245, 134, 51, 0.55));
+  animation: pulse 4.5s ease-in-out infinite;
+}
+
+@keyframes tumble {
+  from { transform: rotateX(-20deg) rotateY(0deg); }
+  to { transform: rotateX(-40deg) rotateY(360deg); }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-18px); }
+}
+/* The shadow tightens as the cube rises. The two animations share a period so
+   the object and the mark it casts stay physically consistent. */
+@keyframes contact {
+  0%, 100% { opacity: 0.95; transform: scale(1); }
+  50% { opacity: 0.62; transform: scale(0.84); }
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.85; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.07); }
+}
+
+/* ==========================================================================
+   Login
+   ========================================================================== */
+
+.login { display: grid; place-items: center; min-height: 100vh; padding: 32px 24px; }
+.login__inner {
+  width: 100%;
+  max-width: 1060px;
+  display: grid;
+  grid-template-columns: 1.02fr 0.98fr;
+  gap: 48px;
+  align-items: center;
+}
+.login__pitch { margin-top: -14px; }
+.login__pitch h2 {
+  margin: 0 0 10px;
+  font-size: 30px;
+  line-height: 1.18;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+.login__pitch p { margin: 0; color: var(--text-2); max-width: 42ch; font-size: 14px; }
+.login__pitch .accent { color: var(--brand-700); }
+[data-theme="light"] .login__pitch .accent { color: var(--brand-600); }
+
+.login__panel {
+  width: 100%;
+  max-width: 420px;
+  justify-self: center;
+  padding: 36px 32px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--lip), 0 9px 0 -1px var(--edge), var(--shadow-3);
+}
+.login__brand { display: grid; place-items: center; margin-bottom: 8px; }
+.login__brand img { border-radius: 12px; box-shadow: 0 2px 0 rgba(255, 226, 195, 0.16), 0 10px 24px rgba(0, 0, 0, 0.50); }
+.login__title { margin: 14px 0 0; font-size: 20px; font-weight: 700; text-align: center; letter-spacing: -0.02em; }
+.login__subtitle { margin: 4px 0 26px; text-align: center; color: var(--muted); font-size: 13px; }
+
+/* The stage is decoration. Below the breakpoint the form takes the whole
+   window rather than being pushed under a 460px-tall ornament. */
+@media (max-width: 900px) {
+  .login__inner { grid-template-columns: minmax(0, 1fr); gap: 28px; max-width: 420px; }
+  .login__aside { display: none; }
+}
+
+/* ==========================================================================
+   Pages
+   ========================================================================== */
+
+.page__head { margin-bottom: 22px; }
+/* Centred rather than bottom-aligned: the page title now lives in the top bar,
+   so the left side is a single line of lead text and would otherwise sit at the
+   foot of the taller controls block with a gap above it. */
+.page__head--row { display: flex; justify-content: space-between; align-items: center; gap: 24px; flex-wrap: wrap; }
+.page__title { margin: 0 0 3px; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
+.page__lead { margin: 0; color: var(--muted); max-width: 70ch; font-size: 13px; }
+/* Pinned to the right of the head row. `space-between` on .page__head--row
+   already does that while both halves fit on one line; the margin is what keeps
+   them right once the row wraps and the controls drop onto a line of their own,
+   where they would otherwise return to the left margin. */
+.page__actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-left: auto;
+}
+
+/* --- the scope pickers in the head row
+
+   The upload selector and the location filter, side by side at the top of the
+   results and CSD screens. They are not a form -- nothing is submitted, and
+   nothing below them is waiting to be filled in -- so they are styled as a
+   statement of what is being looked at: a small quiet caption over a control
+   that is the same shape and height as the one next to it.
+
+   Each is a column, so the caption sits ON the control rather than beside it.
+   The row is `align-items: flex-end`, which lines the two selects up along
+   their bottom edge and puts the Delete upload button on that same line,
+   however long the captions are. */
+.picker { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.picker__label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  /* The caption is a label for the control below it, not something to select
+     while reaching for the dropdown. */
+  user-select: none;
+}
+/* `select.` on the width for the reason spelled out on .stage-filter below:
+   the base form rule is `select.field__input { width: 100% }`, and a bare class
+   loses to it -- which would stretch each picker to the full head row. */
+select.picker__input {
+  width: auto;
+  min-width: 200px;
+  max-width: 280px;
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+/* A branch list nobody has configured yet. Dimmed rather than hidden: the
+   control is where locations will appear, and its tooltip says where they come
+   from -- a control that is simply absent asks a question nobody can answer. */
+select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
+/* Under about a phone's width the head row wraps and the pickers get the line
+   to themselves, where sharing it evenly reads better than two short boxes
+   against the left margin. */
+@media (max-width: 640px) {
+  .page__actions { width: 100%; }
+  .picker { flex: 1 1 160px; }
+  select.picker__input { min-width: 0; max-width: none; width: 100%; }
+}
+
+.upload__note { margin: 12px 0 0; color: var(--muted); font-size: 13px; }
+
+/* ==========================================================================
+   The upload page
+
+   One card, taking the full width of the workspace. The two report slots are
+   what the width is for - they stand side by side, and each is a target aimed
+   at with a dragged file, so the wider the card the easier the throw. Height
+   is not worth the same: a target tall enough to be obvious is enough, and
+   past that it is only distance between the file and the button.
+   ========================================================================== */
+
+.upload { padding: 24px 26px 22px; }
+/* The one thing that does not want the extra width. A name is a short string,
+   and an input the width of the workspace only invites a long one. */
+.upload .field { max-width: 460px; }
+
+/* A section break inside the card. The rule trails off to the right rather
+   than crossing the whole slab: it is separating two groups of fields, not
+   cutting the panel in half. */
+.upload__rule {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 24px 0 14px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.upload__rule::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border-strong), transparent);
+}
+
+/* --- the report slots ----------------------------------------------------
+   The two reports are asked for at once and are the same kind of thing, so
+   they stand side by side as a pair rather than in a queue - the shape of the
+   row is itself the instruction that both are wanted before anything happens.
+
+   A dropped file has to land somewhere that looks like it will catch it, so
+   each is a target with room to aim at: dashed while it is empty and waiting,
+   solid and green once it is holding something. The native input is stretched
+   over the whole box at zero opacity (see components/FileDrop.jsx), so
+   everything drawn inside has to be made invisible to the pointer or it would
+   shield the control that does the work. */
+.drops { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+/* Three across while each still has room for a filename; two, then one, as
+   that room runs out. They shrink together rather than one wrapping under the
+   pair, which would put the optional slot back in a half-empty row. */
+@media (max-width: 1180px) { .drops { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 680px) { .drops { grid-template-columns: minmax(0, 1fr); } }
+
+/* A column so the target below the caption takes whatever height the row
+   was given, rather than sitting at its own minimum inside a taller cell. */
+.dropslot { display: flex; flex-direction: column; min-width: 0; }
+/* Which file goes in which box, named above it rather than inside - once a
+   workbook is chosen its own name takes the middle of the box, and the slot
+   still has to say what it was asked for. */
+.dropslot__cap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.dropslot__cap.is-done { color: var(--ok); }
+/* The step number, which becomes the tick the moment the slot is filled - the
+   same spot answering "which file is this?" and then "is it in?". */
+.dropslot__n {
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 10.5px;
+  letter-spacing: 0;
+}
+.dropslot__cap.is-done .dropslot__n {
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.drop {
+  /* A dashed rule lays down about half the ink a solid one does, so it needs
+     more contrast than --border-strong to read as an edge at all - at the
+     token value the box looks like a panel with a smudge round it rather than
+     like something cut open and waiting to be filled. */
+  --drop-edge: rgba(255, 226, 195, 0.26);
+  position: relative;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 3px;
+  /* flex, not a fixed height: the two boxes are laid out as a pair and have to
+     match, and only one of them is holding a filename that has wrapped. */
+  flex: 1;
+  min-height: 210px;
+  padding: 22px 18px;
+  text-align: center;
+  border: 1px dashed var(--drop-edge);
+  border-radius: var(--r);
+  background-color: var(--surface-2);
+  transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+[data-theme="light"] .drop { --drop-edge: rgba(120, 96, 62, 0.40); }
+
+/* Everything painted inside the box is decoration: the click has to reach the
+   input stretched underneath it, not stop on the label it lands over. The
+   clear button is the exception -- it is a real control. */
+.drop > *:not(.drop__input):not(.drop__clear) { pointer-events: none; }
+
+/* The real <input type="file">, stretched over the whole box and made
+   invisible. The box IS the control, so the target is the whole box rather
+   than a browser-drawn "Choose File" button sitting in the corner of it. */
+.drop__input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.drop:hover {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px var(--brand-100), 0 10px 26px rgba(6, 3, 1, 0.30);
+}
+[data-theme="light"] .drop:hover { box-shadow: 0 0 0 1px var(--brand-100), var(--shadow-2); }
+.drop:focus-within { border-color: var(--brand); box-shadow: var(--ring); }
+
+/* Dragging over it: the dashes close up into a solid edge and the box takes
+   the brand tint, so the answer to "will it land here?" is given before the
+   pointer is released. */
+.drop--over {
+  border-style: solid;
+  border-color: var(--brand);
+  background-color: var(--brand-100);
+  box-shadow: 0 0 0 3px var(--brand-100), 0 12px 30px rgba(6, 3, 1, 0.34);
+}
+
+.drop--filled {
+  border-style: solid;
+  border-color: var(--ok-line);
+  background-color: var(--surface-2);
+}
+.drop--filled:hover { border-color: var(--ok); }
+
+/* A cast tile for the glyph, lit like every other face in the app so the icon
+   sits on the surface rather than being printed onto it. */
+.drop__glyph {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background-color: var(--surface-3);
+  background-image: var(--face);
+  color: var(--muted);
+  box-shadow: var(--lip);
+  transition: color 0.2s ease, border-color 0.2s ease, background-color 0.2s ease;
+}
+.drop:hover .drop__glyph, .drop--over .drop__glyph { color: var(--brand); border-color: var(--brand-200); }
+.drop--filled .drop__glyph {
+  color: var(--ok);
+  border-color: var(--ok-line);
+  background-color: var(--ok-soft);
+}
+
+.drop__title {
+  max-width: 100%;
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--text);
+  /* A filename is arbitrarily long and must not be allowed to widen the
+     column it sits in. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drop__hint {
+  max-width: 40ch;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.drop--filled .drop__hint { color: var(--ok); }
+
+/* The third tier of the box: what the file is called in practice. Kept below
+   the hint and dimmer than it, so it is available to check against without
+   competing with the instruction. */
+.drop__eg {
+  max-width: 100%;
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--placeholder);
+}
+.drop__eg code { overflow-wrap: anywhere; }
+
+/* Lifted back above the transparent input - it is the one thing inside the
+   box that is not a way of opening the picker. */
+.drop__clear {
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
+  border-radius: var(--r-pill);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+.drop__clear:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+/* --- the closing row */
+.upload__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+.upload__ready { display: flex; align-items: center; gap: 9px; margin: 0; font-size: 12.5px; color: var(--muted); }
+.upload__go { padding: 11px 22px; }
+
+/* Two pips for two reports: the count in words is the label, and these are the
+   at-a-glance version of it, sitting beside the button that needs both. */
+.readydots { display: inline-flex; gap: 4px; }
+.readydots i {
+  display: block;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--r-pill);
+  background: var(--border-strong);
+  transition: background 0.2s ease;
+}
+.readydots--1 i:first-child, .readydots--2 i { background: var(--ok); }
+
+/* The upload is one request with no progress events to report, so this is an
+   indeterminate sweep rather than a lie about how far along it is. */
+.progress { margin-top: 18px; }
+.progress__bar {
+  display: block;
+  position: relative;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+.progress__bar::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 38%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--brand-600), var(--brand), transparent);
+  animation: progress-sweep 1.25s ease-in-out infinite;
+}
+@keyframes progress-sweep {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(370%); }
+}
+
+.alert--icon { display: flex; align-items: flex-start; gap: 10px; margin: 18px 0 0; }
+.alert--icon svg { flex: none; margin-top: 1px; }
+
+
+/* --- summary tiles, which double as the status tabs.
+
+   These are the 3D moment inside the app proper. The row carries a
+   perspective, so hovering a tile tips it towards the viewer around its own
+   axis instead of merely scaling - and its lip grows as it lifts, because a
+   slab raised off the ground shows more of its edge. */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 16px;
+  margin-bottom: 22px;
+  perspective: 1200px;
+}
+.stat {
+  --stat-tint: transparent;
+  --stat-key: var(--border-strong);
+  position: relative;
+  overflow: hidden;
+  padding: 18px 20px 16px 24px;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background-color: var(--surface);
+  font: inherit;
+  color: inherit;
+  transform-style: preserve-3d;
+  box-shadow: var(--lip), inset 0 0 0 200px var(--stat-tint),
+    0 var(--edge-h) 0 -1px var(--edge), var(--shadow-2);
+  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.3, 1), box-shadow 0.28s ease,
+    border-color 0.28s ease;
+}
+/* The status key, inlaid down the left edge of the pour and lit from within. */
+.stat::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 5px;
+  border-radius: 0 5px 5px 0;
+  background: var(--stat-key);
+  box-shadow: 0 0 14px var(--stat-key);
+  opacity: 0.9;
+}
+.stat:hover {
+  transform: translateY(-5px) rotateX(5deg);
+  box-shadow: var(--lip), inset 0 0 0 200px var(--stat-tint),
+    0 12px 0 -1px var(--edge), var(--shadow-3);
+}
+.stat:active { transform: translateY(-1px) rotateX(2deg); }
+.stat.is-active {
+  border-color: var(--stat-key);
+  box-shadow: var(--ring), var(--lip), inset 0 0 0 200px var(--stat-tint),
+    0 var(--edge-h) 0 -1px var(--edge), var(--shadow-2);
+}
+.stat__label { font-weight: 600; font-size: 12.5px; color: var(--muted); }
+.stat__value { font-size: 28px; font-weight: 700; line-height: 1.25; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.stat__amount { font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat__hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+.stat--pending { --stat-tint: var(--st-pending-soft); --stat-key: var(--st-pending); }
+.stat--pending .stat__value, .stat--pending .stat__amount { color: var(--st-pending); }
+.stat--valid { --stat-tint: var(--st-matched-soft); --stat-key: var(--st-matched); }
+.stat--valid .stat__value, .stat--valid .stat__amount { color: var(--st-matched); }
+
+/* The four CSD stages. They borrow the same semantic rungs rather than
+   inventing four more colours: queued is work outstanding, so it takes the
+   amber Pending does; received is in progress; and the two verdicts are the
+   green and red used for a verdict everywhere else in the app. */
+.stat--queued { --stat-tint: var(--warn-soft); --stat-key: var(--warn); }
+.stat--queued .stat__value, .stat--queued .stat__amount { color: var(--warn); }
+.stat--received { --stat-tint: var(--info-soft); --stat-key: var(--info); }
+.stat--received .stat__value, .stat--received .stat__amount { color: var(--info); }
+.stat--approved { --stat-tint: var(--ok-soft); --stat-key: var(--ok); }
+.stat--approved .stat__value, .stat--approved .stat__amount { color: var(--ok); }
+.stat--rejected { --stat-tint: var(--danger-soft); --stat-key: var(--danger); }
+.stat--rejected .stat__value, .stat--rejected .stat__amount { color: var(--danger); }
+
+/* --- toolbar */
+.toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+/* The strip is a segmented control, so its buttons must not wrap into a second
+   row. On a narrow screen it scrolls instead - without max-width it would be
+   the widest thing on the page and would stretch the whole layout past the
+   viewport, taking the cards and the table with it. */
+.toolbar__tabs {
+  display: flex;
+  gap: 4px;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background-color: var(--surface);
+  padding: 4px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border);
+  /* A trough cut into the page, so the selected pill reads as sitting IN it. */
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.32), inset 0 -1px 0 rgba(255, 226, 195, 0.06);
+}
+[data-theme="light"] .toolbar__tabs {
+  box-shadow: inset 0 2px 5px rgba(120, 96, 62, 0.10), inset 0 -1px 0 rgba(255, 255, 255, 0.90);
+}
+.toolbar__tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 15px;
+  border: none;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 550;
+  cursor: pointer;
+  box-shadow: none;
+}
+.tab:hover { background: var(--surface-3); color: var(--text); box-shadow: none; }
+.tab.is-active {
+  background: linear-gradient(180deg, var(--brand-600), var(--brand));
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255, 226, 198, 0.50), 0 2px 8px rgba(245, 134, 51, 0.34);
+}
+.tab__count { padding: 1px 7px; border-radius: var(--r-pill); background: rgba(128, 128, 128, 0.22); font-size: 11.5px; font-weight: 700; }
+.tab.is-active .tab__count { background: rgba(255, 255, 255, 0.26); }
+/* Pinned right. `space-between` on .toolbar does that while the tab strip is
+   there to sit opposite; the margin is what holds it on the CSD page, where
+   this group is the strip's only child. */
+.toolbar__actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-left: auto; }
+/* One line, in source order: filter, then search, then the export button.
+   Wrapping is kept for phone widths, where the three genuinely do not fit;
+   above that, letting them wrap put the filter on a line of its own above the
+   search rather than beside it. */
+@media (min-width: 641px) {
+  .toolbar__actions { flex-wrap: nowrap; }
+}
+/* Neither field gives up width to the other when the row is tight. */
+.toolbar__actions > .stage-filter,
+.toolbar__actions > .search { flex: none; }
+/* Narrower and shorter than a form field: it sits in a row of buttons, not in a
+   form, so it matches their height rather than the upload page's inputs. */
+.search { width: 240px; max-width: 100%; padding: 7px 12px; font-size: 13px; }
+/* The CSD stage filter, beside the search box and matching its height rather
+   than the upload page's taller form fields.
+
+   `select.` on the width, not just `.stage-filter`: the base rule up in the
+   form styles is `select.field__input { width: 100% }`, an element-plus-class
+   selector that outranks a bare class. Without matching its specificity the
+   filter stretched the whole toolbar and pushed the search box and the export
+   button off the right edge of the page. */
+.stage-filter { padding: 7px 10px 7px 12px; font-size: 13px; cursor: pointer; }
+select.stage-filter { width: auto; min-width: 150px; }
+.search::-webkit-search-cancel-button { cursor: pointer; }
+@media (max-width: 640px) { .search { width: 100%; } }
+
+/* --- table
+
+   The table is one wide slab. The header is a darker band poured into the top
+   of it, and the rows are translucent enough that the concrete reads through
+   them - but only just, because these are the numbers people came here for. */
+.table-wrap {
+  overflow-x: auto;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--lip), 0 var(--edge-h) 0 -1px var(--edge), var(--shadow-2);
+}
+.table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  /* Laid over the panel's gradient face, so every cell in here has the same
+     thing behind it -- which is what lets the frozen column match its row
+     exactly rather than approximately. */
+  background-color: var(--table-bg);
+}
+.table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 12px 14px;
+  --face: linear-gradient(180deg, rgba(110, 88, 66, 0.30) 0%, rgba(30, 23, 16, 0.34) 100%);
+  background-color: var(--surface-3);
+  color: var(--text-2);
+  text-align: left;
+  font-size: 11.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border-strong);
+  box-shadow: inset 0 1px 0 rgba(255, 226, 195, 0.10);
+}
+[data-theme="light"] .table th {
+  --face: linear-gradient(180deg, rgba(255, 255, 255, 0.80) 0%, rgba(196, 176, 146, 0.16) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.90);
+}
+
+/* --- the header stays, the rows move under it -----------------------------
+
+   .table th is already sticky. On its own that pins it to the document's own
+   viewport, and since .table-wrap has no height of its own there is never
+   anything to scroll inside it: the page scrolls instead, and the header goes
+   up with it. This modifier gives the wrap a height to run out of, so the
+   scrolling happens inside the slab and `top: 0` finally has an edge to hold.
+
+   The cap is the window less the chrome above the table -- top bar, page head,
+   the row of cards, the toolbar -- with a floor under it so a short window
+   still shows a handful of rows rather than a sliver. */
+.table-wrap--sticky {
+  --thead-group-h: 30px;
+  overflow: auto;
+  max-height: max(340px, calc(100vh - 240px));
+  /* The page behind must not start moving the moment the rows reach their end. */
+  overscroll-behavior: contain;
+}
+
+/* Opaque, not the panel's 94%-alpha tone. What shows through a translucent
+   header when the table cannot scroll is the concrete behind it; with rows
+   sliding underneath it would be the rows. These are that same tone already
+   composited over the surface and the page, so the band does not change
+   colour -- it just stops being see-through. */
+.table-wrap--sticky .table th { background-color: var(--table-head-bg); }
+
+/* Turnaround's two header rows. Where the page is the scroller the grouping
+   row is left to scroll away (see .table__group), because two rows pinned to
+   top:0 would land on top of each other. In here they can be stacked instead:
+   the group row takes a fixed height, which is what tells the row of column
+   labels beneath it where its own top is. */
+.table-wrap--sticky .table__group {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  height: var(--thead-group-h);
+  padding-top: 0;
+  padding-bottom: 0;
+}
+.table-wrap--sticky thead tr + tr th { top: var(--thead-group-h); }
+
+/* --- the GRN number stays put ---------------------------------------------
+
+   These tables run to twenty columns and are read by scrolling sideways, at
+   which point every row is a line of figures with nothing on it saying which
+   GRN they belong to. The GRN number is what every one of them is looked up
+   by, so it holds the left edge and the rest of the row travels under it.
+
+   Under, not beside: `left: 0` pins this cell to the edge of the scroller, and
+   the columns that sit before it -- Division, Warehouse, the Match pill -- slide
+   beneath it and out of sight rather than being pinned too. That is the trade
+   this makes. Freezing the whole leading block instead would mean knowing the
+   width of every column before this one, which an auto-width table does not
+   have to tell anyone, and it would spend a third of a laptop screen on columns
+   that are not the one being looked for.
+
+   Hence the opaque fills: a translucent cell would show the row sliding
+   underneath it. And hence the border, which is the seam between what is held
+   and what is moving -- it reads as a divider before the scrolling starts,
+   which is the right thing for it to be then too. */
+.table__pin {
+  position: sticky;
+  left: 0;
+  /* Above the ordinary cells it overlaps, below the header row it passes
+     under. The header's own pinned cell is stickied on both axes at once and
+     has to clear everything, .table__group included. */
+  z-index: 1;
+  /* The row's own colour, off the row's own token -- not a colour of its own.
+     The seam is the ordinary gridline, for the same reason. */
+  background-color: var(--table-bg);
+  border-right: 1px solid var(--border);
+}
+.table tbody tr:nth-child(even) .table__pin { background-color: var(--table-bg-alt); }
+.table tbody tr:hover .table__pin { background-color: var(--table-bg-hover); }
+.table th.table__pin {
+  z-index: 4;
+  background-color: var(--table-head-bg);
+}
+.table td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+/* Alternating rows are a hairline of tint, not a stripe: enough to carry the
+   eye across a ten-column row without banding the ground underneath it. */
+.table tbody tr:nth-child(even) { background: var(--table-bg-alt); }
+.table tbody tr { transition: background 0.12s ease, box-shadow 0.12s ease; }
+.table tbody tr:hover {
+  background: var(--table-bg-hover);
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+.table tbody tr:last-child td { border-bottom: none; }
+/* A line of instruction above a table, in the same register as .table__sub. */
+.table__note { margin: 0 0 10px; color: var(--muted); font-size: 12.5px; }
+.table__note-busy { color: var(--brand); font-weight: 600; }
+
+/* An editable date reads as an ordinary cell until it is hovered: seven of
+   these across twenty rows would otherwise turn the table into a wall of input
+   boxes, and the dates are read far more often than they are corrected.
+
+   Almost every declaration here is undoing the global `button` rule, which
+   would otherwise render each date bold, pill-shaped and lipped. */
+.cell-date {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 6px;
+  margin: -3px -6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+.cell-date__text { flex: 1; }
+/* The affordance: a calendar appears on the cell you are pointing at, rather
+   than seven of them sitting on every row of the table at once. */
+.cell-date::after {
+  content: "";
+  flex: none;
+  width: 13px;
+  height: 13px;
+  opacity: 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f58633' stroke-width='2' stroke-linecap='round'%3E%3Crect x='3' y='5' width='18' height='16' rx='2'/%3E%3Cpath d='M3 10h18M8 3v4M16 3v4'/%3E%3C/svg%3E") no-repeat center / 13px 13px;
+  transition: opacity 0.14s ease;
+}
+.cell-date:hover, .cell-date:focus-visible {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  box-shadow: none;
+}
+.cell-date:hover::after, .cell-date:focus-visible::after { opacity: 0.9; }
+.cell-date:focus-visible { outline: none; border-color: var(--brand); box-shadow: var(--ring); }
+
+.cell-date__input {
+  display: block;
+  width: 100%;
+  min-width: 132px;
+  padding: 3px 6px;
+  margin: -3px -6px;
+  border: 1px solid var(--brand);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+  box-shadow: var(--ring);
+  /* Tells the browser which way to paint the field's own furniture -- the
+     yyyy-mm-dd spinners and the calendar panel it drops down. Without it the
+     panel comes up white on the dark theme. */
+  color-scheme: dark;
+}
+[data-theme="light"] .cell-date__input { color-scheme: light; }
+/* Sixty of these at once, once the whole table is in edit mode. The single
+   open editor could afford a brand border and a focus ring because it was the
+   only one on screen; a column of them would be a wall of orange, so at rest
+   they take the ordinary field border and the brand marks only the one being
+   typed into. */
+.cell-date__input--bulk {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+  box-shadow: none;
+}
+.cell-date__input--bulk:focus { border-color: var(--brand); box-shadow: var(--ring); }
+.cell-date__input:disabled { opacity: 0.55; cursor: progress; }
+
+.cell-date__input:focus { outline: none; }
+
+/* --- configuration ---------------------------------------------------------
+
+   The tick box that decides whether a branch is in scope, and the row it sits
+   in. A label rather than a bare box, so the words are part of the target and
+   the state is readable without decoding a tick -- "In scope" and "Not applied"
+   say the effect, where a tick alone only says that something is on. */
+.tick { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.tick input { width: 15px; height: 15px; accent-color: var(--brand); cursor: pointer; }
+.tick input:disabled, .tick:has(input:disabled) { cursor: progress; opacity: 0.6; }
+.tick__text { font-size: 12px; font-weight: 650; color: var(--muted); }
+.tick input:checked + .tick__text { color: var(--brand-700); }
+
+/* A branch that is in scope, marked the way the row being edited is: it is the
+   row currently doing something to the rest of the app. */
+.table tbody tr.is-scoped,
+.table tbody tr.is-scoped:hover {
+  background: var(--brand-50);
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+.table tbody tr.is-scoped .table__pin,
+.table tbody tr.is-scoped:hover .table__pin { background-color: var(--table-bg-hover); }
+
+/* The row being corrected, held up out of the table while it is open: the three
+   date fields already mark it out, and this says the rest of the row belongs to
+   them. It has to beat the hover fill, which would otherwise light a different
+   row as the pointer crosses the table on its way to Save. */
+.table tbody tr.is-editing,
+.table tbody tr.is-editing:hover {
+  background: var(--brand-50);
+  box-shadow: inset 3px 0 0 var(--brand);
+}
+.table tbody tr.is-editing .table__pin,
+.table tbody tr.is-editing:hover .table__pin { background-color: var(--table-bg-hover); }
+/* The browser's own calendar button, swapped for the same glyph as the cell:
+   the default is a near-black chevron that disappears into the dark theme. */
+.cell-date__input::-webkit-calendar-picker-indicator {
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  margin: 0 0 0 4px;
+  opacity: 0.85;
+  cursor: pointer;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f58633' stroke-width='2' stroke-linecap='round'%3E%3Crect x='3' y='5' width='18' height='16' rx='2'/%3E%3Cpath d='M3 10h18M8 3v4M16 3v4'/%3E%3C/svg%3E") no-repeat center / 13px 13px;
+}
+.cell-date__input::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+
+.table__num { text-align: center; font-variant-numeric: tabular-nums; }
+.table__mono { font-family: "Cascadia Mono", Consolas, ui-monospace, monospace; font-size: 12.5px; }
+.table__sub { color: var(--muted); font-size: 11.5px; }
+
+/* --- Send to CSD
+
+   A row-scale button. The global button rule is built for the toolbar - 34px
+   tall, lipped, pill-shaped - and twenty of those down a column would add most
+   of a screen to the tab's height, so almost everything here is a smaller
+   re-pour of it rather than an override.
+
+   Outlined at rest, filled on hover. `button.primary` is the page's one lamp;
+   a column of lit buttons would light the whole table and leave nothing for the
+   eye to land on. Holding the brand as an outline keeps the control legible as
+   a control, and pouring the fill in only under the cursor puts the emphasis on
+   the row being pointed at. */
+.csd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  /* Both labels share this width - "Sent" is half of "Send to CSD", and a
+     button that shrank would jog the column's edge on every send. */
+  min-width: 116px;
+  padding: 5px 12px;
+  border: 1px solid var(--brand-200);
+  border-radius: var(--r-pill);
+  background: var(--brand-50);
+  color: var(--brand-700);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  box-shadow: none;
+}
+
+.csd:hover:not(:disabled) {
+  /* The same lit-top, shaded-bottom pour as .primary, at row scale. */
+  background: linear-gradient(180deg, var(--brand-600) 0%, var(--brand) 100%);
+  border-color: rgba(255, 178, 120, 0.55);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 232, 212, 0.55), 0 4px 12px rgba(245, 134, 51, 0.30);
+}
+
+/* Pressed means pressed IN, as everywhere else. */
+.csd:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 5px rgba(110, 42, 0, 0.45);
+}
+
+.csd:focus-visible { outline: none; box-shadow: var(--ring); }
+
+/* The plane leans into its own direction of travel as the cursor arrives -
+   the one piece of motion on the row, and it says which way the GRN is going.
+   The tick does not move: it is a state, not an act. */
+.csd__icon { display: grid; place-items: center; transition: transform 0.22s ease; }
+.csd:hover:not(:disabled) .csd__icon { transform: translate(2px, -2px); }
+
+/* Sent: quiet, and green rather than greyed. The global disabled rule drops
+   everything to 55% opacity, which on a 12px label is closer to unreadable
+   than to finished - so this state carries its own full-strength colour and
+   only gives up the border and the lift. */
+.csd--sent, .csd--sent:disabled {
+  opacity: 1;
+  border-color: transparent;
+  background: var(--ok-soft);
+  color: var(--ok);
+  transform: none;
+  box-shadow: none;
+}
+
+/* Two controls in one cell. Column, not row: side by side they would widen the
+   Action column past the amounts, and the table would gain a scrollbar for the
+   sake of one cell. */
+.row-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+
+/* The stage dropdown. Sized and shaped like the Send button it stands next to
+   -- same height, same pill, same 12px -- because the two are the same kind of
+   thing: the one control that acts on this row. The native arrow is left alone;
+   it is what makes a select read as a select at this size. */
+.stage-select {
+  min-width: 116px;
+  padding: 5px 8px 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: border-color 0.22s ease, background 0.22s ease;
+}
+.stage-select:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-3); }
+.stage-select:focus-visible { outline: none; box-shadow: var(--ring); border-color: var(--brand); }
+.stage-select:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* What stands in the dropdown's place once a handover has a verdict: the same
+   control, spent. It takes .stage-select's own geometry so the Action column
+   does not step in and out as rows reach their end -- only the arrow goes,
+   since a button has nothing to drop down, and the padding evens up to match. */
+/* The destination picker on a Valid GRNs row. Wider than the stage picker it
+   borrows from -- "Send to CSD -- no access" is the longest thing either of
+   them has to hold -- and outlined in the brand, because unlike the stage
+   picker this is the one control on the row that has not been used yet. */
+.send-select {
+  min-width: 132px;
+  border-color: var(--brand);
+  color: var(--brand-700);
+}
+/* The same step up the surfaces every other dropdown takes on hover, not a
+   brand wash: the brand is already doing a job on this control as its outline,
+   and filling it as well left the hovered row's one unused control shouting
+   louder than the row. */
+.send-select:hover:not(:disabled) { border-color: var(--brand); background: var(--surface-3); }
+
+.stage-select--done {
+  padding: 5px 12px;
+  text-align: center;
+  box-shadow: none;
+}
+
+/* Take back, on the CSD screen. Same row-scale geometry as Send, in the danger
+   register and quieter still at rest: undoing a handover is the rarer act of
+   the two, and it should not be the brightest thing on the row. */
+.csd--take-back {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.csd--take-back:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+  color: var(--danger);
+  transform: none;
+  box-shadow: none;
+}
+.csd--take-back:hover:not(:disabled) .csd__icon { transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .csd, .csd__icon { transition: none; }
+  .csd:hover:not(:disabled), .csd:active:not(:disabled) { transform: none; }
+  .csd:hover:not(:disabled) .csd__icon { transform: none; }
+}
+
+/* The Status cell's badge. Sent is the only state worth colouring -- "Not sent"
+   is the resting state of nearly every row, and a page of coloured pills says
+   nothing. */
+.pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: var(--r-pill);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.pill--sent { background: var(--ok-soft); color: var(--ok); }
+.pill--unsent { background: rgba(128, 128, 128, 0.14); color: var(--muted); }
+/* A match whose bill number or vendor spelling did not agree. The review blue,
+   not the danger red: the GRN did reach accounts, something just needs reading. */
+.pill--diff { background: var(--st-review-soft); color: var(--st-review); }
+
+/* The reconciliation bucket a row is in, on the Total GRNS tab -- the one tab
+   whose rows are not all of a kind. Same two tones as the Pending and Valid
+   stat cards, so a row and the card counting it agree on colour. Two states
+   only: a match that differs on a bill number or a vendor spelling reads as
+   moved to accounts like any other, and .pill--diff above is the CSD screen's. */
+.pill--pending { background: var(--st-pending-soft); color: var(--st-pending); }
+.pill--valid { background: var(--st-matched-soft); color: var(--st-matched); }
+
+/* The four CSD stages, on the same rungs their cards take, so a row and the
+   card counting it are recognisably the same colour. */
+.pill--queued { background: var(--warn-soft); color: var(--warn); }
+.pill--received { background: var(--info-soft); color: var(--info); }
+.pill--approved { background: var(--ok-soft); color: var(--ok); }
+.pill--rejected { background: var(--danger-soft); color: var(--danger); }
+
+/* Remarks is a sentence, and the table is nowrap by default. Only this one
+   cell is allowed to break, and it is capped so a long note cannot stretch the
+   column past the amounts either side of it. */
+.table__wrap { white-space: normal; max-width: 260px; margin-top: 3px; }
+
+/* --- pager */
+.pager { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 14px 2px; color: var(--muted); font-size: 13px; }
+.pager__controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pager__page { font-variant-numeric: tabular-nums; }
+/* Rows per page. It sits with Previous/Next rather than beside the count,
+   because it is something to operate, and the operable things belong together;
+   the divider after it keeps it from reading as a third pager button. */
+.pager__size { display: flex; align-items: center; gap: 8px; padding-right: 12px; border-right: 1px solid var(--border); }
+.pager__size > span { white-space: nowrap; }
+select.pager__size-input { width: auto; padding: 6px 8px 6px 10px; font-size: 13px; cursor: pointer; }
+
+/* ==========================================================================
+   Motion
+   ========================================================================== */
+
+.page-transition { animation: page-in 0.26s ease both; }
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* The scene keeps its geometry when motion is turned down - only the movement
+   stops. Cancelling the transforms outright would collapse the cube and the
+   plinth into a pile of flat squares, which is worse than either. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+  .cube { animation: none; transform: rotateX(-16deg) rotateY(-38deg); }
+  .lift, .ped__shadow, .cube__core, .cube__emblem { animation: none; }
+}
+
+/* --- a neutral counterpart to .alert--error ------------------------------- */
+
+.alert--info {
+  color: var(--info);
+  background: var(--info-soft);
+  border: 1px solid var(--info-line);
+}
+.alert--info strong { color: var(--text); }
+
+/* --- day counts in the table ---------------------------------------------- */
+
+/* A negative gap means the stage finished before it started. It is shown as
+   measured rather than clamped, so it needs to look like the anomaly it is. */
+.table__neg { color: var(--danger); font-weight: 700; }
+/* An absent date is not a zero-day stage. */
+.table__miss { color: var(--placeholder); }
+/* .table th is sticky at top:0; a second header row pinned to the same line
+   would sit on top of the real one, so the grouping row stays in the flow and
+   simply scrolls away. */
+.table__group {
+  position: static;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+/* Where one group ends and the next begins -- a rule down the left of the
+   second group, so "Days taken" is visibly closed off from "Reached" rather
+   than the two labels floating over one continuous strip.
+
+   --border-strong, not --border: against the header band's own fill the plain
+   hairline is the same colour as what it sits on and cannot be seen. The rule
+   carries on down the column-label row beneath (.table__edge), which gives it
+   enough height to read as a divider rather than a 12px tick. */
+.table__group + .table__group,
+.table__edge {
+  border-left: 1px solid var(--border-strong);
+}
+
+/* --- the span picker, above the GRNS SPAN table
+
+   A strip rather than a card: it configures the slab below it, so it reads as
+   that table's own top edge -- same width, same corner radius carried into it,
+   and sitting close enough that nothing else could be what it belongs to.
+
+   Two rows when spans are chosen and one when they are not, because the chosen
+   ones are the answer to what the row above is asking and must not be mistaken
+   for more controls. */
+.spans {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+}
+.spans__pick { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.spans__label {
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 700;
+}
+/* The word between the two dropdowns, so the row reads as a sentence -- "from
+   this to that" -- rather than as two unrelated fields side by side. */
+.spans__to { color: var(--muted); font-size: 13px; }
+/* Matches the toolbar's filters rather than the upload page's taller form
+   fields, and beats `select.field__input { width: 100% }` on specificity for
+   the reason spelled out on .stage-filter. */
+.spans__select { padding: 7px 10px 7px 12px; font-size: 13px; cursor: pointer; }
+select.spans__select { width: auto; min-width: 150px; }
+.spans__chosen { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* One chip per column the table is measuring, in the order the columns run. */
+.spans__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 11px;
+  border-radius: var(--r-pill);
+  background: var(--brand-50);
+  border: 1px solid var(--brand-200);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.spans__drop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(128, 128, 128, 0.24);
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: none;
+}
+.spans__drop:hover { background: var(--danger); color: #fff; box-shadow: none; }
+/* A link, not a button: it undoes the whole selection, and a fourth button
+   beside three chips would read as a fourth thing to add. */
+.spans__clear {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  text-decoration: underline;
+  cursor: pointer;
+  box-shadow: none;
+}
+.spans__clear:hover { color: var(--text); background: none; box-shadow: none; }
+@media (max-width: 640px) {
+  select.spans__select { flex: 1 1 130px; min-width: 0; }
+}
+
+
+/* ==========================================================================
+   User management
+   --------------------------------------------------------------------------
+   The administrator's screen. It reuses the table, the pills and the buttons
+   the rest of the app is built from; what it adds is a panel to edit an account
+   in, and the two small controls that panel is filled with -- a tick list of
+   screens, and a pair of role choices.
+
+   The panel is centred over the page. The form is a column of fields and runs
+   taller than a laptop window, so the box does not grow with it: the head and
+   the foot are pinned and only the body between them scrolls, which keeps the
+   name of what is being edited and the button that commits it on screen the
+   whole way down.
+
+   Two things keep that promise on a short window, and both are needed.
+
+   The cap is in viewport units rather than a percentage. `max-height: 100%`
+   would resolve against .sheet, whose own height is `auto` -- it is sized by
+   `inset: 0`, which is not an explicit height -- and a percentage against an
+   auto-height containing block is treated as `none`. The cap would silently not
+   apply, which is the one circumstance it exists for.
+
+   And the overlay scrolls, with the panel centred by `margin: auto` rather than
+   by `align-items`. A flex item centred on the cross axis and taller than its
+   container overflows EQUALLY in both directions and is clipped at both -- the
+   title above and the Save button below, with no way to reach either. Auto
+   margins collapse to zero once the item no longer fits, so the panel falls
+   back to the top of a scrollable overlay instead of losing its two ends.
+   ========================================================================== */
+
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  /* The gutter is what stops the box touching the window edges. */
+  padding: 24px;
+  overflow-y: auto;
+  /* The page behind must not take over once this has scrolled to its end. */
+  overscroll-behavior: contain;
+}
+
+/* A plain div, and inert: clicking away does not dismiss the dialog -- see the
+   note in Sheet.jsx for why. It exists to darken the page and to swallow the
+   clicks aimed past the panel, so it needs no cursor, no hover state and no
+   focus ring; it is not a control and is not in the tab order. */
+.sheet__scrim {
+  /* Fixed, not absolute: .sheet can scroll, and an absolute scrim would be laid
+     out against its scrollable area -- sliding up with the content and leaving
+     the page bare beneath a tall panel. .sheet is itself fixed and carries no
+     transform, so this resolves against the viewport. */
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 5, 3, 0.55);
+  backdrop-filter: blur(2px);
+  animation: sheet-fade 0.18s ease;
+}
+
+/* The same slab every other panel in the app is: a lit chamfer, an extruded
+   lip, and the shadow a box this far off the page would actually cast. */
+.sheet__panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  /* Centres the panel, and gives way rather than clipping it -- see above. */
+  margin: auto;
+  width: min(580px, 100%);
+  /* 48px is .sheet's gutter, top and bottom. dvh over vh so a phone's collapsing
+     address bar is counted: with vh the foot sits behind it, and the foot is
+     where Save is. The vh line is the fallback for browsers without dvh. */
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--lip), 0 var(--edge-h) 0 -1px var(--edge), 0 26px 70px rgba(0, 0, 0, 0.5);
+  animation: sheet-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sheet__panel--narrow { width: min(440px, 100%); }
+
+/* The panel is the box; the form inside it is what actually stacks the head,
+   the scrolling body and the foot. The column has to pass through this element
+   rather than stop at it, or the three would lay out as blocks and the body
+   would never take the overflow. min-height:0 for the same reason it is on the
+   body -- this is the flex item that has to be allowed to shrink. */
+.sheet__form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+/* flex: none on both: they are the fixed ends the body scrolls between, and a
+   default flex item may shrink. A squeezed head would clip its own text. */
+.sheet__head {
+  flex: none;
+  padding: 22px 26px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sheet__head h2 { margin: 0 0 4px; font-size: 18px; font-weight: 700; letter-spacing: -0.02em; }
+.sheet__lead { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+
+/* The only part that scrolls. The head names the panel and the foot carries the
+   commit, and neither should slide away while a long form is being filled in.
+
+   min-height:0 is the mechanism: a flex item will not shrink below its content
+   by default, and without this the body would push the panel past its cap
+   instead of taking the overflow on itself. */
+.sheet__body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 26px 8px; }
+.sheet__body .field:last-child { margin-bottom: 8px; }
+
+.sheet__foot {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 26px 20px;
+  border-top: 1px solid var(--border);
+}
+
+/* --- the confirmation panel
+
+   A question, not a form: no scrolling body to speak of, so the head and the
+   text below it are set tighter than a Sheet carrying fields. */
+.confirm__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+/* The mark is decorative -- the title already says what is about to happen --
+   so it is small, tinted, and aria-hidden rather than a full-width banner. */
+.confirm__mark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-line);
+  color: var(--danger);
+}
+.confirm__body {
+  padding-top: 18px;
+  padding-bottom: 4px;
+  /* The question carries the weight here rather than the title: it is the line
+     that names what is about to go, so it is set at the title's own size. */
+  color: var(--text-2);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.6;
+  /* Clears the message off the foot's rule. On the block rather than on the
+     paragraphs, so a one-paragraph message -- which is all of them -- still
+     gets the gap that p:last-child takes back. */
+  margin-bottom: 16px;
+}
+.confirm__body p { margin: 0 0 16px; }
+.confirm__body p:last-child { margin-bottom: 0; }
+
+/* Rises into place rather than sliding in from an edge: a centred box has no
+   edge it came from, and scaling up from just under full size reads as the
+   panel coming forward off the page. */
+@keyframes sheet-in {
+  from { transform: scale(0.97) translateY(8px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes sheet-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Username and full name sit side by side: they are one thought, and stacking
+   them pushes the part that matters -- the access -- below the fold. */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+
+/* --- the tick list -------------------------------------------------------- */
+
+.choices { display: grid; gap: 8px; }
+
+/* A whole row is the target, not a 13px box: these are read as a list of
+   things this account can do, and each entry carries a line of explanation
+   that should be part of what you are clicking. */
+.choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+.choice:hover { border-color: var(--border-strong); }
+.choice input { margin-top: 2px; flex: none; accent-color: var(--brand); width: 15px; height: 15px; }
+.choice__text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.choice__label { font-weight: 600; font-size: 13px; }
+.choice__hint { color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+
+.choice.is-on {
+  border-color: var(--brand);
+  background: var(--brand-50);
+}
+/* Ticked but not yours to change: an admin's screens, or your own role. The
+   state is still readable -- it is the answer to the question the row asks --
+   it just does not invite a click. */
+.choice.is-locked { cursor: not-allowed; opacity: 0.72; }
+.choice.is-locked:hover { border-color: var(--border); }
+.choice.is-locked.is-on:hover { border-color: var(--brand); }
+
+.choice--wide { width: 100%; margin-bottom: 18px; }
+
+/* --- the accounts table --------------------------------------------------- */
+
+.user-cell { display: flex; align-items: center; gap: 10px; }
+.avatar--sm { width: 28px; height: 28px; font-size: 11px; flex: none; }
+
+/* A deactivated account is kept on the list for the record. It should read as
+   present but switched off, rather than as one more live row. */
+.table tbody tr.is-muted { opacity: 0.6; }
+.table tbody tr.is-muted:hover { opacity: 1; }
+
+.pill--admin { background: var(--brand-100); color: var(--brand-700); display: inline-flex; align-items: center; gap: 5px; }
+.pill--user { background: rgba(128, 128, 128, 0.14); color: var(--muted); }
+
+/* The screens an account holds, as a set rather than a sentence: three short
+   labels wrap better than "New reconciliation, Results and CS Department". */
+.tag-row { display: flex; flex-wrap: wrap; gap: 5px; max-width: 300px; white-space: normal; }
+.tag {
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* The row's four controls, on one line -- .row-actions elsewhere stacks a
+   button above a status, which is not what this column holds. */
+.row-actions--inline { flex-direction: row; align-items: center; gap: 4px; }
+.ghost--sm { padding: 5px 11px; font-size: 12px; }
+.icon-btn--danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+  color: var(--danger);
+}
+
+.table__note svg { vertical-align: -2px; margin-right: 4px; }
+
+/* --- read-only dates ------------------------------------------------------ */
+
+/* What a standard user sees in the Reached columns of GRNS SPAN. It is the
+   editable cell with everything that invites an edit taken off it: no pointer,
+   no hover frame, and no calendar glyph. */
+.cell-date--locked { cursor: default; }
+.cell-date--locked::after { content: none; }
+.cell-date--locked:hover { border-color: transparent; background: none; }
+
+/* --- signed in with nothing to open --------------------------------------- */
+
+.noaccess { text-align: center; }
+.noaccess .login__subtitle { margin-bottom: 22px; line-height: 1.6; }
+
+@media (max-width: 620px) {
+  .form-grid { grid-template-columns: 1fr; }
+  .sheet { padding: 14px; }
+  .sheet__panel {
+    max-height: calc(100vh - 28px);
+    max-height: calc(100dvh - 28px);
+  }
+  .sheet__head, .sheet__body, .sheet__foot { padding-left: 18px; padding-right: 18px; }
+}
+

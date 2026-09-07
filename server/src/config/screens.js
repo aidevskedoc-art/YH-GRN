@@ -1,0 +1,112 @@
+/**
+ * The screens a user can be given access to, and the roles that exist.
+ *
+ * One list, held here rather than in each route, because three separate things
+ * read it and they must not drift: the users API validates what an admin ticks
+ * against it, `requireScreen` enforces it per request, and the client renders
+ * the same keys as checkboxes and as navigation.
+ *
+ * A screen key is the route it guards, minus the slash. That is deliberate --
+ * the client decides what to show from the same string the server decides what
+ * to serve from, so a screen cannot be visible in the nav but closed at the API.
+ */
+export const SCREENS = [
+  {
+    key: 'upload',
+    label: 'New reconciliation',
+    hint: 'Upload the two monthly reports and run a reconciliation.',
+  },
+  {
+    key: 'results',
+    label: 'Reconciliation results',
+    hint: 'Pending, Valid GRNs and the GRNS SPAN turnaround report.',
+  },
+  {
+    key: 'csd',
+    label: 'CS Department',
+    hint: 'The handover queue and its stages.',
+  },
+  {
+    key: 'config',
+    label: 'Configuration',
+    hint: 'Branch codes, locations and bank accounts, and which branches are in scope.',
+  },
+];
+
+export const SCREEN_KEYS = SCREENS.map((s) => s.key);
+const SCREEN_SET = new Set(SCREEN_KEYS);
+
+/**
+ * The two roles.
+ *
+ * ADMIN is not a screen grant: it is the account that manages other accounts,
+ * reaches every screen without being given them one by one, and is the only
+ * role allowed to correct a date on the GRNS SPAN tab. USER reaches exactly the
+ * screens it has been ticked for, and reads dates without changing them.
+ */
+export const ROLES = [
+  { key: 'ADMIN', label: 'Administrator', hint: 'Every screen, manages users, can correct dates.' },
+  { key: 'USER', label: 'Standard user', hint: 'Only the screens ticked below. Dates are read-only.' },
+];
+
+export const ROLE_KEYS = ROLES.map((r) => r.key);
+
+/**
+ * The departments an account can belong to.
+ *
+ * A label on the person, not a permission. What someone may open is decided by
+ * the role and the screen grants above and nowhere else -- an account in the
+ * CSD department with only Results ticked still sees only Results. Keeping the
+ * two apart means a reorganisation is a relabelling rather than a re-grant.
+ *
+ * Nullable: the seeded administrator predates the field, and an account whose
+ * department nobody has stated should say so rather than be filed under a guess.
+ */
+export const DEPARTMENTS = [
+  { key: 'CSD', label: 'CSD' },
+  { key: 'ACCOUNTS', label: 'Accounts' },
+];
+
+export const DEPARTMENT_KEYS = DEPARTMENTS.map((d) => d.key);
+const DEPARTMENT_SET = new Set(DEPARTMENT_KEYS);
+
+export function isDepartment(key) {
+  return DEPARTMENT_SET.has(key);
+}
+
+export function isScreen(key) {
+  return SCREEN_SET.has(key);
+}
+
+/**
+ * The screens an account actually reaches.
+ *
+ * An admin reaches all of them whatever is stored against the row, so nobody
+ * can lock the administrator out of a screen by unticking it.
+ */
+export function screensFor(user) {
+  if (!user) return [];
+  if (user.role === 'ADMIN') return [...SCREEN_KEYS];
+  return (user.screens || []).filter(isScreen);
+}
+
+/**
+ * The one branch an account may see, or null for every branch.
+ *
+ * The companion to screensFor, and it answers the same shape of question: the
+ * stored column says what was granted, this says what actually applies. An
+ * admin is unrestricted whatever the row holds, so nobody can be shut out of
+ * the data by the same screen they hand access out from -- and, more to the
+ * point, so the last administrator cannot be narrowed to a branch that is later
+ * deleted and left able to see nothing.
+ *
+ * Every query behind the results and CSD screens carries this. It is a
+ * permission, not a preference: the Location dropdown on those screens chooses
+ * within what this allows and can never widen it.
+ */
+export function branchFor(user) {
+  if (!user) return null;
+  if (user.role === 'ADMIN') return null;
+  const location = String(user.branch_location ?? '').trim();
+  return location === '' ? null : location;
+}

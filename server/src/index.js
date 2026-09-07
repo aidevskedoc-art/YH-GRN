@@ -1,0 +1,72 @@
+import path from 'node:path';
+import fs from 'node:fs';
+import express from 'express';
+import cors from 'cors';
+import { config } from './config/env.js';
+import { pool } from './db/pool.js';
+import { authRouter } from './routes/auth.js';
+import { usersRouter } from './routes/users.js';
+import { batchesRouter } from './routes/batches.js';
+import { resultsRouter, ageingRouter, recordsRouter } from './routes/results.js';
+import { csdRouter } from './routes/csd.js';
+import { configRouter } from './routes/config.js';
+import { errorHandler } from './middleware/error.js';
+
+const app = express();
+
+app.use(cors({ origin: config.clientOrigin, credentials: true }));
+app.use(express.json({ limit: '1mb' }));
+
+app.get('/api/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok', database: 'connected' });
+  } catch (err) {
+    res.status(503).json({ status: 'degraded', database: 'unreachable', error: err.message });
+  }
+});
+
+app.use('/api/auth', authRouter);
+// Accounts and screen access. Administrator-only, enforced inside the router.
+app.use('/api/users', usersRouter);
+// resultsRouter is mounted first: its paths are more specific (/:id/summary,
+// /:id/results, /:id/export) and must not be shadowed by batchesRouter.
+app.use('/api/batches', resultsRouter);
+// Correcting a stage date writes to one ageing row, which no batch owns
+// exclusively -- the same row is read by whichever uploads are in scope.
+app.use('/api/ageing', ageingRouter);
+// The CSD queue is its own resource: a handover outlives the upload it was read
+// from, so it hangs off neither a batch nor an ageing row.
+app.use('/api/csd', csdRouter);
+// Branch definitions, and which of them are in scope. Reading is open to any
+// signed-in account; writing needs the Configuration screen.
+app.use('/api/config', configRouter);
+// The other destination on a Valid GRNs row. One route, no screen of its own --
+// see the Records section at the foot of routes/results.js.
+app.use('/api/records', recordsRouter);
+app.use('/api/batches', batchesRouter);
+
+// Serve the built client if it exists, so `npm start` alone runs the whole app.
+const clientDist = path.join(config.rootDir, 'client', 'dist');
+if (fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+  app.get(/^(?!\/api\/).*/, (req, res) => {
+    res.sendFile(path.join(clientDist, 'index.html'));
+  });
+}
+
+app.use((req, res) => res.status(404).json({ error: 'Not found.' }));
+app.use(errorHandler);
+
+const server = app.listen(config.port, () => {
+  console.log(`API listening on http://localhost:${config.port} (${config.nodeEnv})`);
+  if (!fs.existsSync(clientDist)) {
+    console.log(`Client dev server expected at ${config.clientOrigin}`);
+  }
+});
+
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.on(signal, () => {
+    server.close(() => pool.end().finally(() => process.exit(0)));
+  });
+}

@@ -1,0 +1,609 @@
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { api } from '../api/client.js';
+import { useAuth } from '../context/AuthContext.jsx';
+import { exportResults } from '../services/exporter.js';
+import ResultsTable, { formatAmount } from '../components/ResultsTable.jsx';
+import TurnaroundView from '../components/TurnaroundView.jsx';
+import LocationFilter from '../components/LocationFilter.jsx';
+import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
+import { useConfirm } from '../components/ConfirmDialog.jsx';
+
+/** How long the search box waits for the typing to stop before it asks. */
+const SEARCH_DELAY_MS = 300;
+
+/**
+ * Pending first: it is the answer the report is run to get.
+ *
+ * Valid GRNS is both matched statuses at once. A GRN found in the ageing report
+ * has reached accounts even when the bill number or the vendor spelling differ,
+ * so those rows are counted as valid rather than held in a separate "needs
+ * review" bucket; the difference is still shown per row, in the table's last
+ * column, for anyone who wants to check it.
+ *
+ * Turnaround is `card: false` because it is not a reconciliation bucket. The
+ * other two partition every GRN and each has a count and a value; Turnaround
+ * measures elapsed time over a different population, so it belongs in the tab
+ * strip but not in the row of stat cards.
+ */
+const TURNAROUND = 'TURNAROUND';
+const VALID = 'VALID';
+/**
+ * Every GRN in scope, pending and valid together -- the upload as it arrived,
+ * before the reconciliation splits it in two. The server knows the name and
+ * treats it as no filter at all.
+ */
+const ALL_GRNS = 'ALL';
+const TABS = [
+  // First, because it is the whole population the two tabs after it divide up:
+  // the tab strip then reads as everything, then the half still outstanding,
+  // then the half that got through.
+  //
+  // `countKey` because the summary has no ALL bucket of its own -- the figure
+  // it wants is the one it already adds up under `total`.
+  { status: ALL_GRNS, label: 'Total GRNS', hint: 'Pending and valid together', card: false, countKey: 'total' },
+  // Still a tab, no longer a card. The row of cards now follows one GRN's
+  // journey onward -- valid, then through CSD -- and a Pending count is the
+  // population that journey has not started for. The tab keeps its own count.
+  { status: 'PENDING', label: 'Pending', hint: 'Not yet in accounts', card: false },
+  { status: VALID, label: 'Moved To Accounts ', hint: 'Found in the ageing report' },
+  { status: TURNAROUND, label: 'GRNS SPAN', hint: 'Days at each step', card: false },
+];
+
+const CARD_TABS = TABS.filter((t) => t.card !== false);
+
+/**
+ * The CSD stages, as cards beside Valid GRNs.
+ *
+ * They count THIS upload's GRNs at each stage -- same batch and same search as
+ * every other card in the row -- rather than the whole CSD queue, so the row
+ * describes one population throughout. The CSD screen's own cards count the
+ * queue across every upload, which is the right scope there.
+ *
+ * Pressing one opens the CSD screen with that stage already chosen. The cards
+ * report; the dropdown beside the search box is what filters this table. They
+ * are deliberately not wired to each other, so neither lights up because of the
+ * other.
+ */
+/**
+ * The Total GRNS tab's own filter: which half of the tab to show.
+ *
+ * It stands where the CSD stage dropdown stands on every other tab, because on
+ * Total GRNS a stage is the wrong question -- only a GRN that reached accounts
+ * can have one, so choosing a stage there would quietly discard half the tab.
+ * The question that tab does raise, looking at a mixed list, is "just the ones
+ * still outstanding" or "just the ones through", and these are those.
+ *
+ * The values are statuses the server already knows, so this narrows the rows
+ * without changing the tab: the table keeps its own wide layout, Match column
+ * and all, and the filter travels beside `status` rather than replacing it.
+ */
+const MATCH_FILTERS = [
+  { value: 'PENDING', label: 'Pending' },
+  { value: VALID, label: 'Moved to accounts' },
+];
+
+/**
+ * The filter dropdown beside the search box: the Status column's own values.
+ *
+ * Every one of these is something that column says, spelled the way the pill
+ * in it spells it -- so picking one asks for the rows showing it rather than
+ * for an adjacent idea a reader has to translate. The server owns the meaning
+ * of each key (see PROGRESS in routes/results.js); this is the wording and the
+ * order they are offered in.
+ *
+ * The order follows a GRN's life rather than the alphabet: not sent, then out
+ * to one of the two destinations, then through CSD's three answers, then paid.
+ *
+ * They deliberately overlap, because the column does. A GRN whose cheque
+ * cleared while it sat at CSD shows both, and is found under both.
+ */
+const PROGRESS_FILTERS = [
+  // { value: 'NOT_SENT', label: 'Not sent' },
+  { value: 'QUEUED', label: 'Sent to CSD' },
+  { value: 'RECORDS', label: 'Sent to Records' },
+  { value: 'RECEIVED', label: 'CSD received' },
+  { value: 'APPROVED', label: 'CSD approved' },
+  { value: 'REJECTED', label: 'CSD rejected' },
+  { value: 'CLEARED', label: 'Cheque cleared' },
+];
+
+const CSD_CARDS = [
+  { stage: 'QUEUED', label: 'CSD Pending', hint: 'Sent, awaiting CSD', tone: 'queued' },
+  { stage: 'RECEIVED', label: 'CSD Received', hint: 'CSD have it', tone: 'received' },
+  { stage: 'APPROVED', label: 'CSD Approved', hint: 'Cleared by CSD', tone: 'approved' },
+  { stage: 'REJECTED', label: 'CSD Rejected', hint: 'Sent back', tone: 'rejected' },
+];
+
+/**
+ * The bucket the turnaround report measures. Every GRN with an ageing row has
+ * the stage dates, and that is exactly the Valid GRNs bucket -- so on the
+ * Turnaround tab that card is marked active, answering "what is this counting?"
+ * rather than going dead because no bucket is selected.
+ */
+const TURNAROUND_SCOPE = VALID;
+
+/**
+ * "All uploads": every batch reconciled together. It travels in the same place
+ * as a batch id -- the `:batchId` route segment and the selector's value -- and
+ * the server drops its batch filter when it sees it.
+ */
+const ALL = 'all';
+
+/** The `:batchId` segment as a batch id, the all sentinel, or null. */
+function parseBatchId(param) {
+  if (!param) return null;
+  return String(param).toLowerCase() === ALL ? ALL : Number(param);
+}
+
+/**
+ * The upload header's one-line description of what this batch actually holds.
+ *
+ * Either report may have been uploaded on its own, so this covers all three
+ * shapes a batch can take rather than assuming both counts are non-zero.
+ */
+function batchDescription(batch) {
+  const grn = batch.grnRowCount;
+  const ageing = batch.ageingRowCount;
+  const n = (x) => x.toLocaleString('en-IN');
+
+  if (grn > 0 && ageing > 0) return `${n(grn)} GRN transactions checked against ${n(ageing)} ageing rows.`;
+  if (grn > 0) return `${n(grn)} GRN transactions — no ageing report uploaded, so every GRN shows as pending.`;
+  if (ageing > 0) return `${n(ageing)} ageing rows — no GRN report uploaded, so there is nothing yet to reconcile them against.`;
+  return 'No rows in this upload.';
+}
+
+export default function Results() {
+  const { isAdmin } = useAuth();
+  const { batchId: batchIdParam } = useParams();
+  const navigate = useNavigate();
+
+  const [batches, setBatches] = useState([]);
+  const [batchId, setBatchId] = useState(parseBatchId(batchIdParam));
+  const [summary, setSummary] = useState(null);
+  const [status, setStatus] = useState('PENDING');
+  // Which Status value the table is narrowed to, or '' for every row.
+  // Deliberately not part of `status`: it cuts across the reconciliation
+  // buckets rather than being one of them.
+  const [progress, setProgress] = useState('');
+  // Which half of Total GRNS is showing, or '' for both. Meaningless on the
+  // other tabs, and cleared on the way out of this one.
+  const [matchFilter, setMatchFilter] = useState('');
+  // One branch, by the name the configuration screen gives it, or '' for every
+  // branch in scope. Unlike the two filters above it is not about a tab: it
+  // narrows the whole page -- rows, cards, option counts and the export -- and
+  // it survives moving between tabs, because "the Secunderabad numbers" is a
+  // question every tab answers.
+  const [location, setLocation] = useState('');
+  // Which stretches of the process the GRNS SPAN tab measures -- `{ from, to }`
+  // pairs of checkpoints, empty for every stage. It lives here rather than in
+  // the tab because the Export button lives here too, and a file that carried
+  // eleven stage columns after the screen had been narrowed to two would be a
+  // different report from the one it was taken off.
+  const [spans, setSpans] = useState([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = usePageSize();
+  const [data, setData] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [confirm, confirmDialog] = useConfirm();
+
+  // `search` is what is in the box; `q` is what has been asked for. Typing
+  // "SRI VENKATESWARA" would otherwise be sixteen round trips.
+  const [search, setSearch] = useState('');
+  const [q, setQ] = useState('');
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setQ(search.trim());
+      setPage(1);
+    }, SEARCH_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  // Load the batch list, and fall back to the newest batch when none is in the URL.
+  useEffect(() => {
+    api
+      .listBatches()
+      .then(({ batches: list }) => {
+        setBatches(list);
+        if (!batchIdParam && list.length > 0) {
+          setBatchId(list[0].id);
+          navigate(`/results/${list[0].id}`, { replace: true });
+        }
+        if (list.length === 0) setLoading(false);
+      })
+      .catch((err) => {
+        setError(err.message);
+        setLoading(false);
+      });
+    // Runs once on mount; later batch changes go through selectBatch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (batchIdParam) setBatchId(parseBatchId(batchIdParam));
+  }, [batchIdParam]);
+
+  useEffect(() => {
+    if (!batchId) return;
+    api
+      .summary(batchId, { q, location })
+      .then(({ summary: s }) => setSummary(s))
+      .catch((err) => setError(err.message));
+  }, [batchId, q, location]);
+
+  // Which rows to ask for, as against which tab is showing. The two are the
+  // same everywhere except Total GRNS with its filter set, where the tab decides
+  // the layout and the filter decides the population.
+  const rowStatus = status === ALL_GRNS && matchFilter ? matchFilter : status;
+
+  const loadRows = useCallback(() => {
+    if (!batchId) return;
+    // Turnaround is not a reconciliation status -- /results would reject it as
+    // an unknown filter. That tab fetches its own data in TurnaroundView.
+    if (status === TURNAROUND) return;
+    setLoading(true);
+    api
+      .results(batchId, { status: rowStatus, page, pageSize, q, progress, location })
+      .then(setData)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, [batchId, status, rowStatus, page, pageSize, q, progress, location]);
+
+  useEffect(loadRows, [loadRows]);
+
+  function selectBatch(id) {
+    setBatchId(id);
+    setPage(1);
+    setSummary(null);
+    navigate(`/results/${id}`);
+  }
+
+  function selectStatus(next) {
+    setStatus(next);
+    setPage(1);
+    // These values only ever appear on a GRN that reached accounts, so carrying
+    // the filter onto Pending would show an empty tab with no visible reason why.
+    if (next !== VALID) setProgress('');
+    // The match filter belongs to Total GRNS and its dropdown is only rendered
+    // there, so leaving it set would go on narrowing the next tab invisibly.
+    if (next !== ALL_GRNS) setMatchFilter('');
+  }
+
+  /** Narrow every figure on the page to one branch, or '' for all of them. */
+  function selectLocation(next) {
+    setLocation(next);
+    // Page 7 of one branch is rarely a page of another.
+    setPage(1);
+  }
+
+  /** Show one half of Total GRNS, or both. */
+  function selectMatchFilter(next) {
+    setMatchFilter(next);
+    setPage(1);
+  }
+
+  /**
+   * Narrow the table to one value of the Status column.
+   *
+   * Choosing one moves to Valid GRNS if it is not already showing: only a GRN
+   * that reached accounts can have been sent anywhere or paid by cheque, so the
+   * rows being asked for are all valid ones, and leaving the Pending tab up
+   * would answer the question with an empty table.
+   */
+  function selectProgress(next) {
+    setProgress(next);
+    setPage(1);
+    if (next && status !== VALID) {
+      setStatus(VALID);
+      setMatchFilter('');
+    }
+  }
+
+  async function handleExport() {
+    setExporting(true);
+    setError('');
+    try {
+      // The tab decides the sheet's shape; the filter decides which rows go in
+      // it -- so a filtered Total GRNS exports as Total GRNS, with half the rows.
+      await exportResults(batchId, status, q, progress, rowStatus, location, spans);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function handleDelete() {
+    const ok = await confirm({
+      title: 'Delete this upload?',
+      message: 'Are you sure? This cannot be undone.',
+      confirmLabel: 'Delete upload',
+    });
+    if (!ok) return;
+    try {
+      await api.deleteBatch(batchId);
+      const remaining = batches.filter((b) => b.id !== batchId);
+      setBatches(remaining);
+      if (remaining.length > 0) selectBatch(remaining[0].id);
+      else navigate('/upload');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  if (batches.length === 0 && !loading) {
+    return (
+      <div className="empty empty--page">
+        <h2>Nothing uploaded yet</h2>
+        <p>Upload the GRN report and the Vendor Ageing report to see which GRNs are still pending.</p>
+        <button className="primary" type="button" onClick={() => navigate('/upload')}>
+          Go to upload
+        </button>
+      </div>
+    );
+  }
+
+  const isAll = batchId === ALL;
+  const activeBatch = batches.find((b) => b.id === batchId);
+
+  return (
+    <>
+      {confirmDialog}
+      {/* The shell's top bar already names the page, so this row carries the
+          batch context and its controls only. */}
+      <div className="page__head page__head--row">
+        <div>
+          {isAll ? (
+            <>
+              <h2 className="page__title">All uploads</h2>
+              {/* The row counts are not the sum of the uploads': a GRN number
+                  repeating across uploads is counted once, so the total comes
+                  from the deduplicated summary rather than from the batch list. */}
+              <p className="page__lead">
+                {batches.length} upload{batches.length === 1 ? '' : 's'} combined —{' '}
+                {summary ? `${summary.total.count.toLocaleString('en-IN')} GRNs` : 'every GRN'},
+                counting a GRN number that repeats across uploads only once.
+              </p>
+            </>
+          ) : (
+            activeBatch && (
+              <>
+                {/* The selector shows names only, so the upload date lives here. */}
+                <h2 className="page__title">{activeBatch.name}</h2>
+                <p className="page__lead">
+                  Uploaded {new Date(activeBatch.uploadedAt).toLocaleDateString('en-GB')} —{' '}
+                  {batchDescription(activeBatch)}
+                </p>
+              </>
+            )
+          )}
+        </div>
+
+        {/* The page's scope, in the order it is decided: which upload, then
+            which branch of it. Both are labelled and sized alike, because they
+            are two halves of one answer -- everything below reads as "this
+            upload, this location" -- rather than a control and an afterthought
+            bolted beside it. The filters in the toolbar under the cards are a
+            different kind of question: they ask about the rows this pair
+            selects, so they stay down there with the table. */}
+        <div className="page__actions">
+           <LocationFilter value={location} onChange={selectLocation} />
+          <label className="picker">
+            <span className="picker__label">Uploaded files</span>
+            <select
+              className="field__input picker__input"
+              value={batchId ?? ''}
+              onChange={(e) => selectBatch(parseBatchId(e.target.value))}
+            >
+              <option value={ALL}>All uploads</option>
+              {batches.map((b) => (
+                <option key={b.id} value={b.id}>
+                  {b.name}
+                </option>
+              ))}
+            </select>
+          </label>
+         
+          {/* Administrators only, and never when every upload is in scope --
+              there is no single one to delete then. Being given the upload
+              screen is permission to add a month's reports, not to remove one:
+              a delete takes its GRN rows, its ageing rows and every reconciled
+              result with it. The server refuses it too; this only keeps a
+              button that would 403 off the screen. */}
+          {isAdmin && !isAll && (
+            <button className="ghost danger" type="button" onClick={handleDelete}>
+              Delete upload
+            </button>
+          )}
+        </div>
+      </div>
+
+      {summary && (
+        <div className="cards">
+          {CARD_TABS.map((tab) => {
+            const bucket = summary[tab.status] || { count: 0, amount: 0 };
+            const active = status === TURNAROUND ? tab.status === TURNAROUND_SCOPE : status === tab.status;
+            return (
+              <button
+                key={tab.status}
+                type="button"
+                className={`card stat stat--${tab.status.toLowerCase()} ${active ? 'is-active' : ''}`}
+                onClick={() => selectStatus(tab.status)}
+              >
+                <div className="stat__label">{tab.label}</div>
+                <div className="stat__value">{bucket.count.toLocaleString('en-IN')}</div>
+                <div className="stat__amount">₹ {formatAmount(bucket.amount)}</div>
+                <div className="stat__hint">{tab.hint}</div>
+              </button>
+            );
+          })}
+
+          {CSD_CARDS.map((card) => {
+            const bucket = summary.csd?.[card.stage] || { count: 0, amount: 0 };
+            return (
+              <button
+                key={card.stage}
+                type="button"
+                className={`card stat stat--${card.tone}`}
+                onClick={() => navigate(`/csd?stage=${card.stage}`)}
+                title={`Open the CSD queue, showing what is ${card.label
+                  .replace('CSD ', '')
+                  .toLowerCase()}`}
+              >
+                <div className="stat__label">{card.label}</div>
+                <div className="stat__value">{bucket.count.toLocaleString('en-IN')}</div>
+                <div className="stat__amount">₹ {formatAmount(bucket.amount)}</div>
+                <div className="stat__hint">{card.hint}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="toolbar">
+        <div className="toolbar__tabs">
+          {TABS.map((tab) => (
+            <button
+              key={tab.status}
+              type="button"
+              className={`tab ${status === tab.status ? 'is-active' : ''}`}
+              onClick={() => selectStatus(tab.status)}
+            >
+              {tab.label}
+              {/* Keyed off the summary having a bucket for this tab, not off
+                  `card` -- that flag decides what appears in the row of cards
+                  above, and a tab kept off the cards still has a count worth
+                  showing. Turnaround has no bucket, so it gets no chip. */}
+              {summary?.[tab.countKey ?? tab.status] && (
+                <span className="tab__count">
+                  {summary[tab.countKey ?? tab.status].count.toLocaleString('en-IN')}
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+
+        <div className="toolbar__actions">
+          {/* One dropdown, two questions -- whichever the tab underneath can
+              answer. Total GRNS is the mixed list, so there it asks which half;
+              everywhere else the rows are already one bucket and the open
+              question is how far through CSD they have got. */}
+          {status === ALL_GRNS ? (
+            <select
+              className="field__input stage-filter"
+              value={matchFilter}
+              onChange={(e) => selectMatchFilter(e.target.value)}
+              aria-label="Filter the table by reconciliation status"
+            >
+              <option value="">All</option>
+              {MATCH_FILTERS.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}
+                  {summary?.[f.value] ? ` (${summary[f.value].count})` : ''}
+                </option>
+              ))}
+            </select>
+          ) : (
+            /* Choosing a value takes the table to Valid GRNS itself rather
+               than being hidden until you get there. The counts come from the
+               same clauses the filter uses, so the number beside an option is
+               the number of rows picking it yields. */
+            <select
+              className="field__input stage-filter"
+              value={progress}
+              onChange={(e) => selectProgress(e.target.value)}
+              aria-label="Filter the table by what the Status column says"
+            >
+              <option value="">All </option>
+              {PROGRESS_FILTERS.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}
+                  {summary?.progress?.[f.value] ? ` (${summary.progress[f.value].count})` : ''}
+                </option>
+              ))}
+            </select>
+          )}
+          <input
+            className="field__input search"
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search vendor, GRN, bill or cheque no."
+            aria-label="Search by vendor name, GRN number, bill number or cheque number"
+          />
+          <button
+            className="ghost"
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+          >
+            {exporting ? 'Preparing…' : 'Export Excel'}
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="alert alert--error">{error}</div>}
+
+      {status === TURNAROUND ? (
+        <TurnaroundView
+          batchId={batchId}
+          q={q}
+          location={location}
+          spans={spans}
+          onSpansChange={setSpans}
+        />
+      ) : loading && !data ? (
+        <div className="loading">Loading…</div>
+      ) : (
+        data && (
+          <>
+            <ResultsTable rows={data.rows} status={status} batchId={batchId} onSent={loadRows} />
+            <div className="pager">
+              <span className="pager__info">
+                {data.total === 0
+                  ? q
+                    ? `Nothing matches "${q}"`
+                    : 'No rows'
+                  : `Showing ${(data.page - 1) * data.pageSize + 1}–${Math.min(
+                      data.page * data.pageSize,
+                      data.total,
+                    )} of ${data.total.toLocaleString('en-IN')}`}
+              </span>
+              <div className="pager__controls">
+                <PageSizeSelect
+                  value={pageSize}
+                  onChange={(n) => {
+                    setPageSize(n);
+                    setPage(1);
+                  }}
+                />
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={data.page <= 1}
+                >
+                  Previous
+                </button>
+                <span className="pager__page">
+                  Page {data.page} of {data.totalPages}
+                </span>
+                <button
+                  className="ghost"
+                  type="button"
+                  onClick={() => setPage((p) => Math.min(data.totalPages, p + 1))}
+                  disabled={data.page >= data.totalPages}
+                >
+                  Next
+                </button>
+              </div>
+            </div>
+          </>
+        )
+      )}
+    </>
+  );
+}

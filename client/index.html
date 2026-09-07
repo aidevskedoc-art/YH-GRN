@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
+    <meta name="theme-color" content="#130e0a" />
+    <meta
+      name="description"
+      content="Yashoda Hospitals - GRN to accounts reconciliation"
+    />
+    <title>Yashoda Hospitals | GRN Reconciliation</title>
+
+    <!--
+      Theme is resolved before first paint. Reading localStorage from a blocking
+      inline script is what stops the light theme flashing behind a dark one on
+      every reload; a React effect runs too late to prevent it.
+    -->
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem('yh.grn.theme');
+          var mode =
+            saved === 'light' || saved === 'dark'
+              ? saved
+              : window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark';
+          document.documentElement.setAttribute('data-theme', mode);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
+
+    <!--
+      Critical background only, so the page does not flash the browser's white
+      before the bundle carrying styles.css arrives. Literals because this runs
+      before any stylesheet - keep in step with --bg in styles.css.
+    -->
+    <style>
+      html[data-theme='dark'] { background: #130e0a; }
+      html[data-theme='light'] { background: #ece3d3; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

@@ -1,0 +1,491 @@
+-- GRN to Accounts reconciliation schema.
+-- Safe to run repeatedly: every statement is guarded with IF NOT EXISTS.
+
+CREATE TABLE IF NOT EXISTS users (
+  id            SERIAL PRIMARY KEY,
+  username      TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  full_name     TEXT,
+  -- ADMIN reaches every screen, manages the other accounts and is the only role
+  -- allowed to correct a date on the GRNS SPAN tab. USER reaches exactly what
+  -- `screens` lists and reads those dates without changing them.
+  role          TEXT NOT NULL DEFAULT 'USER',
+  -- Which screens a USER may open, by route key: upload, results, csd. Empty
+  -- for a new account until an admin ticks something. Ignored for an ADMIN --
+  -- see screensFor() in config/screens.js -- so the administrator cannot be
+  -- locked out of a screen by unticking it.
+  screens       TEXT[] NOT NULL DEFAULT '{}',
+  -- Which department the person belongs to: CSD or ACCOUNTS. A label, not a
+  -- permission -- what an account may open is decided by role and screens above
+  -- and nowhere else. Nullable, because an account whose department nobody has
+  -- stated should read as unstated rather than be filed under a guess.
+  department    TEXT,
+  -- The one branch this account may see, by the location name the branch is
+  -- configured under (branch_configs.location). NULL is every branch, which is
+  -- what an unrestricted account and every account predating this column has.
+  --
+  -- Unlike `department` above, this IS a permission: it is applied to every
+  -- query behind the results and CSD screens, not offered as a filter the
+  -- person can clear. Ignored for an ADMIN -- see branchFor() in
+  -- config/screens.js -- for the same reason `screens` is: the account that
+  -- hands out access cannot be shut out by it.
+  --
+  -- Held as the location text rather than as a foreign key to branch_configs,
+  -- because that is what the two reports are matched by: the ageing report
+  -- knows a DivisionCode and the GRN report writes the location inside a longer
+  -- string, and the branch row is what ties those two spellings to this name.
+  -- Deleting a branch therefore leaves the grant naming a place that is no
+  -- longer configured, which selects nothing -- an account that can see one
+  -- branch's rows should stop seeing them when that branch stops existing.
+  branch_location TEXT,
+  is_active     BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Screen access for a users table created before it existed. Every account that
+-- predates this column is an ADMIN (the old default), so it reaches everything
+-- regardless and the empty array below costs it nothing.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS screens TEXT[] NOT NULL DEFAULT '{}';
+
+-- The default used to be ADMIN, from when the seeded administrator was the only
+-- account. Now that accounts are created from the user management screen, a row
+-- created without a role stated is a standard user. Existing rows keep the role
+-- they already carry.
+ALTER TABLE users ALTER COLUMN role SET DEFAULT 'USER';
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'users_role_check'
+  ) THEN
+    ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('ADMIN', 'USER'));
+  END IF;
+END $$;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS department TEXT;
+
+-- Branch access for a users table created before it existed. Null on every
+-- existing row, which is "every branch" -- adding the column must not quietly
+-- narrow what anybody could already see.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS branch_location TEXT;
+
+-- NULL passes a CHECK, so "not stated" needs no exemption spelled out here.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'users_department_check'
+  ) THEN
+    ALTER TABLE users ADD CONSTRAINT users_department_check
+      CHECK (department IN ('CSD', 'ACCOUNTS'));
+  END IF;
+END $$;
+
+-- Sign-in matches on lower(username), so uniqueness has to be measured the same
+-- way. The UNIQUE on the column itself is case-SENSITIVE, which would let
+-- "kavitha" and "Kavitha" both exist and then have the login query return two
+-- rows for either spelling -- authenticating whichever one Postgres happened to
+-- put first. This index is the constraint that actually matches the lookup.
+--
+-- Guarded rather than created outright: on a database that already carries such
+-- a pair the CREATE would abort the whole migration, and failing to start is a
+-- worse answer than starting with the duplicates flagged. The names are printed
+-- so they can be resolved, and the index is created on the next run.
+DO $$
+DECLARE
+  clashes TEXT;
+BEGIN
+  SELECT string_agg(DISTINCT lower(username), ', ')
+    INTO clashes
+    FROM users
+   GROUP BY lower(username)
+  HAVING COUNT(*) > 1;
+
+  IF clashes IS NULL THEN
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users (lower(username));
+  ELSE
+    RAISE WARNING 'Usernames differing only by case: %. Rename or remove one of each pair, then re-run the migration to enforce it.', clashes;
+  END IF;
+END $$;
+
+-- One upload of the two monthly reports, either of which may be uploaded on
+-- its own -- see the check constraint below.
+CREATE TABLE IF NOT EXISTS upload_batches (
+  id                SERIAL PRIMARY KEY,
+  name              TEXT NOT NULL,
+  -- Nullable on both: a GRN report on its own reconciles as every row PENDING
+  -- (nothing to match against yet), and an ageing report on its own has
+  -- nothing to reconcile but is still stored for the month -- uploading the
+  -- GRN report later is what reconciles it. Null here is "not uploaded", not
+  -- "uploaded and empty".
+  grn_file_name     TEXT,
+  ageing_file_name  TEXT,
+  grn_row_count     INTEGER NOT NULL DEFAULT 0,
+  ageing_row_count  INTEGER NOT NULL DEFAULT 0,
+  uploaded_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  uploaded_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status            TEXT NOT NULL DEFAULT 'COMPLETED'
+);
+
+-- Both reports are now optional; a table created before this change still
+-- carries the old NOT NULLs.
+ALTER TABLE upload_batches ALTER COLUMN grn_file_name DROP NOT NULL;
+ALTER TABLE upload_batches ALTER COLUMN ageing_file_name DROP NOT NULL;
+
+-- An upload naming neither file is not a batch of anything -- the API already
+-- refuses it, and this is the same rule enforced at the table itself.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'upload_batches_has_a_file'
+  ) THEN
+    ALTER TABLE upload_batches ADD CONSTRAINT upload_batches_has_a_file
+      CHECK (grn_file_name IS NOT NULL OR ageing_file_name IS NOT NULL);
+  END IF;
+END $$;
+
+-- Rows from "01. GRN Report" as uploaded, plus derived comparison keys.
+CREATE TABLE IF NOT EXISTS grn_transactions (
+  id               SERIAL PRIMARY KEY,
+  batch_id         INTEGER NOT NULL REFERENCES upload_batches(id) ON DELETE CASCADE,
+  source_row_no    INTEGER,
+  sl_no            INTEGER,
+  warehouse        TEXT,
+  dpr_no           TEXT NOT NULL,
+  dpr_no_key       TEXT NOT NULL,
+  po_no            TEXT,
+  dpr_date         DATE,
+  bill_date        DATE,
+  bill_no          TEXT,
+  bill_no_key      TEXT,
+  dc_no            TEXT,
+  vendor_code      TEXT,
+  vendor_name      TEXT,
+  vendor_name_key  TEXT,
+  bill_amount      NUMERIC(18, 4),
+  transport_amount NUMERIC(18, 4),
+  total_amount     NUMERIC(18, 4),
+  location         TEXT,
+  add_amount       NUMERIC(18, 4),
+  ded_amount       NUMERIC(18, 4)
+);
+
+CREATE INDEX IF NOT EXISTS idx_grn_batch_key ON grn_transactions (batch_id, dpr_no_key);
+
+-- Rows from "02. Vendor ageing report", plus the branch code split out of GRN_NO.
+CREATE TABLE IF NOT EXISTS vendor_ageing (
+  id                   SERIAL PRIMARY KEY,
+  batch_id             INTEGER NOT NULL REFERENCES upload_batches(id) ON DELETE CASCADE,
+  source_row_no        INTEGER,
+  division             TEXT,
+  division_code        TEXT,
+  store_name           TEXT,
+  vendor_name          TEXT,
+  vendor_name_key      TEXT,
+  vendor_code          TEXT,
+  grn_doc              TEXT,
+  grn_no               TEXT,
+  branch_code          TEXT,
+  grn_number           TEXT,
+  grn_number_key       TEXT,
+  bill_no              TEXT,
+  bill_no_key          TEXT,
+  bill_date            DATE,
+  net_amt              NUMERIC(18, 4),
+  adj_pur_return       NUMERIC(18, 4),
+  adjusted_jv          NUMERIC(18, 4),
+  tds_jv               NUMERIC(18, 4),
+  payable_amount       NUMERIC(18, 4),
+  -- The seven checkpoints a bill passes through, in process order. The gaps
+  -- between them are the turnaround report.
+  indent_date          DATE,
+  po_date              DATE,
+  security_date        DATE,
+  grn_date             DATE,
+  bill_to_audit        DATE,
+  bill_handover_to_acc DATE,
+  chq_date             DATE,
+  cheque_clearance_date DATE,
+  payment_doc_no       TEXT,
+  -- The cheque the bill was paid by. Sits between PaymentDocNo and ChqDate on
+  -- the source sheet; text, not a number, because it is an identifier -- a
+  -- leading zero on it is part of the cheque, not a rounding artefact.
+  cheque_no            TEXT,
+  balance              NUMERIC(18, 4)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ageing_batch_key ON vendor_ageing (batch_id, grn_number_key);
+
+-- ---------------------------------------------------------------------------
+-- Migrations for databases created before the turnaround report existed.
+--
+-- CREATE TABLE IF NOT EXISTS above is a no-op on an existing table -- it will
+-- NOT add a column -- so anything added to that block after the first `migrate`
+-- run has to be repeated here as an ALTER. Both forms below are idempotent, and
+-- this whole file is executed on every `npm run migrate`.
+-- ---------------------------------------------------------------------------
+
+-- Uploads used to be labelled by period ("Apr'26"); they are now named freely
+-- by the person uploading. Rename in place so existing labels survive as names.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'upload_batches' AND column_name = 'period_label'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'upload_batches' AND column_name = 'name'
+  ) THEN
+    ALTER TABLE upload_batches RENAME COLUMN period_label TO name;
+  END IF;
+END $$;
+
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS indent_date           DATE;
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS po_date               DATE;
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS security_date         DATE;
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS chq_date              DATE;
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS cheque_no             TEXT;
+
+-- A hand-corrected cheque clearance date, which wins over the one derived from
+-- the bank statement. Separate from cheque_clearance_date above -- that is the
+-- ageing report's own column, which is deliberately never displayed -- so this
+-- one is null until somebody actually types a correction, and clearing it
+-- hands the answer back to the statement.
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS cheque_clearance_override DATE;
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS cheque_clearance_date DATE;
+
+-- The adjustments between NetAmt and PayableAmount, added for the Valid GRNs view.
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS adj_pur_return        NUMERIC(18, 4);
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS adjusted_jv           NUMERIC(18, 4);
+ALTER TABLE vendor_ageing ADD COLUMN IF NOT EXISTS tds_jv                NUMERIC(18, 4);
+
+-- bill_to_audit and bill_handover_to_acc were TEXT holding dd-MM-yyyy, which
+-- displays correctly but cannot be subtracted. Convert in place, guarded on the
+-- current type so a re-run does nothing (to_date() on a DATE would error).
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'vendor_ageing'
+      AND column_name = 'bill_to_audit'
+      AND data_type = 'text'
+  ) THEN
+    ALTER TABLE vendor_ageing
+      ALTER COLUMN bill_to_audit
+        TYPE DATE USING to_date(NULLIF(btrim(bill_to_audit), ''), 'DD-MM-YYYY'),
+      ALTER COLUMN bill_handover_to_acc
+        TYPE DATE USING to_date(NULLIF(btrim(bill_handover_to_acc), ''), 'DD-MM-YYYY');
+  END IF;
+END $$;
+
+-- One row per GRN transaction: did it reach accounts, and did the details agree.
+CREATE TABLE IF NOT EXISTS reconciliation_results (
+  id                 SERIAL PRIMARY KEY,
+  batch_id           INTEGER NOT NULL REFERENCES upload_batches(id) ON DELETE CASCADE,
+  grn_transaction_id INTEGER NOT NULL REFERENCES grn_transactions(id) ON DELETE CASCADE,
+  matched_ageing_id  INTEGER REFERENCES vendor_ageing(id) ON DELETE SET NULL,
+  status             TEXT NOT NULL CHECK (status IN ('MATCHED', 'MATCHED_WITH_DIFF', 'PENDING')),
+  bill_no_match      BOOLEAN,
+  vendor_name_match  BOOLEAN,
+  discrepancy_notes  TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_results_batch_status ON reconciliation_results (batch_id, status);
+CREATE INDEX IF NOT EXISTS idx_results_grn ON reconciliation_results (grn_transaction_id);
+
+-- --------------------------------------------------------------------------
+-- One handover to CSD: a GRN taken off the Valid GRNs tab and passed on.
+--
+-- The details are copied in rather than joined to. A dispatch records what was
+-- sent and when, and it has to outlive the upload it was read from: uploads are
+-- deleted, and next month's report carries the same GRN again with its figures
+-- moved on. A join would either vanish with the batch or quietly start
+-- reporting a different month's numbers against the same handover.
+--
+-- Keyed on dpr_no_key, uniquely: the same GRN cannot be queued twice, and that
+-- uniqueness is what lets the results query left-join this table without
+-- multiplying its rows.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS csd_dispatches (
+  id                SERIAL PRIMARY KEY,
+  dpr_no_key        TEXT NOT NULL UNIQUE,
+  dpr_no            TEXT NOT NULL,
+  division_code     TEXT,
+  dpr_date          DATE,
+  bill_no           TEXT,
+  bill_date         DATE,
+  vendor_code       TEXT,
+  vendor_name       TEXT,
+  ageing_grn_no     TEXT,
+  net_amt           NUMERIC(18, 4),
+  payable_amount    NUMERIC(18, 4),
+  status            TEXT,
+  discrepancy_notes TEXT,
+  -- Where the handover has got to at CSD's end. Distinct from `status` above,
+  -- which is the reconciliation's verdict on the GRN and does not change once
+  -- it is sent; this is CSD's own progress through it.
+  stage             TEXT NOT NULL DEFAULT 'QUEUED'
+                      CHECK (stage IN ('QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED')),
+  stage_at          TIMESTAMPTZ,
+  stage_by          INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  -- One stamp per stage, not just the latest. `stage_at` says when the row last
+  -- moved, which is all the queue screen needs; the turnaround report has to
+  -- measure sent-to-received and received-to-approved separately, and a single
+  -- column would have been overwritten by the second move.
+  received_at       TIMESTAMPTZ,
+  approved_at       TIMESTAMPTZ,
+  rejected_at       TIMESTAMPTZ,
+  -- Which upload it was read from. SET NULL rather than CASCADE: deleting the
+  -- upload must not delete the record that the GRN went to CSD.
+  batch_id          INTEGER REFERENCES upload_batches(id) ON DELETE SET NULL,
+  sent_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sent_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_csd_sent_at ON csd_dispatches (sent_at DESC);
+
+-- The three stage columns for a table created before they existed. A dispatch
+-- that predates them has only ever been queued, which is what the default says.
+--
+-- These run before the index below them: CREATE TABLE above is a no-op on an
+-- existing table, so on that path the column arrives here and nowhere else, and
+-- an index declared over it any earlier has nothing to index.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS stage    TEXT NOT NULL DEFAULT 'QUEUED';
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS stage_at TIMESTAMPTZ;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS stage_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+
+-- The GRN report's Location, carried into the handover's own snapshot like
+-- every other field on this table: the dispatch has to still read correctly
+-- once the upload it was taken from has been deleted, so it cannot be joined
+-- back to grn_transactions for it. Null on every dispatch made before this
+-- column existed -- there is nothing to backfill it from once the batch is gone.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS location TEXT;
+
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMPTZ;
+
+-- A dispatch that reached a stage before these columns existed has the stamp
+-- only in stage_at. Backfill it into the column for the stage it is actually
+-- in, so the turnaround report is not blank for rows that predate this.
+UPDATE csd_dispatches SET received_at = stage_at WHERE stage = 'RECEIVED' AND received_at IS NULL AND stage_at IS NOT NULL;
+UPDATE csd_dispatches SET approved_at = stage_at WHERE stage = 'APPROVED' AND approved_at IS NULL AND stage_at IS NOT NULL;
+UPDATE csd_dispatches SET rejected_at = stage_at WHERE stage = 'REJECTED' AND rejected_at IS NULL AND stage_at IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_csd_stage ON csd_dispatches (stage);
+
+-- Named explicitly so the guard matches whichever way the column arrived: an
+-- inline CHECK in the CREATE TABLE above is auto-named the same thing.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'csd_dispatches_stage_check'
+  ) THEN
+    ALTER TABLE csd_dispatches ADD CONSTRAINT csd_dispatches_stage_check
+      CHECK (stage IN ('QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED'));
+  END IF;
+END $$;
+
+-- --------------------------------------------------------------------------
+-- The bank statement's transaction table (file 06), and nothing else from it.
+--
+-- The sheet around this is a letterhead -- address block, account details, a
+-- statement summary, a page of small print -- and none of it is data. Only the
+-- rows between the two rules are stored.
+--
+-- extracted_cheque_no is the last six digits of chq_ref_no, computed at parse
+-- time rather than derived on read: it is what the statement is matched to the
+-- ageing report by, and an index on a stored column is worth more than the few
+-- bytes it costs. The statement pads a cheque out to fifteen or sixteen
+-- characters ("0000000000066893"), the ageing report writes six ("066893").
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bank_statement_transactions (
+  id                  SERIAL PRIMARY KEY,
+  batch_id            INTEGER NOT NULL REFERENCES upload_batches(id) ON DELETE CASCADE,
+  source_row_no       INTEGER,
+  txn_date            DATE,
+  narration           TEXT,
+  chq_ref_no          TEXT,
+  extracted_cheque_no TEXT,
+  value_date          DATE,
+  withdrawal_amt      NUMERIC(18, 4),
+  deposit_amt         NUMERIC(18, 4),
+  closing_balance     NUMERIC(18, 4)
+);
+
+CREATE INDEX IF NOT EXISTS idx_bank_batch ON bank_statement_transactions (batch_id);
+CREATE INDEX IF NOT EXISTS idx_bank_cheque ON bank_statement_transactions (extracted_cheque_no);
+
+-- The statement is optional, so a batch uploaded without one keeps a null file
+-- name and a zero count rather than being a different kind of batch.
+ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bank_file_name TEXT;
+ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bank_row_count INTEGER NOT NULL DEFAULT 0;
+-- The account the statement was for, read out of its letterhead. Null on an
+-- upload made before this column existed, and on a statement whose letterhead
+-- does not carry one -- neither is an error, the transactions still reconcile.
+ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bank_account_no TEXT;
+
+-- --------------------------------------------------------------------------
+-- Handed to Records.
+--
+-- The other destination a Valid GRN can be sent to, beside CSD. Deliberately
+-- thin: Records has no queue screen and no stages, so nothing here is read back
+-- except the fact that it went. That is why there is no snapshot of the GRN --
+-- unlike csd_dispatches, which has to still describe a handover after its
+-- upload is gone, this is only ever shown beside the results row it belongs to,
+-- and that row carries its own details.
+--
+-- Keyed on dpr_no_key, uniquely, and on the same normKey the reconciliation
+-- matches with -- so sending the same GRN twice, or sending it again from a
+-- newer upload, refreshes the record rather than adding a second one.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS record_dispatches (
+  id         SERIAL PRIMARY KEY,
+  dpr_no_key TEXT NOT NULL UNIQUE,
+  dpr_no     TEXT NOT NULL,
+  -- Which upload it was read from. SET NULL rather than CASCADE: deleting the
+  -- upload must not delete the record that the GRN went to Records.
+  batch_id   INTEGER REFERENCES upload_batches(id) ON DELETE SET NULL,
+  sent_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sent_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_record_sent_at ON record_dispatches (sent_at DESC);
+
+-- --------------------------------------------------------------------------
+-- Branches, as configured.
+--
+-- One row per branch, naming the three things that identify it in the three
+-- files this system reads:
+--
+--   branch_code  the ageing report's DivisionCode           ("SE1")
+--   location     a fragment of the GRN report's Location    ("SECUNDERABAD")
+--   account_no   the account its bank statement is for      ("59219911199911")
+--
+-- `is_selected` is the tick box on the configuration screen, and it scopes what
+-- the results and CSD screens show. It is installation-wide, not per user: a
+-- branch is either in scope for this installation or it is not, and two people
+-- looking at the same figures should be looking at the same rows. With nothing
+-- ticked, nothing is narrowed -- every row is shown, which is what the screens
+-- did before any of this existed.
+--
+-- Nothing here filters an upload. Every row of every file is still stored and
+-- reconciled; this only decides what is displayed, so a branch can be ticked
+-- and unticked without re-uploading anything.
+--
+-- The unique index is on the branch code folded to upper case, because that is
+-- how DivisionCode is matched -- "se1" and "SE1" are one branch, and letting
+-- both exist would double every row they select.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS branch_configs (
+  id          SERIAL PRIMARY KEY,
+  branch_code TEXT NOT NULL,
+  location    TEXT NOT NULL,
+  account_no  TEXT,
+  is_selected BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_branch_code ON branch_configs (upper(branch_code));
+CREATE INDEX IF NOT EXISTS idx_branch_selected ON branch_configs (is_selected);

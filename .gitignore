@@ -1,0 +1,24 @@
+# Secrets - never commit. Use server/.env.example as the template.
+# No leading slash, so these match at any depth -- server/.env included.
+.env
+.env.local
+
+# Dependencies
+node_modules/
+
+# Build output
+client/dist/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Excel lock files created when a report is open
+~$*.xls
+~$*.xlsx
