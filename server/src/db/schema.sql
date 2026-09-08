@@ -171,6 +171,11 @@ CREATE TABLE IF NOT EXISTS grn_transactions (
 
 CREATE INDEX IF NOT EXISTS idx_grn_batch_key ON grn_transactions (batch_id, dpr_no_key);
 
+-- Cross-batch lookups (a later upload matching against an earlier one; see
+-- findLatestByKey in services/ingest.js) filter on dpr_no_key alone, across
+-- every batch, so they need this the other way round from the index above.
+CREATE INDEX IF NOT EXISTS idx_grn_dpr_no_key ON grn_transactions (dpr_no_key, batch_id DESC);
+
 -- Rows from "02. Vendor ageing report", plus the branch code split out of GRN_NO.
 CREATE TABLE IF NOT EXISTS vendor_ageing (
   id                   SERIAL PRIMARY KEY,
@@ -214,6 +219,10 @@ CREATE TABLE IF NOT EXISTS vendor_ageing (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ageing_batch_key ON vendor_ageing (batch_id, grn_number_key);
+
+-- Same reasoning as idx_grn_dpr_no_key above, for the other direction of the
+-- cross-batch lookup.
+CREATE INDEX IF NOT EXISTS idx_ageing_grn_number_key ON vendor_ageing (grn_number_key, batch_id DESC);
 
 -- ---------------------------------------------------------------------------
 -- Migrations for databases created before the turnaround report existed.
@@ -325,7 +334,7 @@ CREATE TABLE IF NOT EXISTS csd_dispatches (
   -- which is the reconciliation's verdict on the GRN and does not change once
   -- it is sent; this is CSD's own progress through it.
   stage             TEXT NOT NULL DEFAULT 'QUEUED'
-                      CHECK (stage IN ('QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED')),
+                      CHECK (stage IN ('QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED', 'MOVED_TO_ACCOUNTS')),
   stage_at          TIMESTAMPTZ,
   stage_by          INTEGER REFERENCES users(id) ON DELETE SET NULL,
   -- One stamp per stage, not just the latest. `stage_at` says when the row last
@@ -361,6 +370,59 @@ ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS stage_by INTEGER REFERENCES 
 -- column existed -- there is nothing to backfill it from once the batch is gone.
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS location TEXT;
 
+-- The rest of the ageing report's own amount breakdown, and the cheque it was
+-- paid by, snapshotted alongside NetAmt and PayableAmount for the same reason
+-- as everything else on this table -- the queue has to still read correctly
+-- once the upload it came from is gone. Null on a dispatch made before these
+-- columns existed.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS adj_pur_return NUMERIC(18, 4);
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS adjusted_jv    NUMERIC(18, 4);
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS tds_jv         NUMERIC(18, 4);
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS cheque_no      TEXT;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS payment_doc_no TEXT;
+-- The day the ageing report says the cheque was cut -- not the day it cleared,
+-- which is read off the bank statement rather than snapshotted here.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS chq_date       DATE;
+
+-- Handing a GRN back to Accounts, once CSD is done with it. MOVED_TO_ACCOUNTS
+-- joins APPROVED and REJECTED as a third resolution CSD can reach from
+-- RECEIVED, so it still counts as a CSD stage and stays visible on that
+-- screen -- but unlike the other two, Accounts then has its own small
+-- acknowledgement to make, which is what accounts_stage tracks: QUEUED the
+-- moment CSD hands it back, RECEIVED once Accounts has picked it up.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS moved_to_accounts_at TIMESTAMPTZ;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS accounts_stage       TEXT
+                                                       CHECK (accounts_stage IN ('QUEUED', 'RECEIVED'));
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS accounts_received_at TIMESTAMPTZ;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS accounts_received_by INTEGER
+                                                       REFERENCES users(id) ON DELETE SET NULL;
+
+-- Where Accounts sends a GRN on to, once they have received it back from CSD.
+-- The last step in its journey -- there is nothing further to acknowledge, so
+-- one set of columns is enough rather than another stage ladder. Name, mobile
+-- and date apply to VENDOR and OTHERS alike, since both hand the GRN to a
+-- person; Bank does not, and is recorded with nothing more than the fact and
+-- the day, which is why those three stay nullable rather than forming their
+-- own NOT NULL columns. Courier hands it to neither a person nor a bank, so it
+-- carries its own two columns below instead of these three.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_to TEXT
+                                                       CHECK (forwarded_to IN ('BANK', 'VENDOR', 'OTHERS', 'COURIER'));
+-- Which of the two doors a VENDOR hand-off went out of -- the vendor directly,
+-- or the purchase department that deals with the vendor on the branch's
+-- behalf. Meaningless, and left null, for BANK and OTHERS.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_route TEXT
+                                                       CHECK (forwarded_route IN ('VENDOR', 'PURCHASE_DEPT'));
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_name   TEXT;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_mobile TEXT;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_date   DATE;
+-- COURIER's own pair, in place of name/mobile: which courier it was handed to
+-- and the docket number it went out under. Null for every other destination.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_courier_name TEXT;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_docket_no    TEXT;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_at     TIMESTAMPTZ;
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_by     INTEGER
+                                                       REFERENCES users(id) ON DELETE SET NULL;
+
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ;
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS rejected_at TIMESTAMPTZ;
@@ -374,17 +436,21 @@ UPDATE csd_dispatches SET rejected_at = stage_at WHERE stage = 'REJECTED' AND re
 
 CREATE INDEX IF NOT EXISTS idx_csd_stage ON csd_dispatches (stage);
 
--- Named explicitly so the guard matches whichever way the column arrived: an
--- inline CHECK in the CREATE TABLE above is auto-named the same thing.
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'csd_dispatches_stage_check'
-  ) THEN
-    ALTER TABLE csd_dispatches ADD CONSTRAINT csd_dispatches_stage_check
-      CHECK (stage IN ('QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED'));
-  END IF;
-END $$;
+-- Named explicitly so this matches whichever way the constraint arrived: an
+-- inline CHECK in the CREATE TABLE above is auto-named the same thing. Dropped
+-- and re-added rather than guarded on existing, so a value added to the list
+-- later (MOVED_TO_ACCOUNTS) reaches a database that already has this
+-- constraint from before that value existed.
+ALTER TABLE csd_dispatches DROP CONSTRAINT IF EXISTS csd_dispatches_stage_check;
+ALTER TABLE csd_dispatches ADD CONSTRAINT csd_dispatches_stage_check
+  CHECK (stage IN ('QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED', 'MOVED_TO_ACCOUNTS'));
+
+-- Same reasoning as csd_dispatches_stage_check above: a database that already
+-- has forwarded_to from before COURIER existed still has the narrower check,
+-- which ADD COLUMN IF NOT EXISTS never revisits.
+ALTER TABLE csd_dispatches DROP CONSTRAINT IF EXISTS csd_dispatches_forwarded_to_check;
+ALTER TABLE csd_dispatches ADD CONSTRAINT csd_dispatches_forwarded_to_check
+  CHECK (forwarded_to IN ('BANK', 'VENDOR', 'OTHERS', 'COURIER'));
 
 -- --------------------------------------------------------------------------
 -- The bank statement's transaction table (file 06), and nothing else from it.
@@ -424,6 +490,16 @@ ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bank_row_count INTEGER NOT N
 -- upload made before this column existed, and on a statement whose letterhead
 -- does not carry one -- neither is an error, the transactions still reconcile.
 ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bank_account_no TEXT;
+
+-- upload_batches_has_a_file predates the bank statement column above and so
+-- only names the other two -- a batch naming just a statement was refused by
+-- this same rule, even though it is stored and useful entirely on its own
+-- (see routes/batches.js). Dropped and re-added every migration run so an
+-- existing database picks up the widened rule: CHECK has no ADD ... IF NOT
+-- EXISTS form to guard just the recreate the way the DO block above did.
+ALTER TABLE upload_batches DROP CONSTRAINT IF EXISTS upload_batches_has_a_file;
+ALTER TABLE upload_batches ADD CONSTRAINT upload_batches_has_a_file
+  CHECK (grn_file_name IS NOT NULL OR ageing_file_name IS NOT NULL OR bank_file_name IS NOT NULL);
 
 -- --------------------------------------------------------------------------
 -- Handed to Records.

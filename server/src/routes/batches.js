@@ -47,10 +47,14 @@ batchesRouter.post(
     // Optional too, the same way round: without the GRN report there is
     // nothing to reconcile, but the ageing rows are still stored for the month
     // -- reconciling them is then just a matter of uploading the GRN report
-    // later. At least one of the two is required; see the check below.
+    // later.
     { name: 'ageingFile', maxCount: 1 },
-    // Optional. The two reports are what the reconciliation runs on; the bank
-    // statement is stored alongside them and reconciled against nothing yet.
+    // Optional as well, and independent of the other two: the statement is
+    // stored and matched to nothing at upload time, but every cheque number in
+    // it is matched by routes/results.js against every ageing row on file, on
+    // every future read -- not just this batch's -- so it is just as usable
+    // uploaded on its own as either report is. At least one of the three files
+    // is required; see the check below.
     { name: 'bankFile', maxCount: 1 },
   ]),
   asyncHandler(async (req, res) => {
@@ -58,8 +62,8 @@ batchesRouter.post(
     const ageingFile = req.files?.ageingFile?.[0];
     const bankFile = req.files?.bankFile?.[0];
 
-    if (!grnFile && !ageingFile) {
-      return res.status(400).json({ error: 'Choose the GRN report, the Vendor Ageing report, or both.' });
+    if (!grnFile && !ageingFile && !bankFile) {
+      return res.status(400).json({ error: 'Choose at least one file: the GRN report, the Vendor Ageing report, or the bank statement.' });
     }
 
     const name = String(req.body.name || '').trim();

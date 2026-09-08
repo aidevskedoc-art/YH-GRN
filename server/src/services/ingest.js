@@ -5,6 +5,7 @@
  * stored with its reconciliation results, or not stored at all.
  */
 import { withTransaction } from '../db/pool.js';
+import { STATUS, matchGrnAgeingPair, indexAgeingByGrnNumber } from './reconcile.js';
 
 /** Rows per multi-row INSERT. Keeps well under Postgres' 65535 parameter cap. */
 const CHUNK_SIZE = 500;
@@ -43,6 +44,28 @@ async function bulkInsert(client, table, columns, rows, toValues) {
   }
 
   return ids;
+}
+
+/**
+ * The most recent row per key, across every batch, restricted to a
+ * caller-supplied set of keys -- an upload only ever needs to ask about the
+ * keys it just saw, not the whole table.
+ *
+ * "Most recent" means the highest batch_id, the same tie-break the "all
+ * uploads" results view uses (see DEDUPED_RESULTS in routes/results.js): a
+ * GRN or ageing row re-uploaded since is a correction, and the newer copy is
+ * the one worth matching against.
+ */
+async function findLatestByKey(client, table, keyColumn, keys, extraColumns) {
+  if (keys.length === 0) return new Map();
+  const { rows } = await client.query(
+    `SELECT DISTINCT ON (${keyColumn}) id, ${keyColumn} AS key, ${extraColumns.join(', ')}
+     FROM ${table}
+     WHERE ${keyColumn} = ANY($1)
+     ORDER BY ${keyColumn}, batch_id DESC, id DESC`,
+    [keys],
+  );
+  return new Map(rows.map((r) => [r.key, r]));
 }
 
 const GRN_COLUMNS = [
@@ -137,15 +160,103 @@ export function saveBatch({
     // its own position, recorded during parsing.
     const ageingIdBySourceRow = new Map(ageingRows.map((r, i) => [r.sourceRowNo, ageingIds[i]]));
 
-    await bulkInsert(client, 'reconciliation_results', RESULT_COLUMNS, results, (r, index) => [
+    /*
+     * reconcile() above only ever paired this upload's own two files. That
+     * misses two situations someone uploading one report at a time hits
+     * constantly:
+     *
+     *  - a GRN uploaded today whose matching ageing row was uploaded last
+     *    week, on its own, days before this GRN report existed to match it;
+     *  - an ageing report uploaded today, on its own, naming a GRN that was
+     *    uploaded last week and has been sitting PENDING ever since.
+     *
+     * Both are the same shape of problem: half the pair is in *this* batch's
+     * freshly-parsed rows and the other half is already sitting in an earlier
+     * batch's table. The fix is to go look for it there.
+     */
+    const grnKeysThisBatch = new Set(grnRows.map((r) => r.dprNoKey).filter(Boolean));
+
+    // This upload's own GRN rows that stayed PENDING after matching against
+    // this upload's own ageing file (if it had one) get a second chance
+    // against whatever ageing row is the latest on file for that GRN number,
+    // from any earlier upload.
+    const pendingDprKeys = [
+      ...new Set(results.filter((r) => r.status === STATUS.PENDING && r.grn.dprNoKey).map((r) => r.grn.dprNoKey)),
+    ];
+    const priorAgeingByKey = await findLatestByKey(client, 'vendor_ageing', 'grn_number_key', pendingDprKeys, [
+      'bill_no_key',
+      'bill_no',
+      'vendor_name_key',
+    ]);
+
+    const upgradedResults = results.map((r) => {
+      if (r.status !== STATUS.PENDING || !r.grn.dprNoKey) return r;
+      const prior = priorAgeingByKey.get(r.grn.dprNoKey);
+      if (!prior) return r;
+      const match = matchGrnAgeingPair(r.grn, {
+        billNoKey: prior.bill_no_key,
+        billNo: prior.bill_no,
+        vendorNameKey: prior.vendor_name_key,
+      });
+      return { ...r, ...match, priorAgeingId: prior.id };
+    });
+
+    await bulkInsert(client, 'reconciliation_results', RESULT_COLUMNS, upgradedResults, (r, index) => [
       batchId,
       grnIds[index],
-      r.ageing ? ageingIdBySourceRow.get(r.ageing.sourceRowNo) ?? null : null,
+      r.ageing ? ageingIdBySourceRow.get(r.ageing.sourceRowNo) ?? null : (r.priorAgeingId ?? null),
       r.status,
       r.billNoMatch,
       r.vendorNameMatch,
       r.discrepancyNotes,
     ]);
+
+    // The other direction: this upload's own ageing rows that name a GRN
+    // number no GRN row in this same upload carries. Those keys are looked up
+    // among every earlier upload's GRN rows instead, and a fresh result is
+    // stored -- against that earlier GRN row's own id, since this batch never
+    // stored one of its own for it -- so the newer upload is what the "all
+    // uploads" view now shows for that GRN (it dedupes by highest batch_id;
+    // see DEDUPED_RESULTS in routes/results.js).
+    const { index: ageingIndex } = indexAgeingByGrnNumber(ageingRows);
+    const ageingOnlyKeys = [...ageingIndex.keys()].filter((key) => !grnKeysThisBatch.has(key));
+    const priorGrnByKey = await findLatestByKey(client, 'grn_transactions', 'dpr_no_key', ageingOnlyKeys, [
+      'bill_no_key',
+      'bill_no',
+      'vendor_name_key',
+    ]);
+
+    const crossBatchResults = [];
+    for (const key of ageingOnlyKeys) {
+      const priorGrn = priorGrnByKey.get(key);
+      // No GRN by that number has ever been uploaded -- the ageing row is
+      // stored (above) with nothing yet to reconcile it against, same as
+      // when the two arrive together and one side has no match.
+      if (!priorGrn) continue;
+
+      const ageingRow = ageingIndex.get(key);
+      const match = matchGrnAgeingPair(
+        { billNoKey: priorGrn.bill_no_key, billNo: priorGrn.bill_no, vendorNameKey: priorGrn.vendor_name_key },
+        ageingRow,
+      );
+      crossBatchResults.push({
+        grnTransactionId: priorGrn.id,
+        matchedAgeingId: ageingIdBySourceRow.get(ageingRow.sourceRowNo) ?? null,
+        ...match,
+      });
+    }
+
+    if (crossBatchResults.length > 0) {
+      await bulkInsert(client, 'reconciliation_results', RESULT_COLUMNS, crossBatchResults, (r) => [
+        batchId,
+        r.grnTransactionId,
+        r.matchedAgeingId,
+        r.status,
+        r.billNoMatch,
+        r.vendorNameMatch,
+        r.discrepancyNotes,
+      ]);
+    }
 
     // Optional, and reconciled against nothing: the statement is stored as it
     // was read, for matching later by extracted_cheque_no.

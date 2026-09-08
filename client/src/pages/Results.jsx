@@ -8,6 +8,7 @@ import TurnaroundView from '../components/TurnaroundView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
+import { IconX } from '../components/icons.jsx';
 
 /** How long the search box waits for the typing to stop before it asks. */
 const SEARCH_DELAY_MS = 300;
@@ -16,10 +17,11 @@ const SEARCH_DELAY_MS = 300;
  * Pending first: it is the answer the report is run to get.
  *
  * Valid GRNS is both matched statuses at once. A GRN found in the ageing report
- * has reached accounts even when the bill number or the vendor spelling differ,
- * so those rows are counted as valid rather than held in a separate "needs
- * review" bucket; the difference is still shown per row, in the table's last
- * column, for anyone who wants to check it.
+ * has reached accounts even when the bill number differs, so those rows are
+ * counted as valid rather than held in a separate "needs review" bucket; the
+ * difference is still stored per row (`discrepancyNotes`), for anyone who
+ * reads it off the API directly, though neither the screen nor the export
+ * shows it any more.
  *
  * Turnaround is `card: false` because it is not a reconciliation bucket. The
  * other two partition every GRN and each has a count and a value; Turnaround
@@ -45,9 +47,9 @@ const TABS = [
   // Still a tab, no longer a card. The row of cards now follows one GRN's
   // journey onward -- valid, then through CSD -- and a Pending count is the
   // population that journey has not started for. The tab keeps its own count.
-  { status: 'PENDING', label: 'Pending', hint: 'Not yet in accounts', card: false },
-  { status: VALID, label: 'Moved To Accounts ', hint: 'Found in the ageing report' },
-  { status: TURNAROUND, label: 'GRNS SPAN', hint: 'Days at each step', card: false },
+  { status: 'PENDING', label: 'Pending GRNS', hint: 'Not yet in accounts', card: false },
+  { status: VALID, label: 'Accounts ', hint: 'Found in the ageing report' },
+  { status: TURNAROUND, label: 'GRN age from PR to Bank', hint: 'Days at each step', card: false },
 ];
 
 const CARD_TABS = TABS.filter((t) => t.card !== false);
@@ -98,15 +100,41 @@ const MATCH_FILTERS = [
  * They deliberately overlap, because the column does. A GRN whose cheque
  * cleared while it sat at CSD shows both, and is found under both.
  */
-const PROGRESS_FILTERS = [
-  // { value: 'NOT_SENT', label: 'Not sent' },
-  { value: 'QUEUED', label: 'Sent to CSD' },
-  { value: 'RECORDS', label: 'Sent to Records' },
-  { value: 'RECEIVED', label: 'CSD received' },
-  { value: 'APPROVED', label: 'CSD approved' },
-  { value: 'REJECTED', label: 'CSD rejected' },
-  { value: 'CLEARED', label: 'Cheque cleared' },
-];
+const PROGRESS_LABELS = {
+  // NOT_SENT: 'Not sent',
+  QUEUED: 'Sent to CSD',
+  RECEIVED: 'CSD received',
+  APPROVED: 'CSD approved',
+  REJECTED: 'CSD rejected',
+  // Accounts' own hand-back ladder, once CSD reaches MOVED_TO_ACCOUNTS -- see
+  // ACCOUNTS_RETURN_STATES in ResultsTable.jsx for the same two labels.
+  RETURNED_BY_CSD: 'Returned by CSD',
+  ACCOUNTS_RECEIVED: 'Accounts received',
+  // Where Accounts forwards a received GRN on to -- see forwardedLabel in
+  // ResultsTable.jsx for the same four labels.
+  BANK: 'Sent to Bank',
+  VENDOR: 'Sent to Vendor',
+  PURCHASE_DEPT: 'Sent to Purchase Dept',
+  OTHERS: 'Sent to Others',
+  RECORDS: 'Sent to Records',
+  CLEARED: 'Cheque cleared',
+};
+
+/** This list's own order -- a GRN's life rather than the alphabet -- for the
+ * keys it knows the wording for. Anything summary.progress carries that is
+ * not named here still gets offered (see `progressFilters` below); it just
+ * falls in after these, in whatever order the server sent it. */
+const PROGRESS_ORDER = Object.keys(PROGRESS_LABELS);
+
+/**
+ * A status key this list has no wording for yet -- a new value the server
+ * started sending -- spelled out on the fly ("IN_TRANSIT" -> "In transit")
+ * rather than left off the dropdown until someone edits this file to name it.
+ */
+function fallbackProgressLabel(key) {
+  const words = key.toLowerCase().replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 const CSD_CARDS = [
   { stage: 'QUEUED', label: 'CSD Pending', hint: 'Sent, awaiting CSD', tone: 'queued' },
@@ -133,7 +161,9 @@ const ALL = 'all';
 /** The `:batchId` segment as a batch id, the all sentinel, or null. */
 function parseBatchId(param) {
   if (!param) return null;
-  return String(param).toLowerCase() === ALL ? ALL : Number(param);
+  if (String(param).toLowerCase() === ALL) return ALL;
+  const n = Number(param);
+  return Number.isInteger(n) && n > 0 ? n : null;
 }
 
 /**
@@ -154,7 +184,7 @@ function batchDescription(batch) {
 }
 
 export default function Results() {
-  const { isAdmin } = useAuth();
+  const { isAdmin, can } = useAuth();
   const { batchId: batchIdParam } = useParams();
   const navigate = useNavigate();
 
@@ -188,6 +218,15 @@ export default function Results() {
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
+
+  // Sending several GRNs paid by the same cheque to CSD in one action, instead
+  // of one dropdown per row. `multiMode` is the checkbox column showing at
+  // all; `selected` is which GRN numbers are ticked within it. Both live here
+  // rather than in ResultsTable because the toggle and the bulk send button
+  // sit in this page's toolbar, beside the search box.
+  const [multiMode, setMultiMode] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkSending, setBulkSending] = useState(false);
 
   // `search` is what is in the box; `q` is what has been asked for. Typing
   // "SRI VENKATESWARA" would otherwise be sixteen round trips.
@@ -254,6 +293,83 @@ export default function Results() {
 
   useEffect(loadRows, [loadRows]);
 
+  // A ticked GRN belongs to the page of rows it was ticked on -- changing any
+  // of that page's own inputs invalidates the selection rather than carrying
+  // it, silently, onto a different set of rows.
+  useEffect(() => {
+    setSelected(new Set());
+    setMultiMode(false);
+  }, [batchId, rowStatus, page, pageSize, q, progress, location]);
+
+  /**
+   * Whether a row may join the bulk send: the same rows the table's own
+   * per-row dropdown offers "Send to CSD" on -- reached accounts, not already
+   * sent or filed to Records, not past CSD already -- and only when this
+   * account has access to CSD at all.
+   */
+  const canBulkSelect = (row) =>
+    can('csd') &&
+    row.status !== 'PENDING' &&
+    row.csdStage !== 'MOVED_TO_ACCOUNTS' &&
+    !row.csdSent &&
+    !row.recordsSent;
+
+  /**
+   * Ticking one row also ticks every other row on the page still eligible
+   * that shares its cheque number -- a cheque pays a group of GRNs together,
+   * so selecting one of them is read as meaning the whole group. Unticking
+   * only lets go of the one row: narrowing the group back down is a
+   * deliberate choice, not one this page should second-guess by dragging the
+   * rest off with it.
+   */
+  function toggleSelectRow(row) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(row.dprNo)) {
+        next.delete(row.dprNo);
+        return next;
+      }
+      next.add(row.dprNo);
+      if (row.chequeNo) {
+        for (const r of data?.rows || []) {
+          if (r.chequeNo === row.chequeNo && canBulkSelect(r)) next.add(r.dprNo);
+        }
+      }
+      return next;
+    });
+  }
+
+  function exitMultiMode() {
+    setMultiMode(false);
+    setSelected(new Set());
+  }
+
+  /**
+   * Send every ticked row to CSD in one go. Each still goes over as its own
+   * POST -- the server has no bulk endpoint of its own -- but firing them
+   * together and reloading once is what makes it read as one action rather
+   * than one dropdown per row.
+   */
+  async function sendSelectedToCsd() {
+    const targets = (data?.rows || []).filter((row) => selected.has(row.dprNo));
+    if (targets.length === 0) return;
+    setBulkSending(true);
+    setError('');
+    try {
+      await Promise.all(
+        targets.map((row) =>
+          api.sendToCsd({ ...row, batchId: typeof batchId === 'number' ? batchId : null }),
+        ),
+      );
+      exitMultiMode();
+      loadRows();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBulkSending(false);
+    }
+  }
+
   function selectBatch(id) {
     setBatchId(id);
     setPage(1);
@@ -306,9 +422,9 @@ export default function Results() {
     setExporting(true);
     setError('');
     try {
-      // The tab decides the sheet's shape; the filter decides which rows go in
-      // it -- so a filtered Total GRNS exports as Total GRNS, with half the rows.
-      await exportResults(batchId, status, q, progress, rowStatus, location, spans);
+      // One workbook, every tab -- see the note on exportResults for why the
+      // progress dropdown and the Total GRNS match filter do not narrow it.
+      await exportResults(batchId, TABS, { q, location, spans });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -348,6 +464,24 @@ export default function Results() {
 
   const isAll = batchId === ALL;
   const activeBatch = batches.find((b) => b.id === batchId);
+
+  // The progress dropdown's own options: every key the server's summary
+  // carries (see PROGRESS in routes/results.js), not a fixed list copied out
+  // of it -- so a key added there shows up here the next time the summary
+  // loads, with no matching edit needed in this file. Ordered by
+  // PROGRESS_ORDER where this list knows the wording, and by arrival after
+  // that for anything it doesn't.
+  const progressFilters = Object.keys(summary?.progress ?? {})
+    .filter((key) => key !== 'NOT_SENT')
+    .sort((a, b) => {
+      const ia = PROGRESS_ORDER.indexOf(a);
+      const ib = PROGRESS_ORDER.indexOf(b);
+      if (ia === -1 && ib === -1) return 0;
+      if (ia === -1) return 1;
+      if (ib === -1) return -1;
+      return ia - ib;
+    })
+    .map((key) => ({ value: key, label: PROGRESS_LABELS[key] || fallbackProgressLabel(key) }));
 
   return (
     <>
@@ -406,7 +540,16 @@ export default function Results() {
               ))}
             </select>
           </label>
-         
+
+          {/* One workbook, every tab -- see the note on exportResults for why
+              the progress dropdown and the Total GRNS match filter do not
+              narrow it. Sits beside Delete upload since both act on the
+              upload as a whole, rather than down with the table's own
+              filters, which act on the rows they narrow. */}
+          <button className="ghost" type="button" onClick={handleExport} disabled={exporting}>
+            {exporting ? 'Preparing…' : 'Export Excel'}
+          </button>
+
           {/* Administrators only, and never when every upload is in scope --
               there is no single one to delete then. Being given the upload
               screen is permission to add a month's reports, not to remove one:
@@ -489,8 +632,10 @@ export default function Results() {
         <div className="toolbar__actions">
           {/* One dropdown, two questions -- whichever the tab underneath can
               answer. Total GRNS is the mixed list, so there it asks which half;
-              everywhere else the rows are already one bucket and the open
-              question is how far through CSD they have got. */}
+              Accounts is already one bucket and the open question there is how
+              far through CSD its rows have got. Pending GRNS has no ageing
+              entry and so no Status column for either question to be about, so
+              it gets no dropdown at all. */}
           {status === ALL_GRNS ? (
             <select
               className="field__input stage-filter"
@@ -506,7 +651,7 @@ export default function Results() {
                 </option>
               ))}
             </select>
-          ) : (
+          ) : status === 'PENDING' ? null : (
             /* Choosing a value takes the table to Valid GRNS itself rather
                than being hidden until you get there. The counts come from the
                same clauses the filter uses, so the number beside an option is
@@ -518,7 +663,7 @@ export default function Results() {
               aria-label="Filter the table by what the Status column says"
             >
               <option value="">All </option>
-              {PROGRESS_FILTERS.map((f) => (
+              {progressFilters.map((f) => (
                 <option key={f.value} value={f.value}>
                   {f.label}
                   {summary?.progress?.[f.value] ? ` (${summary.progress[f.value].count})` : ''}
@@ -534,14 +679,40 @@ export default function Results() {
             placeholder="Search vendor, GRN, bill or cheque no."
             aria-label="Search by vendor name, GRN number, bill number or cheque number"
           />
-          <button
-            className="ghost"
-            type="button"
-            onClick={handleExport}
-            disabled={exporting}
-          >
-            {exporting ? 'Preparing…' : 'Export Excel'}
-          </button>
+
+          {/* Sending several GRNs paid by the same cheque to CSD at once,
+              rather than one dropdown per row -- only where a row could be
+              sent to CSD in the first place. The toggle doubles as its own
+              cancel: once a selection is open, pressing it again is the same
+              button reading a cross rather than a second control beside it. */}
+          {status !== 'PENDING' && status !== TURNAROUND && can('csd') && (
+            <>
+             
+              {multiMode && (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={sendSelectedToCsd}
+                  disabled={selected.size === 0 || bulkSending}
+                >
+                  {bulkSending
+                    ? 'Sending…'
+                    : selected.size > 0
+                      ? `Send ${selected.size} to CSD`
+                      : 'Send to CSD'}
+                </button>
+              )}
+               <button
+                type="button"
+                className={multiMode ? 'ghost icon-btn' : 'ghost'}
+                onClick={() => (multiMode ? exitMultiMode() : setMultiMode(true))}
+                title={multiMode ? 'Cancel selecting' : 'Select multiple GRNs to send to CSD together'}
+                aria-label={multiMode ? 'Cancel selecting' : 'Select multiple GRNs to send to CSD together'}
+              >
+                {multiMode ? <IconX size={14} /> : 'Select multiple'}
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -560,7 +731,15 @@ export default function Results() {
       ) : (
         data && (
           <>
-            <ResultsTable rows={data.rows} status={status} batchId={batchId} onSent={loadRows} />
+            <ResultsTable
+              rows={data.rows}
+              status={status}
+              batchId={batchId}
+              onSent={loadRows}
+              multiMode={multiMode}
+              selected={selected}
+              onToggleRow={toggleSelectRow}
+            />
             <div className="pager">
               <span className="pager__info">
                 {data.total === 0

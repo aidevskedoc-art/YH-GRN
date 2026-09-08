@@ -150,7 +150,7 @@ export const api = {
      has been deleted or replaced by the next month's. */
 
   /**
-   * The queue, newest handover first, plus the four stage counts the cards read.
+   * The queue, newest handover first, plus the five stage counts the cards read.
    * Those counts follow `q` but not `stage` -- they are how a stage is picked.
    * `all` drops the pagination, for export.
    */
@@ -196,6 +196,23 @@ export const api = {
    * nothing comes back from it but the fact that the GRN went.
    */
   sendToRecords: (row) => request('/records', { method: 'POST', body: row }),
+
+  /**
+   * Acknowledge one GRN CSD marked Moved to accounts, by its CSD dispatch id
+   * -- the results table's own Action column offers this once csdStage
+   * reaches MOVED_TO_ACCOUNTS, rather than a queue screen of its own.
+   */
+  receiveAccountsReturn: (id) => request(`/accounts-returns/${id}/receive`, { method: 'PATCH' }),
+
+  /**
+   * Accounts' last move on a GRN: where it goes on to. `body` is
+   * `{ to: 'BANK' | 'VENDOR' | 'OTHERS' | 'COURIER' }`, plus `route` when `to`
+   * is 'VENDOR', `name`/`mobile`/`date` when `to` is 'VENDOR' or 'OTHERS', and
+   * `courierName`/`docketNo` when `to` is 'COURIER' -- Bank needs nothing
+   * further.
+   */
+  forwardAccountsReturn: (id, body) =>
+    request(`/accounts-returns/${id}/forward`, { method: 'PATCH', body }),
 
   /* --- Branches ------------------------------------------------------------
      What a branch is called in each of the three files, and which branches are

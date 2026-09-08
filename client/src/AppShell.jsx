@@ -33,7 +33,7 @@ const NARROW = '(max-width: 940px)';
  * link to a screen you cannot open is not information, it is a dead end.
  */
 const NAV = [
-  { to: '/upload', label: 'New reconciliation', icon: IconUpload, end: true, screen: 'upload' },
+  { to: '/upload', label: 'New uploads', icon: IconUpload, end: true, screen: 'upload' },
   // end:false so /results/:batchId keeps the entry highlighted.
   { to: '/results', label: 'Results', icon: IconReport, end: false, badge: true, screen: 'results' },
   { to: '/csd', label: 'CS Departmemt', icon: IconDepartment, end: true, screen: 'csd' },
@@ -140,18 +140,6 @@ export default function AppShell() {
       <aside className="sidebar">
         <div className="sidebar-head">
           <BrandLockup size={30} onDark subtitle="GRN Reconciliation" showText={!collapsed} />
-          {!narrow && (
-            <button
-              type="button"
-              className="rail-toggle"
-              onClick={() => setCollapsed((v) => !v)}
-              title={railLabel}
-              aria-label={railLabel}
-              aria-expanded={!collapsed}
-            >
-              {collapsed ? <IconChevronRight size={14} /> : <IconChevronLeft size={14} />}
-            </button>
-          )}
         </div>
 
         <nav className="sidenav">
@@ -190,6 +178,24 @@ export default function AppShell() {
           </div>
         </div>
       </aside>
+
+      {/* A sibling of .sidebar rather than nested inside it: the rail is
+          overflow:hidden to contain its own glow (see .sidebar::before in
+          styles.css), which clipped the half of this button meant to poke
+          past the rail's edge into the seam with the page. Sitting outside
+          that box, it is positioned off .app-shell instead - see .rail-toggle. */}
+      {!narrow && (
+        <button
+          type="button"
+          className="rail-toggle"
+          onClick={() => setCollapsed((v) => !v)}
+          title={railLabel}
+          aria-label={railLabel}
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? <IconChevronRight size={14} /> : <IconChevronLeft size={14} />}
+        </button>
+      )}
 
       {drawer && (
         <button type="button" className="scrim" aria-label="Close menu" onClick={() => setDrawer(false)} />

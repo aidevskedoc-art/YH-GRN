@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { formatAmount, formatDate } from './ResultsTable.jsx';
+import { formatAmount, formatAmountOrDash, formatDate } from './ResultsTable.jsx';
 import SpanPicker from './SpanPicker.jsx';
 import { CHECKPOINTS, spanDays, spanId, spanLabel, stageLabel, totalDays } from '../services/stages.js';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
@@ -187,11 +187,11 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
     ? CHECKPOINTS.filter((c) => spans.some((s) => s.from === c.key || s.to === c.key))
     : CHECKPOINTS;
 
-  // Eight fixed columns, a day count per stage or span, the row total where
+  // Thirteen fixed columns, a day count per stage or span, the row total where
   // there is one, then the dates -- the same width the two header rows span
   // between them.
   const columnCount =
-    8 + dayColumns.length + (custom ? 0 : 1) + dateColumns.length + (isAdmin ? 1 : 0);
+    13 + dayColumns.length + (custom ? 0 : 1) + dateColumns.length + (isAdmin ? 1 : 0);
 
   // An upload made before the stage dates were captured has rows but no dates.
   // Guarded on isEmpty: with nothing in scope every stage is empty too, and
@@ -245,7 +245,7 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
         <table className="table">
           <thead>
             <tr>
-              <th className="table__group" colSpan="8">Particulars</th>
+              <th className="table__group" colSpan="13">Particulars</th>
               <th className="table__group" colSpan={dayColumns.length + (custom ? 0 : 1)}>
                 Days taken
               </th>
@@ -263,21 +263,31 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
                   or one bill, and a value tucked under another is neither
                   sortable by eye down the column nor findable at a glance. The
                   order matches the results table: division, then GRN, then the
-                  bill, then who it is from. */}
-              <th>Division</th>
-              <th className="table__pin">GRN No</th>
+                  bill and its date, then who it is from. */}
+              <th className="table__pin table__pin--division">Division</th>
+              <th className="table__pin table__pin--grn">GRN No</th>
               <th>Bill No</th>
+              <th>Bill Date</th>
               <th>Vendor</th>
-              {/* The code beside the name rather than nowhere, and Location
-                  beside it, matching the results and CSD tables column for
-                  column so the three screens read the same way. */}
+              {/* The code beside the name rather than nowhere, matching the
+                  results and CSD tables column for column so the three
+                  screens read the same way. */}
               <th>Vendor Code</th>
-              <th>Location</th>
+              {/* The GRN report's own amount breakdown, ahead of
+                  PayableAmount -- the same four columns and the same order as
+                  Total GRNS and Pending. */}
+              <th className="table__num">Bill.Amount</th>
+              <th className="table__num">Transport Amount</th>
+              <th className="table__num">Add.Amount</th>
+              <th className="table__num">Ded.Amount</th>
               <th className="table__num">PayableAmount</th>
               {/* The cheque the bill was paid by. It sits with the identifiers
                   rather than in the Reached group: it is not a checkpoint, it
                   is what the clearance date over there was matched on. */}
               <th>Cheque No</th>
+              {/* The ageing report's payment document number, right after the
+                  cheque it belongs to. */}
+              <th>PaymentDocNo</th>
                 {dayColumns.map((c) => (
                 <th key={c.key} className="table__num">
                   {c.label}
@@ -317,21 +327,30 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
               const isEditing = row.csdId != null && editingRow === row.csdId;
               return (
               <tr key={row.dprNo} className={isEditing ? 'is-editing' : undefined}>
-                <td>{row.divisionCode || <span className="table__miss">&mdash;</span>}</td>
-                <td className="table__mono table__pin">{row.dprNo}</td>
+                <td className="table__pin table__pin--division">
+                  {row.divisionCode || <span className="table__miss">&mdash;</span>}
+                </td>
+                <td className="table__mono table__pin table__pin--grn">{row.dprNo}</td>
                 <td className="table__mono">
                   {row.billNo || <span className="table__miss">&mdash;</span>}
                 </td>
+                <td><DateText value={row.billDate} /></td>
                 <td>{row.vendorName}</td>
                 <td className="table__mono">
                   {row.vendorCode || <span className="table__miss">&mdash;</span>}
                 </td>
-                <td>{row.location || <span className="table__miss">&mdash;</span>}</td>
+                <td className="table__num">{formatAmountOrDash(row.billAmount)}</td>
+                <td className="table__num">{formatAmountOrDash(row.transportAmount)}</td>
+                <td className="table__num">{formatAmountOrDash(row.addAmount)}</td>
+                <td className="table__num">{formatAmountOrDash(row.dedAmount)}</td>
                 <td className="table__num">{formatAmount(row.payableAmount)}</td>
                 <td className="table__mono">
                   {row.chequeNo || <span className="table__miss">&mdash;</span>}
                 </td>
-            
+                <td className="table__mono">
+                  {row.paymentDocNo || <span className="table__miss">&mdash;</span>}
+                </td>
+
                 {dayColumns.map((c) => (
                   <td key={c.key} className="table__num">
                     {/* A stage comes measured from the server; a span is

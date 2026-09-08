@@ -23,15 +23,18 @@ import { daysBetween } from './normalize.js';
  * order, the two dates each stage measures between, and the arithmetic.
  *
  * The first six run on the ageing report's own hand-entered checkpoints. The
- * last three cover the CSD handover, whose dates are stamps this application
- * wrote when someone pressed a button -- Send to CSD, then the status dropdown.
+ * rest cover the CSD handover and what Accounts does with it afterwards,
+ * whose dates are all stamps this application wrote when someone pressed a
+ * button -- Send to CSD, then the status dropdown, then Received / Send to
+ * Bank / Send to Vendor / Others on the Accounts side.
  *
  * chequeToCsd is the join between the two: it is the only CSD stage with one
  * foot in the ageing report, measuring from the cheque to the day the GRN was
- * handed on. The other two are stamp-to-stamp.
+ * handed on. The rest are stamp-to-stamp.
  *
- * `csd: true` marks all three. Their CSD end cannot carry a typo -- there is no
- * source to correct it in -- so dataQuality below leaves them out of its checks.
+ * `csd: true` marks every stamp-to-stamp stage. Their end cannot carry a typo
+ * -- there is no source to correct it in -- so dataQuality below leaves them
+ * out of its checks.
  */
 export const STAGES = [
   { key: 'prToPo', from: 'indentDate', to: 'poDate' },
@@ -43,6 +46,13 @@ export const STAGES = [
   { key: 'chequeToCsd', from: 'chqDate', to: 'sentToCsd', csd: true },
   { key: 'csdToReceived', from: 'sentToCsd', to: 'csdReceived', csd: true },
   { key: 'receivedToApproved', from: 'csdReceived', to: 'csdApproved', csd: true },
+  // CSD's approval to the day it was handed back to Accounts.
+  { key: 'approvedToMovedToAccounts', from: 'csdApproved', to: 'movedToAccountsAt', csd: true },
+  // The queue wait: handed back to Accounts, to Accounts acknowledging it.
+  { key: 'movedToAccountsToReceived', from: 'movedToAccountsAt', to: 'accountsReceivedAt', csd: true },
+  // Accounts' acknowledgement to whichever of Bank / Vendor / Others it was
+  // sent on to -- the last stamp this application writes on a GRN.
+  { key: 'receivedToForwarded', from: 'accountsReceivedAt', to: 'forwardedAt', csd: true },
   // The last leg, and the one that closes the loop: from CSD's approval to the
   // day the bank actually parted with the money.
   //
@@ -50,7 +60,10 @@ export const STAGES = [
   // "once CSD cleared it, how long until the vendor was really paid" rather
   // than how long the cheque sat in the banking system. That makes it the only
   // stage spanning both records -- CSD's own stamp at one end, the bank
-  // statement at the other.
+  // statement at the other. It runs alongside the Accounts hand-back rather
+  // than after it -- the bank can clear a cheque before or after Accounts
+  // finishes with the paperwork -- so it still measures from csdApproved
+  // rather than from forwardedAt.
   //
   // Null unless BOTH ends exist: a GRN CSD have not approved has no start, and
   // one whose cheque bounced or is in no statement has no end. A returned

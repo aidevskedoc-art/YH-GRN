@@ -7,7 +7,7 @@ import { pool } from './db/pool.js';
 import { authRouter } from './routes/auth.js';
 import { usersRouter } from './routes/users.js';
 import { batchesRouter } from './routes/batches.js';
-import { resultsRouter, ageingRouter, recordsRouter } from './routes/results.js';
+import { resultsRouter, ageingRouter, recordsRouter, accountsReturnsRouter } from './routes/results.js';
 import { csdRouter } from './routes/csd.js';
 import { configRouter } from './routes/config.js';
 import { errorHandler } from './middleware/error.js';
@@ -44,6 +44,10 @@ app.use('/api/config', configRouter);
 // The other destination on a Valid GRNs row. One route, no screen of its own --
 // see the Records section at the foot of routes/results.js.
 app.use('/api/records', recordsRouter);
+// GRNs CSD has handed back to Accounts. Its own resource for the same reason
+// the CSD queue is: it outlives the batch and the CSD dispatch it started
+// from -- see the section at the foot of routes/results.js.
+app.use('/api/accounts-returns', accountsReturnsRouter);
 app.use('/api/batches', batchesRouter);
 
 // Serve the built client if it exists, so `npm start` alone runs the whole app.

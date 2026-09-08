@@ -368,6 +368,7 @@ code, .mono {
    ========================================================================== */
 
 .app-shell {
+  position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   min-height: 100vh;
@@ -434,9 +435,23 @@ code, .mono {
 .brand-lockup.on-dark .brand-name { color: #fff; }
 .brand-lockup.on-dark .brand-sub { color: rgba(255, 255, 255, 0.55); }
 
+/* Sits on the seam between the rail and the page, half over each -- which is
+   why it is a sibling of .sidebar in AppShell.jsx rather than nested inside
+   it. .sidebar is overflow:hidden to contain its own glow (see
+   .sidebar::before below), and that clipped the half of this button meant to
+   poke past the rail's edge. .app-shell (position: relative) is the
+   positioned ancestor instead, so `left` is pinned to the rail width and
+   never gets clipped by it.
+
+   z-index sits above both .sidebar (40) and .topbar (30, inside .app-main)
+   so the button is never painted over by either as they scroll or animate --
+   the actual bug report this fixed. */
 .rail-toggle {
-  margin-left: auto;
-  flex: none;
+  position: absolute;
+  top: calc(var(--topbar-h) / 2);
+  left: calc(var(--sidebar-w) - 12px);
+  transform: translateY(-50%);
+  z-index: 41;
   display: grid;
   place-items: center;
   width: 24px;
@@ -448,9 +463,12 @@ code, .mono {
   color: rgba(255, 255, 255, 0.72);
   cursor: pointer;
   box-shadow: none;
-  transition: background 0.14s, color 0.14s;
+  transition: left 0.18s ease, background 0.14s, color 0.14s;
 }
 .rail-toggle:hover { background: var(--brand-200); color: #fff; }
+/* Follows the rail's own width when collapsed, same transition as the grid
+   columns it tracks (see .app-shell.collapsed) so the two move together. */
+.app-shell.collapsed .rail-toggle { left: calc(var(--sidebar-w-collapsed) - 12px); }
 
 .sidenav {
   position: relative;
@@ -579,7 +597,11 @@ code, .mono {
    the drawer breakpoint the sidebar is an overlay and always shows its labels,
    so the collapse rules are scoped rather than undone. */
 @media (min-width: 941px) {
-  .app-shell.collapsed .sidebar-head { padding: 0; justify-content: center; }
+  /* Padding-right reserves the corner .rail-toggle sits over -- it is no
+     longer part of this row's flow (see the note on .rail-toggle) but still
+     visually lands here, so centering the logo in what's left of the row
+     doesn't centre it under the button. */
+  .app-shell.collapsed .sidebar-head { padding: 0 38px 0 0; justify-content: center; }
   .app-shell.collapsed .brand-text,
   .app-shell.collapsed .nav-label,
   .app-shell.collapsed .nav-count,
@@ -713,7 +735,7 @@ button.ghost, .btn--ghost {
   color: var(--text-2);
   box-shadow: none;
 }
-button.ghost:hover:not(:disabled), .btn--ghost:hover:not(:disabled) {
+button.ghost {
   background: var(--surface-3);
   color: var(--text);
   border-color: transparent;
@@ -778,6 +800,24 @@ button.danger--solid:active:not(:disabled) {
 .field__input::placeholder { color: var(--placeholder); }
 .field__input:focus { outline: none; border-color: var(--brand); box-shadow: var(--ring); }
 .field__hint { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
+
+/* A date field in an ordinary form -- e.g. the Vendor/Others hand-off dialog's
+   own Date -- gets the same branded calendar glyph as the table's inline date
+   cells (.cell-date__input), so the control reads as one thing wherever it
+   turns up rather than the browser's plain black icon breaking the surface it
+   sits on in the dark theme. */
+input[type="date"].field__input { color-scheme: dark; }
+[data-theme="light"] input[type="date"].field__input { color-scheme: light; }
+input[type="date"].field__input::-webkit-calendar-picker-indicator {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  opacity: 0.85;
+  cursor: pointer;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23f58633' stroke-width='2' stroke-linecap='round'%3E%3Crect x='3' y='5' width='18' height='16' rx='2'/%3E%3Cpath d='M3 10h18M8 3v4M16 3v4'/%3E%3C/svg%3E") no-repeat center / 15px 15px;
+  transition: opacity 0.14s ease;
+}
+input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
 .alert { padding: 11px 15px; border-radius: var(--r-sm); margin-bottom: 16px; font-size: 13px; }
 .alert--error {
@@ -1603,6 +1643,42 @@ select.stage-filter { width: auto; min-width: 150px; }
 .search::-webkit-search-cancel-button { cursor: pointer; }
 @media (max-width: 640px) { .search { width: 100%; } }
 
+/* The bulk-select checkbox column's own input -- pinned alongside Division
+   and GRN No, see .table__pin--select in the table pinning rules below.
+   Drawn from scratch (appearance: none) rather than left as the browser's own
+   box: an unstyled checkbox is a stark white square on this app's dark
+   surface, and the same one on the light theme reads nothing like the rest of
+   its form controls. The tick is a rotated border rather than an image, so it
+   needs no asset and follows currentColor for free. */
+.table__select input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  border: 1.5px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-3, var(--surface));
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+.table__select input[type='checkbox']:hover { border-color: var(--brand); }
+.table__select input[type='checkbox']:focus-visible { outline: none; box-shadow: var(--ring); }
+.table__select input[type='checkbox']:checked {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+.table__select input[type='checkbox']:checked::after {
+  content: '';
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg) translate(-1px, -1px);
+}
+
 /* --- table
 
    The table is one wide slab. The header is a darker band poured into the top
@@ -1688,25 +1764,46 @@ select.stage-filter { width: auto; min-width: 150px; }
 }
 .table-wrap--sticky thead tr + tr th { top: var(--thead-group-h); }
 
-/* --- the GRN number stays put ---------------------------------------------
+/* --- Division and GRN No stay put ------------------------------------------
 
    These tables run to twenty columns and are read by scrolling sideways, at
    which point every row is a line of figures with nothing on it saying which
-   GRN they belong to. The GRN number is what every one of them is looked up
-   by, so it holds the left edge and the rest of the row travels under it.
+   GRN they belong to. Division and GRN No are what every one of them is
+   looked up by, so together they hold the left edge and the rest of the row
+   travels under them.
 
-   Under, not beside: `left: 0` pins this cell to the edge of the scroller, and
-   the columns that sit before it -- Division, Warehouse, the Match pill -- slide
-   beneath it and out of sight rather than being pinned too. That is the trade
+   Under, not beside: the two hold the edge of the scroller between them, and
+   the columns that sit before them -- Warehouse, the Match pill -- slide
+   beneath and out of sight rather than being pinned too. That is the trade
    this makes. Freezing the whole leading block instead would mean knowing the
    width of every column before this one, which an auto-width table does not
    have to tell anyone, and it would spend a third of a laptop screen on columns
-   that are not the one being looked for.
+   that are not the ones being looked for.
+
+   Two adjacent sticky cells need to know each other's width up front -- a
+   sticky `left` is a fixed offset, not "after the previous one", and an
+   auto-width table cannot promise Division stays whatever width it happened
+   to render at on the last row. --division-pin-w pins that width down for
+   Division (with an ellipsis for a code too long to fit) so GRN No's own
+   `left` has a fixed number to sit at rather than a guess.
 
    Hence the opaque fills: a translucent cell would show the row sliding
-   underneath it. And hence the border, which is the seam between what is held
-   and what is moving -- it reads as a divider before the scrolling starts,
-   which is the right thing for it to be then too. */
+   underneath it. And hence the border, on GRN No alone -- the seam between
+   what is held and what is moving -- it reads as a divider before the
+   scrolling starts, which is the right thing for it to be then too.
+
+   108px is sized to the header's own word, "DIVISION" -- the longest thing
+   the column ever has to hold, since the codes it shows ("SE1", and the like)
+   run shorter than that. */
+:root { --division-pin-w: 108px; }
+
+/* The base rule, unchanged from when GRN No was the only pinned cell: still
+   what the CSD queue and the Turnaround tab use on their own single pinned
+   column, where `left: 0` and the trailing border are exactly right. Results'
+   own table (Pending, Valid and Total GRNS) adds a modifier below for each of
+   its two pinned cells, which override the two properties that differ between
+   them; everything else here -- the sticky positioning, the stacking, the
+   opaque fills -- is shared by both cells and so stays on the base rule. */
 .table__pin {
   position: sticky;
   left: 0;
@@ -1718,6 +1815,42 @@ select.stage-filter { width: auto; min-width: 150px; }
      The seam is the ordinary gridline, for the same reason. */
   background-color: var(--table-bg);
   border-right: 1px solid var(--border);
+}
+/* Division holds the left edge instead, and carries no border of its own --
+   the seam belongs on the trailing edge of the frozen pair, not between the
+   two cells inside it. */
+.table__pin--division {
+  border-right: none;
+  width: var(--division-pin-w);
+  min-width: var(--division-pin-w);
+  max-width: var(--division-pin-w);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.table__pin--grn {
+  left: var(--division-pin-w);
+}
+/* The bulk-select checkbox, when "Select multiple" is on: a third pinned
+   column ahead of Division, sized to the checkbox rather than to a word.
+   It only ever exists alongside .table--pinned-select on the table itself
+   (see ResultsTable.jsx), which is what shifts Division and GRN No's own
+   `left` over to make room for it -- without that class neither this column
+   nor the shift exists, and the base two-column pinning above is untouched. */
+:root { --select-pin-w: 40px; }
+.table__pin--select {
+  left: 0;
+  border-right: none;
+  width: var(--select-pin-w);
+  min-width: var(--select-pin-w);
+  max-width: var(--select-pin-w);
+  text-align: center;
+}
+.table--pinned-select .table__pin--division {
+  left: var(--select-pin-w);
+}
+.table--pinned-select .table__pin--grn {
+  left: calc(var(--select-pin-w) + var(--division-pin-w));
 }
 .table tbody tr:nth-child(even) .table__pin { background-color: var(--table-bg-alt); }
 .table tbody tr:hover .table__pin { background-color: var(--table-bg-hover); }
@@ -2023,24 +2156,28 @@ select.stage-filter { width: auto; min-width: 150px; }
 }
 .pill--sent { background: var(--ok-soft); color: var(--ok); }
 .pill--unsent { background: rgba(128, 128, 128, 0.14); color: var(--muted); }
-/* A match whose bill number or vendor spelling did not agree. The review blue,
-   not the danger red: the GRN did reach accounts, something just needs reading. */
+/* A match whose bill number did not agree. The review blue, not the danger
+   red: the GRN did reach accounts, something just needs reading. */
 .pill--diff { background: var(--st-review-soft); color: var(--st-review); }
 
 /* The reconciliation bucket a row is in, on the Total GRNS tab -- the one tab
    whose rows are not all of a kind. Same two tones as the Pending and Valid
    stat cards, so a row and the card counting it agree on colour. Two states
-   only: a match that differs on a bill number or a vendor spelling reads as
-   moved to accounts like any other, and .pill--diff above is the CSD screen's. */
+   only: a match that differs on a bill number reads as moved to accounts like
+   any other, and .pill--diff above is the CSD screen's. */
 .pill--pending { background: var(--st-pending-soft); color: var(--st-pending); }
 .pill--valid { background: var(--st-matched-soft); color: var(--st-matched); }
 
-/* The four CSD stages, on the same rungs their cards take, so a row and the
-   card counting it are recognisably the same colour. */
+/* The CSD stages, on the same rungs their cards take, so a row and the card
+   counting it are recognisably the same colour. Moved to accounts has no card
+   of its own (see STAGES in pages/Csd.jsx) but still needs a pill colour for
+   the Status column -- the brand orange, so it reads as a resolution like
+   Approved and Rejected without being mistaken for either verdict. */
 .pill--queued { background: var(--warn-soft); color: var(--warn); }
 .pill--received { background: var(--info-soft); color: var(--info); }
 .pill--approved { background: var(--ok-soft); color: var(--ok); }
 .pill--rejected { background: var(--danger-soft); color: var(--danger); }
+.pill--moved_to_accounts { background: var(--brand-100); color: var(--brand-700); }
 
 /* Remarks is a sentence, and the table is nowrap by default. Only this one
    cell is allowed to break, and it is capped so a long note cannot stretch the

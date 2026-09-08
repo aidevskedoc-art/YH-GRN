@@ -5,7 +5,13 @@ import { asyncHandler } from '../middleware/error.js';
 import { STATUS } from '../services/reconcile.js';
 import { gapsFor, summarise, dataQuality } from '../services/turnaround.js';
 import { normKey } from '../services/normalize.js';
-import { branchScope, bankAccountScope, branchAccountNo, branchPick } from '../services/branchScope.js';
+import {
+  branchScope,
+  bankAccountScope,
+  branchAccountNo,
+  branchDivisionCode,
+  branchPick,
+} from '../services/branchScope.js';
 import { branchFor } from '../config/screens.js';
 
 export const resultsRouter = express.Router();
@@ -121,6 +127,17 @@ function branchClauses(req, params) {
  * way the filter above resolves the branch. See branchAccountNo.
  */
 const BRANCH_ACCOUNT_NO = branchAccountNo({
+  divisionCode: 'a.division_code',
+  location: 'g.location',
+});
+
+/**
+ * The configured branch code (DivisionCode) of the branch a row belongs to,
+ * resolved off the configuration screen the same way BRANCH_ACCOUNT_NO is --
+ * see branchDivisionCode. Chiefly for a Pending row, which has no ageing
+ * DivisionCode of its own to show.
+ */
+const BRANCH_DIVISION_CODE = branchDivisionCode({
   divisionCode: 'a.division_code',
   location: 'g.location',
 });
@@ -255,9 +272,10 @@ const CHEQUE_COLUMNS = `
    The Status column, as a filter.
 
    The dropdown beside the search box offers exactly what that column can say --
-   Cheque cleared, the four CSD stages, Sent to Records, Not sent -- so that
-   picking a value asks for the rows showing it, rather than for some adjacent
-   idea a reader has to translate.
+   Cheque cleared, the four CSD stages, Accounts' own two hand-back steps, the
+   four places Accounts can send a GRN on to, Sent to Records, Not sent -- so
+   that picking a value asks for the rows showing it, rather than for some
+   adjacent idea a reader has to translate.
 
    The buckets overlap on purpose, because the column does. A GRN whose cheque
    cleared while it was sitting at CSD shows "Cheque cleared" with its stage
@@ -272,6 +290,18 @@ const PROGRESS = {
   RECEIVED: "c.stage = 'RECEIVED'",
   APPROVED: "c.stage = 'APPROVED'",
   REJECTED: "c.stage = 'REJECTED'",
+  // MOVED_TO_ACCOUNTS is CSD's fourth resolution, and Accounts' own hand-back
+  // ladder runs on top of it -- see accounts_stage in schema.sql. Not yet
+  // forwarded on, so these two are mutually exclusive with the four below.
+  RETURNED_BY_CSD: "c.stage = 'MOVED_TO_ACCOUNTS' AND c.accounts_stage = 'QUEUED' AND c.forwarded_to IS NULL",
+  ACCOUNTS_RECEIVED: "c.stage = 'MOVED_TO_ACCOUNTS' AND c.accounts_stage = 'RECEIVED' AND c.forwarded_to IS NULL",
+  // Where Accounts sent a received GRN on -- see forwardAccountsReturn.
+  // Vendor and Purchase Dept are one column (forwarded_to = 'VENDOR') split
+  // by forwarded_route, since the Status column reads them as two answers.
+  BANK: "c.forwarded_to = 'BANK'",
+  VENDOR: "c.forwarded_to = 'VENDOR' AND c.forwarded_route = 'VENDOR'",
+  PURCHASE_DEPT: "c.forwarded_to = 'VENDOR' AND c.forwarded_route = 'PURCHASE_DEPT'",
+  OTHERS: "c.forwarded_to = 'OTHERS'",
   RECORDS: 'rd.id IS NOT NULL',
   NOT_SENT: `c.id IS NULL AND rd.id IS NULL AND ${CHEQUE_CLEARED_ON} IS NULL`,
 };
@@ -314,9 +344,19 @@ const ROW_COLUMNS = `
          a.cheque_no,
          a.chq_date,
          ${BRANCH_ACCOUNT_NO} AS account_no,
+         ${BRANCH_DIVISION_CODE} AS branch_division_code,
          (c.id IS NOT NULL) AS csd_sent,
+         c.id                AS csd_dispatch_id,
          c.sent_at          AS csd_sent_at,
          c.stage            AS csd_stage,
+         c.accounts_stage    AS csd_accounts_stage,
+         c.forwarded_to      AS csd_forwarded_to,
+         c.forwarded_route   AS csd_forwarded_route,
+         c.forwarded_name    AS csd_forwarded_name,
+         c.forwarded_mobile  AS csd_forwarded_mobile,
+         c.forwarded_date    AS csd_forwarded_date,
+         c.forwarded_courier_name AS csd_forwarded_courier_name,
+         c.forwarded_docket_no    AS csd_forwarded_docket_no,
          (rd.id IS NOT NULL) AS records_sent,
          rd.sent_at          AS records_sent_at,
          ${CHEQUE_COLUMNS}
@@ -368,6 +408,10 @@ function mapRow(r) {
     ageingVendorName: r.ageing_vendor_name,
     ageingDivision: r.ageing_division,
     divisionCode: r.division_code,
+    // The branch's configured code, off the same lookup as accountNo below --
+    // not the ageing report's own DivisionCode above, which is null on a
+    // Pending row. Null when no configured branch claims the row's Location.
+    branchDivisionCode: r.branch_division_code ?? null,
     netAmt: r.net_amt,
     adjPurReturn: r.adj_pur_return,
     adjustedJv: r.adjusted_jv,
@@ -395,8 +439,26 @@ function mapRow(r) {
     // taking a GRN back off the queue puts its Send button back by itself, and
     // an answer CSD give on their own screen shows up here on the next load.
     csdSent: r.csd_sent ?? false,
+    // The dispatch this row's CSD handover lives on, if any -- what Accounts'
+    // own "Received" action (see accounts-returns below) has to address.
+    csdDispatchId: r.csd_dispatch_id ?? null,
     csdSentAt: r.csd_sent_at ?? null,
     csdStage: r.csd_stage ?? null,
+    // Accounts' own acknowledgement once CSD hands a GRN back -- see
+    // accounts_stage in schema.sql. Null until csdStage reaches
+    // MOVED_TO_ACCOUNTS.
+    csdAccountsStage: r.csd_accounts_stage ?? null,
+    // Where Accounts sent the GRN on to, once received -- see forwarded_to in
+    // schema.sql. csdForwardedRoute only ever carries a value for VENDOR;
+    // Name/Mobile/Date carry one for VENDOR and OTHERS alike, and stay null
+    // for BANK. CourierName/DocketNo carry one for COURIER alone.
+    csdForwardedTo: r.csd_forwarded_to ?? null,
+    csdForwardedRoute: r.csd_forwarded_route ?? null,
+    csdForwardedName: r.csd_forwarded_name ?? null,
+    csdForwardedMobile: r.csd_forwarded_mobile ?? null,
+    csdForwardedDate: r.csd_forwarded_date ?? null,
+    csdForwardedCourierName: r.csd_forwarded_courier_name ?? null,
+    csdForwardedDocketNo: r.csd_forwarded_docket_no ?? null,
     // The other destination. Records keeps no stages, so there is nothing to
     // report but that it went and when.
     recordsSent: r.records_sent ?? false,
@@ -753,12 +815,15 @@ resultsRouter.get(
  * database's own timezone, which is the local day the action happened on.
  */
 const CSD_DATES = `
-         c.id                AS csd_id,
-         c.sent_at::date     AS sent_to_csd,
-         c.received_at::date AS csd_received,
-         c.approved_at::date AS csd_approved,
-         c.rejected_at::date AS csd_rejected,
-         c.stage             AS csd_stage`;
+         c.id                          AS csd_id,
+         c.sent_at::date               AS sent_to_csd,
+         c.received_at::date           AS csd_received,
+         c.approved_at::date           AS csd_approved,
+         c.rejected_at::date           AS csd_rejected,
+         c.moved_to_accounts_at::date  AS moved_to_accounts_date,
+         c.accounts_received_at::date  AS accounts_received_date,
+         c.forwarded_at::date          AS forwarded_action_date,
+         c.stage                       AS csd_stage`;
 
 /**
  * The CSD handover for a GRN, if it has been sent. LEFT, and on the unique
@@ -770,12 +835,13 @@ const CSD_JOIN = 'LEFT JOIN csd_dispatches c ON c.dpr_no_key = g.dpr_no_key';
 const TURNAROUND_COLUMNS = `
   SELECT r.status,
          a.id AS ageing_id,
-         g.dpr_no, g.vendor_name, g.vendor_code, g.location,
+         g.dpr_no, g.bill_date, g.vendor_name, g.vendor_code, g.location,
+         g.bill_amount, g.transport_amount, g.add_amount, g.ded_amount,
          a.division_code, ${PAYABLE_AMOUNT} AS payable_amount,
          a.grn_no, a.bill_no,
          a.indent_date, a.po_date, a.security_date, a.grn_date,
          a.bill_to_audit, a.bill_handover_to_acc, a.chq_date,
-         a.cheque_no,
+         a.cheque_no, a.payment_doc_no,
          ${CHEQUE_COLUMNS},
          ${CSD_DATES}
 `;
@@ -816,10 +882,19 @@ function mapTurnaroundRow(r) {
     dprNo: r.dpr_no,
     grnNo: r.grn_no,
     billNo: r.bill_no,
+    // The GRN report's own Bill Date -- not one of the seven checkpoints, just
+    // an identifying fact about the bill, alongside Bill No beside it.
+    billDate: r.bill_date,
     divisionCode: r.division_code,
     vendorName: r.vendor_name,
     vendorCode: r.vendor_code,
     location: r.location,
+    // The GRN report's own amount breakdown, ahead of PayableAmount -- the
+    // ageing report's own figure, which they add up to on the stores' side.
+    billAmount: r.bill_amount,
+    transportAmount: r.transport_amount,
+    addAmount: r.add_amount,
+    dedAmount: r.ded_amount,
     payableAmount: r.payable_amount,
     indentDate: r.indent_date,
     poDate: r.po_date,
@@ -829,6 +904,10 @@ function mapTurnaroundRow(r) {
     billHandOverToAcc: r.bill_handover_to_acc,
     chqDate: r.chq_date,
     chequeNo: r.cheque_no,
+    // The ageing report's payment document number, off the cheque it belongs
+    // to -- sits right after it for the same reason Cheque No sits after
+    // PayableAmount: it is the next answer once a cheque exists at all.
+    paymentDocNo: r.payment_doc_no,
     // From the bank statement, not from the ageing report's own
     // Cheque_ClearanceDate column: the statement is the record of what the bank
     // actually did, and it is the only side that shows a cheque coming back.
@@ -844,6 +923,12 @@ function mapTurnaroundRow(r) {
     csdReceived: r.csd_received,
     csdApproved: r.csd_approved,
     csdRejected: r.csd_rejected,
+    // Accounts' side of the hand-back: when CSD returned it, when Accounts
+    // acknowledged that, and when Accounts sent it on to Bank/Vendor/Others.
+    // All three are null until the button behind them has been pressed.
+    movedToAccountsAt: r.moved_to_accounts_date,
+    accountsReceivedAt: r.accounts_received_date,
+    forwardedAt: r.forwarded_action_date,
     csdStage: r.csd_stage,
   };
   return { ...row, gaps: gapsFor(row) };
@@ -887,6 +972,9 @@ async function turnaroundPopulation(req, scope, search) {
     csdReceived: r.csd_received,
     csdApproved: r.csd_approved,
     csdRejected: r.csd_rejected,
+    movedToAccountsAt: r.moved_to_accounts_date,
+    accountsReceivedAt: r.accounts_received_date,
+    forwardedAt: r.forwarded_action_date,
   }));
 }
 
@@ -1142,5 +1230,241 @@ recordsRouter.post(
     return res.status(201).json({
       record: { id: rows[0].id, dprNo: rows[0].dpr_no, sentAt: rows[0].sent_at },
     });
+  }),
+);
+
+/* ==========================================================================
+   Returned from CSD
+   --------------------------------------------------------------------------
+   A GRN CSD marks MOVED_TO_ACCOUNTS on their own queue (see routes/csd.js) is
+   acknowledged and disposed of here -- Accounts' own two moves once it lands
+   back with them. `accounts_stage` starts QUEUED the moment CSD hands it
+   back; /receive moves it to RECEIVED; /forward then records where it went on
+   from there (Bank, Vendor, or Others) and, for Vendor, who took it.
+
+   No listing of its own -- the results table already shows every such row
+   (Action column offers Received then the forwarding choice, Status column
+   reads the answer; see csdAccountsStage/csdForwardedTo in mapRow above and
+   their handling in ResultsTable.jsx). These are only the writes that table's
+   dropdowns make.
+
+   Gated on the results screen, the same as Records: this is a control on the
+   Accounts side of the app, not a CSD one, and anyone who can work the results
+   table can act on it.
+   ========================================================================== */
+
+const ACCOUNTS_RETURN_COLUMNS = `
+  SELECT c.id, c.dpr_no, c.division_code, c.bill_no, c.bill_date,
+         c.vendor_code, c.vendor_name, c.payable_amount,
+         c.cheque_no, c.chq_date, c.payment_doc_no,
+         c.moved_to_accounts_at, c.accounts_stage, c.accounts_received_at,
+         c.forwarded_to, c.forwarded_route, c.forwarded_name, c.forwarded_mobile,
+         c.forwarded_date, c.forwarded_courier_name, c.forwarded_docket_no, c.forwarded_at,
+         au.full_name AS accounts_received_by_name,
+         au.username  AS accounts_received_by_username,
+         fu.full_name AS forwarded_by_name,
+         fu.username  AS forwarded_by_username
+  FROM csd_dispatches c
+  LEFT JOIN users au ON au.id = c.accounts_received_by
+  LEFT JOIN users fu ON fu.id = c.forwarded_by
+`;
+
+function mapAccountsReturn(r) {
+  return {
+    id: r.id,
+    dprNo: r.dpr_no,
+    divisionCode: r.division_code,
+    billNo: r.bill_no,
+    billDate: r.bill_date,
+    vendorCode: r.vendor_code,
+    vendorName: r.vendor_name,
+    payableAmount: r.payable_amount,
+    chequeNo: r.cheque_no,
+    chqDate: r.chq_date,
+    paymentDocNo: r.payment_doc_no,
+    movedToAccountsAt: r.moved_to_accounts_at,
+    accountsStage: r.accounts_stage,
+    accountsReceivedAt: r.accounts_received_at,
+    accountsReceivedBy: r.accounts_received_by_name || r.accounts_received_by_username || null,
+    forwardedTo: r.forwarded_to,
+    forwardedRoute: r.forwarded_route,
+    forwardedName: r.forwarded_name,
+    forwardedMobile: r.forwarded_mobile,
+    forwardedDate: r.forwarded_date,
+    forwardedCourierName: r.forwarded_courier_name,
+    forwardedDocketNo: r.forwarded_docket_no,
+    forwardedAt: r.forwarded_at,
+    forwardedBy: r.forwarded_by_name || r.forwarded_by_username || null,
+  };
+}
+
+/** BANK carries nothing further; VENDOR/OTHERS need name+mobile+date; COURIER needs its own two fields. */
+const FORWARD_DESTINATIONS = new Set(['BANK', 'VENDOR', 'OTHERS', 'COURIER']);
+const FORWARD_ROUTES = new Set(['VENDOR', 'PURCHASE_DEPT']);
+
+const FORWARD_ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** A real calendar date in yyyy-MM-dd -- see the same check in routes/csd.js. */
+function isForwardCalendarDate(value) {
+  if (!FORWARD_ISO_DATE.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+export const accountsReturnsRouter = express.Router();
+
+accountsReturnsRouter.use(requireAuth, requireScreen('results'));
+
+/**
+ * PATCH /api/accounts-returns/:id/receive
+ *
+ * Accounts' one move: acknowledge a hand-back. Only from QUEUED, and only on a
+ * dispatch CSD has actually handed back -- the same guarded, one-statement
+ * update pattern as the CSD stage move, so two people acknowledging the same
+ * row at once cannot both succeed.
+ */
+accountsReturnsRouter.patch(
+  '/:id/receive',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Unknown row.' });
+    }
+
+    const { rows } = await query(
+      `UPDATE csd_dispatches
+       SET accounts_stage = 'RECEIVED', accounts_received_at = NOW(), accounts_received_by = $1
+       WHERE id = $2 AND stage = 'MOVED_TO_ACCOUNTS' AND accounts_stage = 'QUEUED'
+       RETURNING id`,
+      [req.user.id, id],
+    );
+
+    if (rows.length > 0) {
+      const { rows: full } = await query(`${ACCOUNTS_RETURN_COLUMNS} WHERE c.id = $1`, [id]);
+      return res.json({ accountsReturn: mapAccountsReturn(full[0]) });
+    }
+
+    const { rows: current } = await query(
+      "SELECT stage, accounts_stage FROM csd_dispatches WHERE id = $1",
+      [id],
+    );
+    if (current.length === 0) {
+      return res.status(404).json({ error: 'That GRN is no longer in the CSD queue.' });
+    }
+    if (current[0].stage !== 'MOVED_TO_ACCOUNTS') {
+      return res.status(409).json({ error: 'This GRN has not been moved to accounts.' });
+    }
+    return res.status(409).json({ error: 'This GRN has already been received by accounts.' });
+  }),
+);
+
+/**
+ * PATCH /api/accounts-returns/:id/forward
+ *
+ * Body: { to, route, name, mobile, date, courierName, docketNo }. Accounts'
+ * last move on a GRN: where the paperwork goes once they have it -- Bank
+ * needs nothing further, Vendor and Others both need who took it, on what
+ * number, on what day, and Vendor additionally needs the door it went out of
+ * (the vendor itself or the purchase department). Courier needs neither -- it
+ * hands the GRN to a service, not a person -- so it carries its own pair
+ * instead: which courier, and the docket number it went out under.
+ *
+ * A one-shot write, same as /receive: only from a dispatch Accounts has
+ * actually received, and only once -- there is nowhere for a second forward to
+ * go, so it is refused rather than silently overwriting the first.
+ */
+accountsReturnsRouter.patch(
+  '/:id/forward',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Unknown row.' });
+    }
+
+    const to = String(req.body?.to || '').toUpperCase();
+    if (!FORWARD_DESTINATIONS.has(to)) {
+      return res.status(400).json({
+        error: `"${req.body?.to ?? ''}" is not a destination. Expected Bank, Vendor, Others or Courier.`,
+      });
+    }
+
+    let route = null;
+    let name = null;
+    let mobile = null;
+    let date = null;
+    let courierName = null;
+    let docketNo = null;
+
+    if (to === 'VENDOR') {
+      route = String(req.body?.route || '').toUpperCase();
+      if (!FORWARD_ROUTES.has(route)) {
+        return res
+          .status(400)
+          .json({ error: 'Choose whether this goes to the vendor directly or to the purchase department.' });
+      }
+    }
+
+    // Vendor and Others both hand the GRN to a person, so both need who took
+    // it, on what number, on what day. Bank does not -- there is no one
+    // person on that side to record -- so it alone skips this and stays with
+    // nothing more than the fact and the day it was sent.
+    if (to === 'VENDOR' || to === 'OTHERS') {
+      name = String(req.body?.name || '').trim();
+      if (!name) {
+        return res.status(400).json({ error: 'A name is required for this hand-off.' });
+      }
+
+      mobile = String(req.body?.mobile || '').trim();
+      if (!mobile) {
+        return res.status(400).json({ error: 'A mobile number is required for this hand-off.' });
+      }
+
+      date = String(req.body?.date || '');
+      if (!isForwardCalendarDate(date)) {
+        return res.status(400).json({ error: 'A real date is required for this hand-off.' });
+      }
+    }
+
+    // Courier hands the GRN to a service, not a person -- which courier, and
+    // the docket number it went out under, in place of name/mobile/date.
+    if (to === 'COURIER') {
+      courierName = String(req.body?.courierName || '').trim();
+      if (!courierName) {
+        return res.status(400).json({ error: 'A courier name is required for this hand-off.' });
+      }
+
+      docketNo = String(req.body?.docketNo || '').trim();
+      if (!docketNo) {
+        return res.status(400).json({ error: 'A docket number is required for this hand-off.' });
+      }
+    }
+
+    const { rows } = await query(
+      `UPDATE csd_dispatches
+       SET forwarded_to = $1, forwarded_route = $2, forwarded_name = $3,
+           forwarded_mobile = $4, forwarded_date = $5, forwarded_courier_name = $6,
+           forwarded_docket_no = $7, forwarded_at = NOW(), forwarded_by = $8
+       WHERE id = $9 AND stage = 'MOVED_TO_ACCOUNTS' AND accounts_stage = 'RECEIVED'
+             AND forwarded_to IS NULL
+       RETURNING id`,
+      [to, route, name, mobile, date, courierName, docketNo, req.user.id, id],
+    );
+
+    if (rows.length > 0) {
+      const { rows: full } = await query(`${ACCOUNTS_RETURN_COLUMNS} WHERE c.id = $1`, [id]);
+      return res.json({ accountsReturn: mapAccountsReturn(full[0]) });
+    }
+
+    const { rows: current } = await query(
+      'SELECT stage, accounts_stage, forwarded_to FROM csd_dispatches WHERE id = $1',
+      [id],
+    );
+    if (current.length === 0) {
+      return res.status(404).json({ error: 'That GRN is no longer in the CSD queue.' });
+    }
+    if (current[0].stage !== 'MOVED_TO_ACCOUNTS' || current[0].accounts_stage !== 'RECEIVED') {
+      return res.status(409).json({ error: 'Accounts has not received this GRN yet.' });
+    }
+    return res.status(409).json({ error: 'This GRN has already been forwarded.' });
   }),
 );

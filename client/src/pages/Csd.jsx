@@ -16,8 +16,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { exportCsd } from '../services/exporter.js';
 import LocationFilter from '../components/LocationFilter.jsx';
-import { formatAmount, formatDate } from '../components/ResultsTable.jsx';
-import { IconTrash } from '../components/icons.jsx';
+import { formatAmount, formatAmountOrDash, formatDate } from '../components/ResultsTable.jsx';
+import { IconTrash, IconX } from '../components/icons.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 
@@ -26,28 +26,36 @@ import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 const SEARCH_DELAY_MS = 300;
 
 /**
- * The four stages, in the order a handover travels through them.
+ * The five stages, in the order a handover travels through them.
  *
- * Queued is where Send to CSD puts a row; the other three are CSD's own
- * answers. The colours follow the app's semantic ladder rather than being
- * picked per card: queued is work outstanding (the warning amber the Pending
- * bucket uses), received is in-progress blue, and the two verdicts are the
- * green and red used everywhere else.
+ * Queued is where Send to CSD puts a row; the other four are CSD's own
+ * answers -- Received leads to a verdict, Approved or Rejected, and an
+ * approved bill has one further step of its own: handed back to Accounts. The
+ * colours follow the app's semantic ladder rather than being picked per card:
+ * queued is work outstanding (the warning amber the Pending bucket uses),
+ * received is in-progress blue, Approved and Rejected are the green and red
+ * used everywhere else, and Moved to accounts gets the brand orange -- it is a
+ * resolution too, just not a verdict on the bill.
  *
  * Every stage a row can be in belongs in this list, whether or not it gets a
  * card -- it is what names a stage in the Status pill and what fills the
  * dropdown, and a row whose stage is missing from here would show the wrong
  * label and offer no way back to it.
  *
- * `card: false` would keep a stage off the KPI row; nothing uses it at present,
- * since all four are worth counting -- what is still waiting on CSD as much as
- * what they have done with it.
+ * `card: false` keeps Moved to accounts off this screen's KPI row: what needs
+ * counting once a GRN is handed back is Accounts' own Queued/Received split,
+ * which the Accounts tab's own card reads (see accountsReturnsRouter in
+ * routes/results.js) -- a second count of the same rows here would just be
+ * noise. The stage still appears in the Status pill and the filter dropdown
+ * below, so a handed-back GRN is not hidden from the CSD screen, only left out
+ * of the row of cards.
  */
 const STAGES = [
   { key: 'QUEUED', label: 'Queued', hint: 'Sent, not yet acknowledged', tone: 'queued' },
   { key: 'RECEIVED', label: 'Received', hint: 'CSD have it', tone: 'received' },
   { key: 'APPROVED', label: 'Approved', hint: 'Cleared by CSD', tone: 'approved' },
   { key: 'REJECTED', label: 'Rejected', hint: 'Sent back', tone: 'rejected' },
+  { key: 'MOVED_TO_ACCOUNTS', label: 'Moved to accounts', hint: 'Handed back to Accounts', tone: 'moved_to_accounts', card: false },
 ];
 
 /** The stages that get a KPI card, in the same order. */
@@ -59,17 +67,52 @@ const CARD_STAGES = STAGES.filter((s) => s.card !== false);
  * that would be refused is never presented in the first place.
  *
  * A one-way ladder: CSD cannot rule on a bill they have not acknowledged
- * receiving, and having ruled they cannot un-rule. The two verdicts are final,
- * which is why they have no options at all.
+ * receiving, and having ruled they cannot un-rule -- Rejected is final for
+ * that reason. Approved is not quite: an approved bill still has to be handed
+ * back to Accounts, which is its one further move. Moved to accounts is
+ * final here too, but for a different reason -- it hands the GRN to Accounts'
+ * own Queued/Received tracking rather than reopening this ladder.
  */
 const NEXT_STAGES = {
   QUEUED: ['RECEIVED'],
   RECEIVED: ['APPROVED', 'REJECTED'],
-  APPROVED: [],
+  APPROVED: ['MOVED_TO_ACCOUNTS'],
   REJECTED: [],
+  MOVED_TO_ACCOUNTS: [],
 };
 
 const STAGE_LABELS = Object.fromEntries(STAGES.map((s) => [s.key, s.label]));
+
+/** Where Accounts sent a forwarded GRN on to -- see forwardedLabel in ResultsTable.jsx. */
+const FORWARD_LABELS = { BANK: 'Sent to Bank', OTHERS: 'Sent to Others', COURIER: 'Sent to Courier' };
+
+function forwardedLabel(forwardedTo, forwardedRoute) {
+  if (forwardedTo === 'VENDOR') {
+    return forwardedRoute === 'PURCHASE_DEPT' ? 'Sent to Purchase Dept' : 'Sent to Vendor';
+  }
+  return FORWARD_LABELS[forwardedTo] || null;
+}
+
+/**
+ * What a row's Status pill says, and which rung it borrows its colour from.
+ *
+ * MOVED_TO_ACCOUNTS is the one stage this screen does not have the last word
+ * on: CSD's own ladder ends there, but Accounts still has two moves of its own
+ * -- acknowledging the hand-back, then forwarding it on (see accounts_stage
+ * and forwarded_to, tracked on the same dispatch). This reads whichever of the
+ * three is furthest along rather than sitting on "Moved to accounts" forever
+ * -- CSD's own screen should show how far the GRN has actually got, not just
+ * that CSD is done with it.
+ */
+function describeStage(row) {
+  if (row.stage === 'MOVED_TO_ACCOUNTS' && row.forwardedTo) {
+    return { label: forwardedLabel(row.forwardedTo, row.forwardedRoute), tone: 'approved' };
+  }
+  if (row.stage === 'MOVED_TO_ACCOUNTS' && row.accountsStage === 'RECEIVED') {
+    return { label: 'Accounts received', tone: 'approved' };
+  }
+  return { label: STAGE_LABELS[row.stage] || row.stage, tone: String(row.stage).toLowerCase() };
+}
 
 /**
  * The date each stage was reached, as its own column.
@@ -87,20 +130,21 @@ const STAGE_DATES = [
   { key: 'receivedAt', label: 'Received Date' },
   { key: 'approvedAt', label: 'Approved Date' },
   { key: 'rejectedAt', label: 'Rejected Date' },
+  { key: 'movedToAccountsAt', label: 'Moved To Accounts Date' },
 ];
 
 /**
- * The header row below, counted: twelve columns from GRN No through Status,
+ * The header row below, counted: seventeen columns from GRN No through Status,
  * then one per stage date, then Action. Worked out rather than written as a
  * number, which is what it was -- and the number had already drifted out of
  * step with the row it is meant to span.
  */
-const COLUMN_COUNT = 12 + STAGE_DATES.length + 1;
+const COLUMN_COUNT = 17 + STAGE_DATES.length + 1;
 
 /**
  * The two matched statuses, spelled for a reader. A GRN reaches CSD from either
- * of them; the second is the one whose bill number or vendor spelling did not
- * agree, which is worth carrying through the handover rather than flattening.
+ * of them; the second is the one whose bill number did not agree, which is
+ * worth carrying through the handover rather than flattening.
  */
 const MATCH_LABELS = {
   MATCHED: 'Matched',
@@ -135,7 +179,7 @@ function formatSentAt(value) {
  */
 function StagePicker({ row, busy, onPick }) {
   const next = NEXT_STAGES[row.stage] ?? [];
-  const label = STAGE_LABELS[row.stage] || row.stage;
+  const label = describeStage(row).label;
 
   if (next.length === 0) {
     return (
@@ -203,6 +247,16 @@ export default function Csd() {
   // location is a view somebody adjusts while reading this screen.
   const [location, setLocation] = useState('');
 
+  // Acting on several handovers at once, same idea as the Valid GRNS tab's own
+  // "Select multiple" -- a cheque that pays several GRNs together is one thing
+  // to move or take back, not one dropdown per row. `multiMode` is the
+  // checkbox column showing at all; `selected` is which dispatch ids are
+  // ticked within it, keyed by id rather than GRN number since a handover here
+  // is addressed by its own row, not by the GRN it carries.
+  const [multiMode, setMultiMode] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setQ(search.trim());
@@ -218,6 +272,14 @@ export default function Csd() {
     setPage(1);
   }, [stage, location]);
 
+  // A ticked row belongs to the page it was ticked on -- changing any of the
+  // page's own inputs invalidates the selection rather than carrying it,
+  // silently, onto a different set of rows.
+  useEffect(() => {
+    setSelected(new Set());
+    setMultiMode(false);
+  }, [page, pageSize, q, stage, location]);
+
   const load = useCallback(() => {
     setLoading(true);
     api
@@ -228,6 +290,93 @@ export default function Csd() {
   }, [page, pageSize, q, stage, location]);
 
   useEffect(load, [load]);
+
+  /**
+   * Ticking one row also ticks every other row on the page still there that
+   * shares its cheque number -- a cheque pays a group of GRNs together, so
+   * selecting one of them is read as meaning the whole group. Unticking only
+   * lets go of the one row.
+   */
+  function toggleSelectRow(row) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(row.id)) {
+        next.delete(row.id);
+        return next;
+      }
+      next.add(row.id);
+      if (row.chequeNo) {
+        for (const r of data?.rows || []) {
+          if (r.chequeNo === row.chequeNo) next.add(r.id);
+        }
+      }
+      return next;
+    });
+  }
+
+  function exitMultiMode() {
+    setMultiMode(false);
+    setSelected(new Set());
+  }
+
+  /**
+   * The stages every ticked row could move to next, in common -- the
+   * intersection of each one's own NEXT_STAGES. Rows sent together usually
+   * share a stage, in which case this is just that stage's own next steps;
+   * mixed stages narrow it, honestly, to whatever move would be valid for
+   * all of them at once rather than silently skipping the rows it would not
+   * apply to.
+   */
+  const selectedRows = (data?.rows || []).filter((row) => selected.has(row.id));
+  const bulkNextStages = selectedRows.length
+    ? selectedRows
+        .map((row) => NEXT_STAGES[row.stage] ?? [])
+        .reduce((common, options) => common.filter((s) => options.includes(s)))
+    : [];
+
+  /** Move every ticked row to one stage at once. */
+  async function bulkSetStage(next) {
+    if (!next || selectedRows.length === 0) return;
+    setBulkBusy(true);
+    setError('');
+    try {
+      await Promise.all(selectedRows.map((row) => api.setCsdStage(row.id, next)));
+      exitMultiMode();
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  /** Take every ticked row back off the queue at once. */
+  async function bulkRemove() {
+    if (selectedRows.length === 0) return;
+    const ok = await confirm({
+      title: 'Take these GRNs back?',
+      message: `Are you sure you want to take ${selectedRows.length} GRN${
+        selectedRows.length === 1 ? '' : 's'
+      } off the CSD queue?`,
+      confirmLabel: 'Take back',
+    });
+    if (!ok) return;
+
+    setBulkBusy(true);
+    setError('');
+    try {
+      await Promise.all(selectedRows.map((row) => api.removeFromCsd(row.id)));
+      exitMultiMode();
+      // Removing every row of the last page would otherwise leave the pager
+      // pointing past the end of a now-shorter queue.
+      if (data.rows.length === selectedRows.length && page > 1) setPage((p) => p - 1);
+      else load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
 
   /**
    * Pick a stage to look at, or press the chosen one again to see everything.
@@ -403,9 +552,11 @@ export default function Csd() {
           controls take the right and the strip is otherwise empty. */}
       <div className="toolbar">
         <div className="toolbar__actions">
-          {/* The same four stages the cards count, as a list. Either control
-              sets the filter and both read it back from the URL, so they cannot
-              disagree about what the table is showing. */}
+          {/* Every stage, not just the four the cards count -- Moved to
+              accounts has no card here (see STAGES) but is still a stage a
+              row can be filtered to. Either control sets the filter and both
+              read it back from the URL, so they cannot disagree about what
+              the table is showing. */}
           <select
             className="field__input stage-filter"
             value={stage}
@@ -428,6 +579,56 @@ export default function Csd() {
             placeholder="Search vendor, GRN or bill no."
             aria-label="Search the CSD queue by vendor name, GRN number or bill number"
           />
+
+          {/* Acting on several handovers at once, same idea as the Valid
+              GRNS tab's own "Select multiple" -- a cheque that pays several
+              GRNs together is one thing to move or take back, not one
+              dropdown per row. The toggle doubles as its own cancel: once a
+              selection is open, pressing it again is the same button reading
+              a cross rather than a second control beside it. */}
+          <button
+            type="button"
+            className={multiMode ? 'ghost icon-btn' : 'ghost'}
+            onClick={() => (multiMode ? exitMultiMode() : setMultiMode(true))}
+            title={multiMode ? 'Cancel selecting' : 'Select multiple GRNs to act on together'}
+            aria-label={multiMode ? 'Cancel selecting' : 'Select multiple GRNs to act on together'}
+          >
+            {multiMode ? <IconX size={14} /> : 'Select multiple'}
+          </button>
+          {multiMode && (
+            <>
+              {/* Only the stages every ticked row could move to in common --
+                  see bulkNextStages above -- so choosing one is never refused
+                  for a row it does not apply to. Absent whenever that set is
+                  empty, same as the per-row picker becoming a plain verdict
+                  once a row has nowhere left to go. */}
+              {bulkNextStages.length > 0 && (
+                <select
+                  className="stage-select send-select"
+                  value=""
+                  disabled={bulkBusy}
+                  onChange={(e) => e.target.value && bulkSetStage(e.target.value)}
+                  aria-label={`Move ${selected.size} selected GRNs to a CSD stage`}
+                >
+                  <option value="">Move {selected.size} to…</option>
+                  {bulkNextStages.map((key) => (
+                    <option key={key} value={key}>
+                      {STAGE_LABELS[key] || key}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                type="button"
+                className="ghost danger"
+                onClick={bulkRemove}
+                disabled={selected.size === 0 || bulkBusy}
+              >
+                {bulkBusy ? 'Working…' : selected.size > 0 ? `Take back ${selected.size}` : 'Take back'}
+              </button>
+            </>
+          )}
+
           <button
             className="ghost"
             type="button"
@@ -447,24 +648,52 @@ export default function Csd() {
         data && (
           <>
             <div className="table-wrap table-wrap--sticky">
-              <table className="table">
+              <table className={multiMode ? 'table table--pinned-select' : 'table'}>
                 <thead>
                   <tr>
-                    <th className="table__pin">GRN No</th>
-                    <th>Division</th>
+                    {/* The bulk-select checkbox, pinned ahead of Division and
+                        GRN No when "Select multiple" is on -- see
+                        .table__pin--select and .table--pinned-select in
+                        styles.css, which shift the other two over to make
+                        room for it. */}
+                    {multiMode && (
+                      <th
+                        className="table__select table__pin table__pin--select"
+                        aria-label="Select for bulk action"
+                      />
+                    )}
+                    {/* Division and GRN No pinned together, in the same order
+                        as the results and turnaround tables -- see
+                        .table__pin in styles.css -- so the two together hold
+                        the left edge once the queue is scrolled sideways. */}
+                    <th className="table__pin table__pin--division">Division</th>
+                    <th className="table__pin table__pin--grn">GRN No</th>
                     <th>GRN Date</th>
                     <th>Bill No</th>
                     <th>Bill Date</th>
                     <th>Vendor</th>
                     {/* The code used to sit under the name, where it could not
-                        be read down the column. Location comes off the GRN
-                        report and is kept on the handover's own snapshot, so it
-                        still reads once that upload has gone. */}
+                        be read down the column. */}
                     <th>Vendor Code</th>
-                    <th>Location</th>
                     <th>Focus doc_no</th>
                     <th className="table__num">NetAmt</th>
+                    {/* The ageing report's own amount breakdown, in the same
+                        order as the Valid GRNs export: NetAmt through
+                        PayableAmount, each an adjustment on the last. */}
+                    <th className="table__num">AdjPurReturn</th>
+                    <th className="table__num">AdjustedJV</th>
+                    <th className="table__num">TDSJV</th>
                     <th className="table__num">PayableAmount</th>
+                    {/* The cheque this bill was paid by, and the payment
+                        document it was recorded under -- both off the ageing
+                        report, snapshotted like everything else here. */}
+                    <th>PaymentDocNo</th>
+                    <th>Cheque No</th>
+                    {/* The day the ageing report says the cheque was cut --
+                        not the day it cleared, which this table does not
+                        track. */}
+                    <th>Cheque Date</th>
+
                     {/* <th>Match</th> */}
                     <th>Status</th>
                     {/* One column per stage, each showing the day the handover
@@ -480,7 +709,7 @@ export default function Csd() {
                 <tbody>
                   {data.rows.length === 0 && (
                     <tr>
-                      <td className="table__empty" colSpan={COLUMN_COUNT}>
+                      <td className="table__empty" colSpan={multiMode ? COLUMN_COUNT + 1 : COLUMN_COUNT}>
                         {/* The same wording the results table uses for a search
                             that finds nothing, so the two screens answer an
                             empty search the same way. A stage filter with no
@@ -493,8 +722,18 @@ export default function Csd() {
                   )}
                   {data.rows.map((row) => (
                     <tr key={row.id}>
-                      <td className="table__mono table__pin">{row.dprNo}</td>
-                      <td>{row.divisionCode}</td>
+                      {multiMode && (
+                        <td className="table__select table__pin table__pin--select">
+                          <input
+                            type="checkbox"
+                            checked={selected.has(row.id)}
+                            onChange={() => toggleSelectRow(row)}
+                            aria-label={`Select GRN ${row.dprNo} for a bulk action`}
+                          />
+                        </td>
+                      )}
+                      <td className="table__pin table__pin--division">{row.divisionCode}</td>
+                      <td className="table__mono table__pin table__pin--grn">{row.dprNo}</td>
                       <td>{formatDate(row.dprDate)}</td>
                       <td className="table__mono">{row.billNo}</td>
                       <td>{formatDate(row.billDate)}</td>
@@ -502,13 +741,20 @@ export default function Csd() {
                       <td className="table__mono">
                         {row.vendorCode || <span className="table__miss">&mdash;</span>}
                       </td>
-                      {/* Blank on a handover sent before the column existed:
-                          the upload it was read from may be gone, and there is
-                          nowhere else to recover it from. */}
-                      <td>{row.location || <span className="table__miss">&mdash;</span>}</td>
                       <td className="table__mono">{row.ageingGrnNo}</td>
                       <td className="table__num">{formatAmount(row.netAmt)}</td>
+                      <td className="table__num">{formatAmountOrDash(row.adjPurReturn)}</td>
+                      <td className="table__num">{formatAmountOrDash(row.adjustedJv)}</td>
+                      <td className="table__num">{formatAmountOrDash(row.tdsJv)}</td>
                       <td className="table__num">{formatAmount(row.payableAmount)}</td>
+                             <td className="table__mono">
+                        {row.paymentDocNo || <span className="table__miss">&mdash;</span>}
+                      </td>
+                      <td className="table__mono">
+                        {row.chequeNo || <span className="table__miss">&mdash;</span>}
+                      </td>
+                      <td>{formatDate(row.chqDate) || <span className="table__miss">&mdash;</span>}</td>
+
                       {/* <td>
                         <span
                           className={`pill ${
@@ -526,8 +772,8 @@ export default function Csd() {
                         )}
                       </td> */}
                       <td>
-                        <span className={`pill pill--${row.stage.toLowerCase()}`}>
-                          {STAGE_LABELS[row.stage] || row.stage}
+                        <span className={`pill pill--${describeStage(row).tone}`}>
+                          {describeStage(row).label}
                         </span>
                         {/* Who moved it, and when. Absent while a row is still
                             queued: nobody has answered for it yet. */}

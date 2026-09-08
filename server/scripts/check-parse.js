@@ -23,8 +23,8 @@ const AGEING_FILE = "02. Vendor ageing report _ Apr'26.xlsx";
 const EXPECTED = {
   grnRows: 3467,
   ageingRows: 3200,
-  matched: 2155,
-  matchedWithDiff: 94,
+  matched: 2247,
+  matchedWithDiff: 2,
   pending: 1218,
   pendingAmount: 86979127.97,
 };
@@ -68,16 +68,16 @@ const byDpr = new Map(results.map((r) => [r.grn.dprNo, r]));
 
 // SE1BMWH0000794 in the ageing report -> BMWH0000794 here, so the branch code
 // was stripped correctly. The vendor is an alias ("BET MEDICAL PRIVATE LIMITED"
-// vs "BET MEDICAL (P)LTD"), so it must be matched but flagged, never pending.
+// vs "BET MEDICAL (P)LTD"), but vendor name is not compared at all, so this is
+// a clean match rather than something flagged.
 const branchStrip = byDpr.get('BMWH0000794');
-check('BMWH0000794 (branch code stripped) status', branchStrip?.status, 'MATCHED_WITH_DIFF');
-if (branchStrip) console.log(`  flagged: ${branchStrip.discrepancyNotes}`);
+check('BMWH0000794 (branch code stripped) status', branchStrip?.status, 'MATCHED');
 
-// The vendor name differs on both counts ("HEALTHCARE"/"HEALTH CARE" and
-// "PRIVATE LIMITED"/"PVT LTD"). An exact-string rule would have wrongly called
-// this pending; normalization must resolve it to a clean match.
-const normalized = byDpr.get('CSHDPR004515');
-check('CSHDPR004515 (vendor name normalized) status', normalized?.status, 'MATCHED');
+// The bill number differs ("HN00681" vs "HR00681"), which is compared and does
+// get flagged -- unlike the vendor-name spelling above.
+const billNoDiff = byDpr.get('CSHDPR004759');
+check('CSHDPR004759 (bill no differs) status', billNoDiff?.status, 'MATCHED_WITH_DIFF');
+if (billNoDiff) console.log(`  flagged: ${billNoDiff.discrepancyNotes}`);
 
 // Same vendor, one document later, genuinely absent from the ageing report.
 const pending = byDpr.get('CSHDPR004514');

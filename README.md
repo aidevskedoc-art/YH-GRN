@@ -146,19 +146,19 @@ The **GRN number** is the key. The ageing report stores it with the branch code 
 (`SE1BMWH0000782` = branch `SE1` + GRN `BMWH0000782`), so the branch code is stripped into its own
 column and the remainder is matched against the GRN report's `DPR.No`.
 
-Bill number and vendor name are compared too, but a difference in those does **not** make a
-transaction pending. The two systems spell vendor names differently — `MATRIX THERAPEUTICS PRIVATE
-LIMITED` in one, `MATRIX THERAPEUTICS PVT. LTD.` in the other — and treating that as a mismatch would
-report hundreds of already-processed GRNs as outstanding. Those rows are matched and **flagged** so
-the difference stays visible.
+Bill number is compared too, but a difference does **not** make a transaction pending — those rows
+are matched and **flagged** so the difference stays visible. Vendor name is not compared: the two
+systems spell it differently often enough — `MATRIX THERAPEUTICS PRIVATE LIMITED` in one, `MATRIX
+THERAPEUTICS PVT. LTD.` in the other — that it is not a meaningful signal, so each row's vendor name
+is left exactly as its own source report spells it.
 
 Each GRN transaction lands in one of three buckets:
 
 | Status | Meaning |
 |---|---|
 | **Pending** | The GRN number is not in the ageing report — **not yet with accounts**. |
-| **Moved to accounts** | Found, and the bill number and vendor name agree. |
-| **Needs review** | Found, but the bill number or vendor name differs. Still with accounts. |
+| **Moved to accounts** | Found, and the bill number agrees. |
+| **Needs review** | Found, but the bill number differs. Still with accounts. |
 
 Ageing rows with no counterpart in the GRN report (carried-forward GRNs from earlier months) are not
 reported, by design.
@@ -168,8 +168,8 @@ reported, by design.
 | Status | Transactions | Value |
 |---|---:|---:|
 | Pending | 1,218 | ₹ 8,69,79,127.97 |
-| Moved to accounts | 2,155 | |
-| Needs review | 94 | |
+| Moved to accounts | 2,247 | |
+| Needs review | 2 | |
 | **Total checked** | **3,467** | ₹ 21,13,85,137.91 |
 
 Pending by warehouse: PHRM 689, CSPH 309, BRDG 91, GSTR 43, BMWH 39, CIVS 36, EVNT 11.

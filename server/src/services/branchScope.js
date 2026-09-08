@@ -159,6 +159,33 @@ export function branchAccountNo({ divisionCode, location }) {
 }
 
 /**
+ * The configured branch code (DivisionCode) of the branch a row belongs to,
+ * resolved the same way `branchAccountNo` resolves an account number.
+ *
+ * A matched row already carries the ageing report's own DivisionCode, which is
+ * real data and is shown as-is elsewhere. This exists for the rows that have
+ * none -- a Pending row has no ageing entry at all -- so that a GRN whose
+ * Location says SECUNDERABAD can still show the SE1 the configuration screen
+ * has on file for it, the same way a Pending row's bank account is resolved
+ * from Location alone.
+ *
+ * @param divisionCode the column holding the ageing side's code on this query
+ * @param location     the column holding the stores side's location
+ */
+export function branchDivisionCode({ divisionCode, location }) {
+  return `(
+    SELECT bc.branch_code
+    FROM branch_configs bc
+    WHERE (
+        upper(${divisionCode}) = upper(bc.branch_code)
+        OR upper(${location}) LIKE '%' || upper(bc.location) || '%'
+      )
+    ORDER BY COALESCE(upper(${divisionCode}) = upper(bc.branch_code), FALSE) DESC, bc.id
+    LIMIT 1
+  )`;
+}
+
+/**
  * One branch, chosen by name -- the Location dropdown on the results and CSD
  * screens.
  *

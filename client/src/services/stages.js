@@ -22,6 +22,10 @@ export const STAGE_LABELS = {
   chequeToCsd: 'CSD Queue',
   csdToReceived: 'CSD Received',
   receivedToApproved: 'CSD Approved',
+  // Accounts' side of the hand-back, once CSD approves and returns a GRN.
+  approvedToMovedToAccounts: 'Moved To Accounts',
+  movedToAccountsToReceived: 'Accounts Received',
+  receivedToForwarded: 'Cheque Forwarded',
   // CSD's approval to the day the bank actually paid, off the statement.
   approvedToClearance: 'Cheque Clearance',
   // The end-to-end figure, measured PR to Cheque.
@@ -50,6 +54,9 @@ export const STAGE_KEYS = [
   'chequeToCsd',
   'csdToReceived',
   'receivedToApproved',
+  'approvedToMovedToAccounts',
+  'movedToAccountsToReceived',
+  'receivedToForwarded',
   'approvedToClearance',
 ];
 
@@ -70,10 +77,18 @@ export const STAGE_KEYS = [
  * GRN's whole elapsed time, and for a rejected bill that run ended when CSD
  * sent it back.
  *
+ * forwardedAt, accountsReceivedAt and movedToAccountsAt sit ahead of the CSD
+ * verdicts: a GRN CSD approved and handed back has gone further than one
+ * merely approved, so a row carrying any of the three counts to whichever is
+ * its own furthest point rather than stopping at csdApproved.
+ *
  * Lives here rather than in the table because the export shows the same Total
  * column and must arrive at the same number.
  */
 export const CHAIN_END = [
+  'forwardedAt',
+  'accountsReceivedAt',
+  'movedToAccountsAt',
   'csdRejected',
   'csdApproved',
   'csdReceived',
@@ -111,8 +126,10 @@ export function totalDays(row) {
  * one as a From and a To, and the export names its columns from it. A second
  * copy anywhere would let the file and the screen drift apart on the wording.
  *
- * `csd: true` marks the three stamps this application writes itself, which are
- * the only three the turnaround table can correct in place.
+ * `csd: true` marks the three CSD stamps the turnaround table can correct in
+ * place. The Accounts hand-back stamps further down are also written by this
+ * application, but each is set once, automatically, by the button behind it,
+ * so none of them carries the flag.
  */
 export const CHECKPOINTS = [
   { key: 'indentDate', label: 'PR' },
@@ -125,11 +142,17 @@ export const CHECKPOINTS = [
   { key: 'sentToCsd', csd: true, label: 'Sent to CSD' },
   { key: 'csdReceived', csd: true, label: 'CSD Received' },
   { key: 'csdApproved', csd: true, label: 'CSD Approved' },
-  // Last, straight after CSD Approved, because that is where the day count
-  // beside it now starts. Its value is read off the bank statement by matching
-  // the cheque number; correcting it here does not touch the statement, it
-  // records an override that wins over it -- and clearing the cell hands the
-  // answer back to the bank.
+  // Accounts' side of the hand-back. Not correctable in place, unlike the
+  // three CSD stamps above: each is written once, automatically, by the
+  // button behind it (Moved to accounts, Received, then the forward choice),
+  // so there is no typo to fix -- only the fact of when it happened.
+  { key: 'movedToAccountsAt', label: 'Moved To Accounts' },
+  { key: 'accountsReceivedAt', label: 'Accounts Received' },
+  { key: 'forwardedAt', label: 'Cheque Forwarded' },
+  // Last. Its value is read off the bank statement by matching the cheque
+  // number; correcting it here does not touch the statement, it records an
+  // override that wins over it -- and clearing the cell hands the answer back
+  // to the bank.
   { key: 'chequeClearanceDate', label: 'Cheque Clearance' },
 ];
 

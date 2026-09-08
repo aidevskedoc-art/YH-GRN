@@ -25,23 +25,30 @@ const MAX_PAGE_SIZE = 200;
  * How far a handover has got at CSD's end.
  *
  * QUEUED is where Send to CSD puts it: sent, not yet acknowledged. The other
- * three are CSD's own answers.
+ * four are CSD's own answers: Received leads to a verdict, Approved or
+ * Rejected, and an approved bill has one further step -- handed back to
+ * Accounts.
  *
  * Distinct from a dispatch's `status`, which is the reconciliation's verdict on
  * the GRN and does not change once it has been sent.
  */
-const STAGES = ['QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED'];
+const STAGES = ['QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED', 'MOVED_TO_ACCOUNTS'];
 const STAGE_SET = new Set(STAGES);
 
 /**
  * Where a handover may go next, and nowhere else. A one-way ladder: nothing
- * moves back, and the two verdicts are final.
+ * moves back to an earlier CSD stage.
  *
  * CSD cannot rule on a bill they have not acknowledged receiving, and having
  * ruled they cannot un-rule -- an approval that could quietly become a rejection
- * an hour later is not a record of anything. So the only way out of a verdict is
- * to take the GRN off the queue entirely and send it again, which is a visible
- * act that leaves the old dispatch gone rather than silently rewritten.
+ * an hour later is not a record of anything. Rejected is final for that reason.
+ * Approved is not quite: an approved bill still has to be handed back to
+ * Accounts, which is its one further move.
+ *
+ * MOVED_TO_ACCOUNTS is a resolution rather than a step back: CSD is done with
+ * the GRN, and what happens to it next is Accounts' own accounts_stage,
+ * tracked separately (see the accounts-returns endpoints below) -- it does not
+ * reopen the CSD ladder, so it has no next stages of its own.
  *
  * Enforced here rather than only in the dropdown that offers it: the dropdown is
  * a convenience, this is the rule.
@@ -49,12 +56,13 @@ const STAGE_SET = new Set(STAGES);
 const NEXT_STAGES = {
   QUEUED: ['RECEIVED'],
   RECEIVED: ['APPROVED', 'REJECTED'],
-  APPROVED: [],
+  APPROVED: ['MOVED_TO_ACCOUNTS'],
   REJECTED: [],
+  MOVED_TO_ACCOUNTS: [],
 };
 
 /** Stage names as the message writes them: APPROVED -> "approved". */
-const spellStage = (stage) => String(stage).toLowerCase();
+const spellStage = (stage) => (stage === 'MOVED_TO_ACCOUNTS' ? 'moved to accounts' : String(stage).toLowerCase());
 
 /**
  * The column that records when a row reached each stage, alongside the general
@@ -68,14 +76,15 @@ const STAGE_STAMPS = {
   RECEIVED: 'received_at',
   APPROVED: 'approved_at',
   REJECTED: 'rejected_at',
+  MOVED_TO_ACCOUNTS: 'moved_to_accounts_at',
 };
 
 /**
  * The columns the search box looks in. The same three a GRN is chased by --
  * vendor, GRN number, bill number -- plus the ageing report's own GRN_NO, which
- * is what CSD quote back.
+ * is what CSD quote back, and the cheque it was paid by.
  */
-const SEARCH_COLUMNS = ['c.vendor_name', 'c.dpr_no', 'c.bill_no', 'c.ageing_grn_no'];
+const SEARCH_COLUMNS = ['c.vendor_name', 'c.dpr_no', 'c.bill_no', 'c.ageing_grn_no', 'c.cheque_no'];
 
 /** Push the search parameter and return its SQL, or null when nothing was typed. */
 function searchFilter(term, params) {
@@ -96,17 +105,28 @@ function stageFilter(stage, params) {
 const DISPATCH_COLUMNS = `
   SELECT c.id, c.dpr_no, c.division_code, c.dpr_date, c.bill_no, c.bill_date,
          c.vendor_code, c.vendor_name, c.location, c.ageing_grn_no,
-         c.net_amt, c.payable_amount, c.status, c.discrepancy_notes,
+         c.net_amt, c.adj_pur_return, c.adjusted_jv, c.tds_jv, c.payable_amount,
+         c.cheque_no, c.chq_date, c.payment_doc_no,
+         c.status, c.discrepancy_notes,
          c.batch_id, c.sent_at,
          c.stage, c.stage_at, c.received_at, c.approved_at, c.rejected_at,
+         c.moved_to_accounts_at, c.accounts_stage, c.accounts_received_at,
+         c.forwarded_to, c.forwarded_route, c.forwarded_name, c.forwarded_mobile,
+         c.forwarded_date, c.forwarded_at,
          u.full_name  AS sent_by_name,
          u.username   AS sent_by_username,
          su.full_name AS stage_by_name,
          su.username  AS stage_by_username,
+         au.full_name AS accounts_received_by_name,
+         au.username  AS accounts_received_by_username,
+         fu.full_name AS forwarded_by_name,
+         fu.username  AS forwarded_by_username,
          b.name       AS batch_name
   FROM csd_dispatches c
   LEFT JOIN users u ON u.id = c.sent_by
   LEFT JOIN users su ON su.id = c.stage_by
+  LEFT JOIN users au ON au.id = c.accounts_received_by
+  LEFT JOIN users fu ON fu.id = c.forwarded_by
   LEFT JOIN upload_batches b ON b.id = c.batch_id
 `;
 
@@ -123,7 +143,17 @@ function mapDispatch(r) {
     location: r.location,
     ageingGrnNo: r.ageing_grn_no,
     netAmt: r.net_amt,
+    adjPurReturn: r.adj_pur_return,
+    adjustedJv: r.adjusted_jv,
+    tdsJv: r.tds_jv,
     payableAmount: r.payable_amount,
+    // Text, not numeric, same as the results table -- a cheque number is an
+    // identifier, and one with a leading zero must not reopen as a plain number.
+    chequeNo: r.cheque_no,
+    // The day the ageing report says the cheque was cut -- not the day it
+    // cleared, which this table does not track at all.
+    chqDate: r.chq_date,
+    paymentDocNo: r.payment_doc_no,
     // The reconciliation's verdict, fixed at the moment of sending. Named apart
     // from `stage` so the two are never mistaken for each other on the client.
     matchStatus: r.status,
@@ -133,7 +163,23 @@ function mapDispatch(r) {
     receivedAt: r.received_at,
     approvedAt: r.approved_at,
     rejectedAt: r.rejected_at,
+    movedToAccountsAt: r.moved_to_accounts_at,
     stageBy: r.stage_by_name || r.stage_by_username || null,
+    // Accounts' own progress once CSD has handed a GRN back -- see
+    // accounts_stage in schema.sql. Null until stage reaches MOVED_TO_ACCOUNTS.
+    accountsStage: r.accounts_stage,
+    accountsReceivedAt: r.accounts_received_at,
+    accountsReceivedBy: r.accounts_received_by_name || r.accounts_received_by_username || null,
+    // Where Accounts sent the GRN on to, once received -- the last step in its
+    // journey. forwardedRoute, forwardedName and forwardedMobile only ever
+    // carry a value for VENDOR; see forwarded_route in schema.sql.
+    forwardedTo: r.forwarded_to,
+    forwardedRoute: r.forwarded_route,
+    forwardedName: r.forwarded_name,
+    forwardedMobile: r.forwarded_mobile,
+    forwardedDate: r.forwarded_date,
+    forwardedAt: r.forwarded_at,
+    forwardedBy: r.forwarded_by_name || r.forwarded_by_username || null,
     batchId: r.batch_id,
     // Null once the upload it was read from has been deleted, which is a state
     // the screen shows rather than hides -- the handover still happened.
@@ -214,7 +260,7 @@ function whereFrom(clauses) {
 /**
  * GET /api/csd?page=&pageSize=&q=&stage=&all=
  *
- * The queue, newest handover first, plus the four stage counts the cards read.
+ * The queue, newest handover first, plus the five stage counts the cards read.
  *
  * The counts follow the search but deliberately NOT the stage filter. They are
  * how a stage is picked, so computing them inside their own filter would zero
@@ -348,10 +394,16 @@ csdRouter.post(
       toText(body.location),
       toText(body.ageingGrnNo),
       toNumber(body.netAmt),
+      toNumber(body.adjPurReturn),
+      toNumber(body.adjustedJv),
+      toNumber(body.tdsJv),
       toNumber(body.payableAmount),
+      toText(body.chequeNo),
+      toDate(body.chqDate),
+      toText(body.paymentDocNo),
       status,
       toText(body.discrepancyNotes),
-      Number.isInteger(Number(body.batchId)) ? Number(body.batchId) : null,
+      Number.isInteger(Number(body.batchId)) && Number(body.batchId) > 0 ? Number(body.batchId) : null,
       req.user.id,
     ];
 
@@ -359,8 +411,9 @@ csdRouter.post(
       `INSERT INTO csd_dispatches
          (dpr_no_key, dpr_no, division_code, dpr_date, bill_no, bill_date,
           vendor_code, vendor_name, location, ageing_grn_no, net_amt,
-          payable_amount, status, discrepancy_notes, batch_id, sent_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          adj_pur_return, adjusted_jv, tds_jv, payable_amount, cheque_no,
+          chq_date, payment_doc_no, status, discrepancy_notes, batch_id, sent_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        ON CONFLICT (dpr_no_key) DO UPDATE SET
          dpr_no = EXCLUDED.dpr_no,
          division_code = EXCLUDED.division_code,
@@ -372,7 +425,13 @@ csdRouter.post(
          location = EXCLUDED.location,
          ageing_grn_no = EXCLUDED.ageing_grn_no,
          net_amt = EXCLUDED.net_amt,
+         adj_pur_return = EXCLUDED.adj_pur_return,
+         adjusted_jv = EXCLUDED.adjusted_jv,
+         tds_jv = EXCLUDED.tds_jv,
          payable_amount = EXCLUDED.payable_amount,
+         cheque_no = EXCLUDED.cheque_no,
+         chq_date = EXCLUDED.chq_date,
+         payment_doc_no = EXCLUDED.payment_doc_no,
          status = EXCLUDED.status,
          discrepancy_notes = EXCLUDED.discrepancy_notes,
          batch_id = EXCLUDED.batch_id,
@@ -421,10 +480,15 @@ csdRouter.patch(
     // COALESCE, not a plain assignment: the ladder means a stage is reached once,
     // and the first time it was reached is the answer the report wants.
     const stamp = STAGE_STAMPS[stage];
+    // Handing a GRN to MOVED_TO_ACCOUNTS starts Accounts' own two-step
+    // acknowledgement fresh -- QUEUED the moment it lands, same as this
+    // dispatch itself started at QUEUED on the CSD side.
+    const startsAccountsStage = stage === 'MOVED_TO_ACCOUNTS' ? ", accounts_stage = 'QUEUED'" : '';
     const { rows } = await query(
       `UPDATE csd_dispatches
        SET stage = $1, stage_at = NOW(), stage_by = $2
            ${stamp ? `, ${stamp} = COALESCE(${stamp}, NOW())` : ''}
+           ${startsAccountsStage}
        WHERE id = $3 AND stage = ANY($4)
        RETURNING id`,
       [stage, req.user.id, id, from],

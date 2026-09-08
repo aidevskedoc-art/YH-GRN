@@ -5,11 +5,12 @@
  * appears in the Vendor Ageing report. The GRN number is the authoritative key:
  * it is unique per transaction and present in both systems.
  *
- * Bill number and vendor name are compared as well, but a disagreement does not
- * demote a row to PENDING -- the two systems spell vendor names differently
- * ("PVT. LTD." vs "PRIVATE LIMITED"), and treating that as a non-match would
- * report hundreds of already-processed GRNs as outstanding. Such rows are
- * flagged MATCHED_WITH_DIFF instead so the difference stays visible.
+ * Bill number is compared as well, but a disagreement does not demote a row to
+ * PENDING -- such rows are flagged MATCHED_WITH_DIFF instead so the difference
+ * stays visible. Vendor name is not compared: the two systems spell it
+ * differently often enough ("PVT. LTD." vs "PRIVATE LIMITED") that it is not a
+ * meaningful signal, so a row's vendor name is left exactly as its own source
+ * report spells it.
  */
 
 export const STATUS = {
@@ -24,7 +25,7 @@ export const STATUS = {
  * A GRN with several cheque/payment entries repeats across rows, so the first
  * occurrence wins and the rest are counted as duplicates.
  */
-function indexAgeingByGrnNumber(ageingRows) {
+export function indexAgeingByGrnNumber(ageingRows) {
   const index = new Map();
   let duplicateRows = 0;
 
@@ -40,19 +41,39 @@ function indexAgeingByGrnNumber(ageingRows) {
   return { index, duplicateRows };
 }
 
-function describeDiscrepancies(grnRow, ageingRow, billNoMatch, vendorNameMatch) {
+function describeDiscrepancies(grnRow, ageingRow, billNoMatch) {
   const notes = [];
   if (!billNoMatch) {
     notes.push(`Bill No differs - GRN report: "${grnRow.billNo}", Ageing: "${ageingRow.billNo}"`);
-  }
-  if (!vendorNameMatch) {
-    notes.push(`Vendor Name differs - GRN report: "${grnRow.vendorName}", Ageing: "${ageingRow.vendorName}"`);
   }
   return notes.join('; ') || null;
 }
 
 function emptyBucket() {
   return { count: 0, amount: 0 };
+}
+
+/**
+ * Pair one GRN row against its ageing row, or against `undefined` when none
+ * was found, and return the reconciliation verdict for that pair alone.
+ *
+ * Split out from reconcile() so ingest.js can run the identical verdict for a
+ * pair that spans two different uploads -- a GRN stored by one upload matched
+ * against an ageing row that arrived in a later one (or the other way round).
+ * reconcile() below is still the whole story for two files uploaded together;
+ * this is the one piece of it ingest.js also needs on its own.
+ */
+export function matchGrnAgeingPair(grn, ageing) {
+  if (!ageing) {
+    return { status: STATUS.PENDING, billNoMatch: null, vendorNameMatch: null, discrepancyNotes: null };
+  }
+
+  const billNoMatch = grn.billNoKey === ageing.billNoKey;
+  const vendorNameMatch = grn.vendorNameKey === ageing.vendorNameKey;
+  const status = billNoMatch ? STATUS.MATCHED : STATUS.MATCHED_WITH_DIFF;
+  const discrepancyNotes = status === STATUS.MATCHED_WITH_DIFF ? describeDiscrepancies(grn, ageing, billNoMatch) : null;
+
+  return { status, billNoMatch, vendorNameMatch, discrepancyNotes };
 }
 
 /**
@@ -78,22 +99,7 @@ export function reconcile(grnRows, ageingRows) {
   const results = grnRows.map((grn) => {
     const ageing = grn.dprNoKey ? index.get(grn.dprNoKey) : undefined;
     const amount = grn.totalAmount ?? 0;
-
-    let status;
-    let billNoMatch = null;
-    let vendorNameMatch = null;
-    let discrepancyNotes = null;
-
-    if (!ageing) {
-      status = STATUS.PENDING;
-    } else {
-      billNoMatch = grn.billNoKey === ageing.billNoKey;
-      vendorNameMatch = grn.vendorNameKey === ageing.vendorNameKey;
-      status = billNoMatch && vendorNameMatch ? STATUS.MATCHED : STATUS.MATCHED_WITH_DIFF;
-      if (status === STATUS.MATCHED_WITH_DIFF) {
-        discrepancyNotes = describeDiscrepancies(grn, ageing, billNoMatch, vendorNameMatch);
-      }
-    }
+    const { status, billNoMatch, vendorNameMatch, discrepancyNotes } = matchGrnAgeingPair(grn, ageing);
 
     summary[status].count += 1;
     summary[status].amount += amount;

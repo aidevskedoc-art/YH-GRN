@@ -19,15 +19,15 @@ export default function Upload() {
   const navigate = useNavigate();
 
   const [name, setName] = useState(suggestedName);
-  // Both optional, and either works on its own: a GRN report with no ageing
-  // report reconciles as every row PENDING, and an ageing report with no GRN
-  // report has nothing to reconcile yet but is still stored for the month --
-  // uploading the GRN report later is what reconciles it. At least one of the
-  // two is required; see the check below.
+  // All three optional, and every one works uploaded on its own: a GRN report
+  // with no ageing report reconciles as every row PENDING, an ageing report
+  // with no GRN report has nothing to reconcile yet but is still stored for
+  // the month -- uploading the GRN report later is what reconciles it -- and
+  // a bank statement is stored and ready for its cheques to be matched
+  // against whatever ageing rows exist, now or later. At least one of the
+  // three is required; see the check below.
   const [grnFile, setGrnFile] = useState(null);
   const [ageingFile, setAgeingFile] = useState(null);
-  // Optional. The reconciliation runs on the two reports; the statement is
-  // stored alongside them and matched to nothing yet.
   const [bankFile, setBankFile] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -50,8 +50,8 @@ export default function Upload() {
       return;
     }
 
-    if (!grnFile && !ageingFile) {
-      setError('Please choose the GRN report, the Vendor Ageing report, or both.');
+    if (!grnFile && !ageingFile && !bankFile) {
+      setError('Please choose at least one file: the GRN report, the Vendor Ageing report, or the bank statement.');
       return;
     }
 
@@ -128,7 +128,7 @@ export default function Upload() {
           <FileDrop
             step={3}
             label="Bank Statement — optional"
-            hint="Only the transaction table is read"
+            hint="Only the transaction table is read. Works uploaded on its own too."
             example="06. HDFC - 9911_Apr'26.xls"
             file={bankFile}
             onSelect={pick(setBankFile)}
@@ -155,8 +155,10 @@ export default function Upload() {
                 ? 'GRN report ready — ageing report not included'
                 : ageingFile
                   ? 'Ageing report ready — GRN report not included, so nothing reconciles yet'
-                  : 'Choose the GRN report, the ageing report, or both'}
-            {bankFile && ' — bank statement included'}
+                  : bankFile
+                    ? 'Bank statement ready — no report included, so nothing reconciles yet'
+                    : 'Choose the GRN report, the ageing report, or the bank statement'}
+            {bankFile && ready > 0 && ' — bank statement included'}
           </p>
 
           {/* The button stays live with a slot still empty: a dead control
