@@ -176,7 +176,7 @@ function MatchState({ status }) {
  * landing -- the row on screen is still the one the server sent before it knew
  * -- so it falls back to QUEUED, which is where a send has just put it.
  */
-function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, forwardedName, forwardedMobile, forwardedDate, forwardedCourierName, forwardedDocketNo, filed, clearedOn }) {
+function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, forwardedName, forwardedMobile, forwardedDate, forwardedCourierName, forwardedDocketNo, forwardedRemarks, filed, clearedOn }) {
   // Records has no stages, so there is one thing to say about it and this is
   // it. A GRN cannot be at both destinations -- the dropdown that sends it goes
   // away once it has gone -- so the two never have to be shown together.
@@ -192,13 +192,16 @@ function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, fo
 
   // Who it was handed to and when, on hover -- set for VENDOR and OTHERS,
   // both hand-offs to a person, and too much detail for the pill itself.
-  // Courier gets the same treatment with its own two fields in place of a
-  // person's name and mobile number.
+  // OTHERS adds its own remark, since there is no vendor record or department
+  // name behind that door to say what it actually was. Courier gets the same
+  // treatment with its own two fields in place of a person's name and mobile
+  // number, plus the same day every hand-off but Bank records.
   const forwardHint =
     forwardedTo === 'VENDOR' || forwardedTo === 'OTHERS'
-      ? `Handed to ${forwardedName}, ${forwardedMobile}, on ${formatDate(forwardedDate)}`
+      ? `Handed to ${forwardedName}, ${forwardedMobile}, on ${formatDate(forwardedDate)}` +
+        (forwardedTo === 'OTHERS' && forwardedRemarks ? ` — ${forwardedRemarks}` : '')
       : forwardedTo === 'COURIER'
-        ? `Handed to ${forwardedCourierName}, docket ${forwardedDocketNo}`
+        ? `Handed to ${forwardedCourierName}, docket ${forwardedDocketNo}, on ${formatDate(forwardedDate)}`
         : undefined;
 
   if (clearedOn) {
@@ -339,15 +342,18 @@ function AccountsStagePicker({ row, busy, onReceive, onForwardSimple, onOpenForw
         disabled={busy}
         onChange={(e) => {
           const value = e.target.value;
-          if (value === 'VENDOR' || value === 'OTHERS' || value === 'COURIER') onOpenForwardForm(row, value);
+          if (value === 'VENDOR' || value === 'COURIER') onOpenForwardForm(row, value);
           else if (value === 'BANK') onForwardSimple(row, value);
         }}
         aria-label={`Send GRN ${row.dprNo} on to its next destination`}
       >
         <option value="RECEIVED">Received</option>
         <option value="BANK">Send to Bank</option>
+        {/* Others lives inside this dialog now -- see the Where select in
+            ForwardDetailsDialog -- rather than as a destination of its own
+            here, since it is really a third door alongside Vendor and
+            Purchase Department. */}
         <option value="VENDOR">Send to Vendor</option>
-        <option value="OTHERS">Others</option>
         <option value="COURIER">Send to Courier</option>
       </select>
     );
@@ -368,17 +374,23 @@ function AccountsStagePicker({ row, busy, onReceive, onForwardSimple, onOpenForw
 }
 
 /**
- * Send to Vendor and Send to Others both open this dialog rather than acting
- * immediately, because a hand-off to a person needs who took it, on what
- * number, and on what day before it means anything -- unlike Bank, which has
- * no such person to record and so still acts on selection.
+ * Send to Vendor and Send to Courier both open this dialog rather than acting
+ * immediately, because a hand-off to a person or a service needs who took it,
+ * on what number (or docket), and on what day before it means anything --
+ * unlike Bank, which has no such record to collect and so still acts on
+ * selection.
  *
- * Vendor alone carries a further choice on top of that: which of its two
- * doors the GRN went out of, the vendor itself or the purchase department
- * that stands in for it. That field is left unchosen at first rather than
- * defaulting to Vendor -- picking one is what reveals the three fields below
- * it, which is the closest a plain form gets to a nested dropdown. Others has
- * no such door, so for it the three fields show right away.
+ * Vendor carries a further choice on top of that: which of its three doors
+ * the GRN went out of -- the vendor itself, the purchase department that
+ * stands in for it, or Others, for a destination that is neither. That field
+ * is left unchosen at first rather than defaulting to one of the three --
+ * picking one is what reveals the fields below it, which is the closest a
+ * plain form gets to a nested dropdown. Others is a door alongside the other
+ * two rather than a destination of its own for the same reason Purchase
+ * Department is: neither is a vendor record, but both are still something
+ * accounts hands the GRN off through on the vendor's side of the ledger, and
+ * Others additionally carries a remark, since there is no vendor record or
+ * department name behind it to say what it actually was.
  */
 function ForwardDetailsDialog({ row, to, busy, error, onSubmit, onClose }) {
   const isVendor = to === 'VENDOR';
@@ -389,12 +401,15 @@ function ForwardDetailsDialog({ row, to, busy, error, onSubmit, onClose }) {
   const [date, setDate] = useState('');
   const [courierName, setCourierName] = useState('');
   const [docketNo, setDocketNo] = useState('');
+  const [remarks, setRemarks] = useState('');
 
-  // Vendor's fields wait on the door being chosen; Others has no door to wait
-  // on, so its fields are there from the start. Courier has neither a door
-  // nor these fields -- it gets its own pair below instead.
-  const showFields = !isVendor && !isCourier ? true : isVendor && route;
-  const label = isVendor ? 'Vendor' : isCourier ? 'Courier' : 'Others';
+  const othersChosen = isVendor && route === 'OTHERS';
+
+  // Vendor's fields wait on the door being chosen -- Vendor, Purchase
+  // Department or Others all reveal the same three below. Courier has no
+  // door and none of these -- it gets its own pair, plus the shared Date.
+  const showFields = isVendor && route;
+  const label = isCourier ? 'Courier' : othersChosen ? 'Others' : 'Vendor';
 
   return (
     <Sheet label={`Send GRN ${row.dprNo} to ${label}`} narrow onClose={busy ? () => {} : onClose}>
@@ -402,7 +417,7 @@ function ForwardDetailsDialog({ row, to, busy, error, onSubmit, onClose }) {
         className="sheet__form"
         onSubmit={(e) => {
           e.preventDefault();
-          onSubmit({ route, name, mobile, date, courierName, docketNo });
+          onSubmit({ route, name, mobile, date, courierName, docketNo, remarks });
         }}
       >
         <div className="sheet__head">
@@ -426,12 +441,12 @@ function ForwardDetailsDialog({ row, to, busy, error, onSubmit, onClose }) {
                 </option>
                 <option value="VENDOR">Vendor</option>
                 <option value="PURCHASE_DEPT">Purchase Department</option>
+                <option value="OTHERS">Others</option>
               </select>
             </label>
           )}
 
-          {/* For Vendor, only once a door is chosen -- see the note above the
-              component. For Others there is no door, so these show at once. */}
+          {/* Only once a door is chosen -- see the note above the component. */}
           {showFields && (
             <>
               <label className="field">
@@ -462,11 +477,27 @@ function ForwardDetailsDialog({ row, to, busy, error, onSubmit, onClose }) {
                 <input
                   className="field__input"
                   type="date"
+                  lang="en-GB"
                   value={date}
                   onChange={(e) => setDate(e.target.value)}
                   required
                 />
               </label>
+
+              {/* Others alone: there is no vendor record or department name
+                  behind this door, so a remark is what explains it. */}
+              {othersChosen && (
+                <label className="field">
+                  <span className="field__label">Remarks</span>
+                  <textarea
+                    className="field__input"
+                    rows={3}
+                    value={remarks}
+                    onChange={(e) => setRemarks(e.target.value)}
+                    required
+                  />
+                </label>
+              )}
             </>
           )}
 
@@ -490,6 +521,18 @@ function ForwardDetailsDialog({ row, to, busy, error, onSubmit, onClose }) {
                   value={docketNo}
                   onChange={(e) => setDocketNo(e.target.value)}
                   autoComplete="off"
+                  required
+                />
+              </label>
+
+              <label className="field">
+                <span className="field__label">Date</span>
+                <input
+                  className="field__input"
+                  type="date"
+                  lang="en-GB"
+                  value={date}
+                  onChange={(e) => setDate(e.target.value)}
                   required
                 />
               </label>
@@ -573,9 +616,11 @@ export default function ResultsTable({
   const [justFiled, setJustFiled] = useState(() => new Set());
   const [error, setError] = useState('');
   // The row ForwardDetailsDialog is open for, or null, and which of its two
-  // destinations (VENDOR or OTHERS) it was opened for. Its own error is kept
-  // apart from the table's: a rejected submit has to stay on the dialog where
-  // the fields are, not flash below a table the dialog is covering.
+  // destinations (VENDOR or COURIER) it was opened for -- Others is a door
+  // inside the Vendor dialog rather than a destination of its own, see the
+  // note on ForwardDetailsDialog. Its own error is kept apart from the
+  // table's: a rejected submit has to stay on the dialog where the fields
+  // are, not flash below a table the dialog is covering.
   const [forwardFormRow, setForwardFormRow] = useState(null);
   const [forwardFormTo, setForwardFormTo] = useState(null);
   const [forwardFormError, setForwardFormError] = useState('');
@@ -670,17 +715,29 @@ export default function ResultsTable({
     }
   }
 
-  /** Vendor, Others or Courier: the dialog's own submit, once its fields are in. */
-  async function submitForwardForm({ route, name, mobile, date, courierName, docketNo }) {
+  /**
+   * Vendor or Courier: the dialog's own submit, once its fields are in.
+   *
+   * The dialog only ever opens for VENDOR or COURIER (see AccountsStagePicker
+   * and forwardFormTo), but its "Where" select folds a third door in under
+   * Vendor -- Others. That is a form-level choice, not the server's: the API
+   * still knows Others as its own destination (`to: 'OTHERS'`), the same as
+   * before this was nested here, so a route of OTHERS is translated back into
+   * a plain destination on the way out rather than sent as `route`, which the
+   * server would reject as neither VENDOR nor PURCHASE_DEPT.
+   */
+  async function submitForwardForm({ route, name, mobile, date, courierName, docketNo, remarks }) {
     const row = forwardFormRow;
-    const to = forwardFormTo;
+    const to = forwardFormTo === 'VENDOR' && route === 'OTHERS' ? 'OTHERS' : forwardFormTo;
     setBusy(row.dprNo);
     setForwardFormError('');
     try {
       await api.forwardAccountsReturn(row.csdDispatchId, {
         to,
         ...(to === 'VENDOR' ? { route } : {}),
-        ...(to === 'COURIER' ? { courierName, docketNo } : { name, mobile, date }),
+        ...(to === 'OTHERS' ? { remarks } : {}),
+        ...(to === 'COURIER' ? { courierName, docketNo, date } : {}),
+        ...(to === 'VENDOR' || to === 'OTHERS' ? { name, mobile, date } : {}),
       });
       setForwardFormRow(null);
       onSent?.();
@@ -890,6 +947,7 @@ export default function ResultsTable({
                       forwardedDate={row.csdForwardedDate}
                       forwardedCourierName={row.csdForwardedCourierName}
                       forwardedDocketNo={row.csdForwardedDocketNo}
+                      forwardedRemarks={row.csdForwardedRemarks}
                       filed={isFiled(row)}
                       clearedOn={row.chequeClearedOn}
                     />

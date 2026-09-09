@@ -357,6 +357,7 @@ const ROW_COLUMNS = `
          c.forwarded_date    AS csd_forwarded_date,
          c.forwarded_courier_name AS csd_forwarded_courier_name,
          c.forwarded_docket_no    AS csd_forwarded_docket_no,
+         c.forwarded_remarks      AS csd_forwarded_remarks,
          (rd.id IS NOT NULL) AS records_sent,
          rd.sent_at          AS records_sent_at,
          ${CHEQUE_COLUMNS}
@@ -451,7 +452,8 @@ function mapRow(r) {
     // Where Accounts sent the GRN on to, once received -- see forwarded_to in
     // schema.sql. csdForwardedRoute only ever carries a value for VENDOR;
     // Name/Mobile/Date carry one for VENDOR and OTHERS alike, and stay null
-    // for BANK. CourierName/DocketNo carry one for COURIER alone.
+    // for BANK. CourierName/DocketNo carry one for COURIER alone, which also
+    // has its own Date. Remarks carries one for OTHERS alone.
     csdForwardedTo: r.csd_forwarded_to ?? null,
     csdForwardedRoute: r.csd_forwarded_route ?? null,
     csdForwardedName: r.csd_forwarded_name ?? null,
@@ -459,6 +461,7 @@ function mapRow(r) {
     csdForwardedDate: r.csd_forwarded_date ?? null,
     csdForwardedCourierName: r.csd_forwarded_courier_name ?? null,
     csdForwardedDocketNo: r.csd_forwarded_docket_no ?? null,
+    csdForwardedRemarks: r.csd_forwarded_remarks ?? null,
     // The other destination. Records keeps no stages, so there is nothing to
     // report but that it went and when.
     recordsSent: r.records_sent ?? false,
@@ -837,7 +840,9 @@ const TURNAROUND_COLUMNS = `
          a.id AS ageing_id,
          g.dpr_no, g.bill_date, g.vendor_name, g.vendor_code, g.location,
          g.bill_amount, g.transport_amount, g.add_amount, g.ded_amount,
-         a.division_code, ${PAYABLE_AMOUNT} AS payable_amount,
+         a.division_code,
+         a.net_amt, a.adj_pur_return, a.adjusted_jv, a.tds_jv,
+         ${PAYABLE_AMOUNT} AS payable_amount,
          a.grn_no, a.bill_no,
          a.indent_date, a.po_date, a.security_date, a.grn_date,
          a.bill_to_audit, a.bill_handover_to_acc, a.chq_date,
@@ -895,6 +900,12 @@ function mapTurnaroundRow(r) {
     transportAmount: r.transport_amount,
     addAmount: r.add_amount,
     dedAmount: r.ded_amount,
+    // The ageing report's own amount breakdown -- NetAmt through PayableAmount,
+    // the same four columns and order as the CSD and Valid GRNs tabs.
+    netAmt: r.net_amt,
+    adjPurReturn: r.adj_pur_return,
+    adjustedJv: r.adjusted_jv,
+    tdsJv: r.tds_jv,
     payableAmount: r.payable_amount,
     indentDate: r.indent_date,
     poDate: r.po_date,
@@ -1259,7 +1270,8 @@ const ACCOUNTS_RETURN_COLUMNS = `
          c.cheque_no, c.chq_date, c.payment_doc_no,
          c.moved_to_accounts_at, c.accounts_stage, c.accounts_received_at,
          c.forwarded_to, c.forwarded_route, c.forwarded_name, c.forwarded_mobile,
-         c.forwarded_date, c.forwarded_courier_name, c.forwarded_docket_no, c.forwarded_at,
+         c.forwarded_date, c.forwarded_courier_name, c.forwarded_docket_no,
+         c.forwarded_remarks, c.forwarded_at,
          au.full_name AS accounts_received_by_name,
          au.username  AS accounts_received_by_username,
          fu.full_name AS forwarded_by_name,
@@ -1293,6 +1305,7 @@ function mapAccountsReturn(r) {
     forwardedDate: r.forwarded_date,
     forwardedCourierName: r.forwarded_courier_name,
     forwardedDocketNo: r.forwarded_docket_no,
+    forwardedRemarks: r.forwarded_remarks,
     forwardedAt: r.forwarded_at,
     forwardedBy: r.forwarded_by_name || r.forwarded_by_username || null,
   };
@@ -1361,13 +1374,17 @@ accountsReturnsRouter.patch(
 /**
  * PATCH /api/accounts-returns/:id/forward
  *
- * Body: { to, route, name, mobile, date, courierName, docketNo }. Accounts'
- * last move on a GRN: where the paperwork goes once they have it -- Bank
- * needs nothing further, Vendor and Others both need who took it, on what
- * number, on what day, and Vendor additionally needs the door it went out of
- * (the vendor itself or the purchase department). Courier needs neither -- it
- * hands the GRN to a service, not a person -- so it carries its own pair
- * instead: which courier, and the docket number it went out under.
+ * Body: { to, route, name, mobile, date, courierName, docketNo, remarks }.
+ * Accounts' last move on a GRN: where the paperwork goes once they have it --
+ * Bank needs nothing further, Vendor and Others both need who took it, on
+ * what number, on what day, and Vendor additionally needs the door it went
+ * out of (the vendor itself or the purchase department). Others carries a
+ * remark on top of that, since there is no vendor record or purchase-
+ * department door behind an arbitrary destination to explain it otherwise.
+ * Courier hands the GRN to a service, not a person -- so it carries its own
+ * pair in place of name/mobile: which courier, and the docket number it went
+ * out under -- but still records the day, the same as every other
+ * destination but Bank.
  *
  * A one-shot write, same as /receive: only from a dispatch Accounts has
  * actually received, and only once -- there is nowhere for a second forward to
@@ -1394,6 +1411,7 @@ accountsReturnsRouter.patch(
     let date = null;
     let courierName = null;
     let docketNo = null;
+    let remarks = null;
 
     if (to === 'VENDOR') {
       route = String(req.body?.route || '').toUpperCase();
@@ -1425,8 +1443,19 @@ accountsReturnsRouter.patch(
       }
     }
 
+    // Others alone carries a remark: it is the door with no vendor record and
+    // no purchase-department option behind it, so a free-text note is what
+    // says what it actually was.
+    if (to === 'OTHERS') {
+      remarks = String(req.body?.remarks || '').trim();
+      if (!remarks) {
+        return res.status(400).json({ error: 'A remark is required for this hand-off.' });
+      }
+    }
+
     // Courier hands the GRN to a service, not a person -- which courier, and
-    // the docket number it went out under, in place of name/mobile/date.
+    // the docket number it went out under, in place of name/mobile -- and the
+    // day it was handed over, same as every other destination but Bank.
     if (to === 'COURIER') {
       courierName = String(req.body?.courierName || '').trim();
       if (!courierName) {
@@ -1437,17 +1466,23 @@ accountsReturnsRouter.patch(
       if (!docketNo) {
         return res.status(400).json({ error: 'A docket number is required for this hand-off.' });
       }
+
+      date = String(req.body?.date || '');
+      if (!isForwardCalendarDate(date)) {
+        return res.status(400).json({ error: 'A real date is required for this hand-off.' });
+      }
     }
 
     const { rows } = await query(
       `UPDATE csd_dispatches
        SET forwarded_to = $1, forwarded_route = $2, forwarded_name = $3,
            forwarded_mobile = $4, forwarded_date = $5, forwarded_courier_name = $6,
-           forwarded_docket_no = $7, forwarded_at = NOW(), forwarded_by = $8
-       WHERE id = $9 AND stage = 'MOVED_TO_ACCOUNTS' AND accounts_stage = 'RECEIVED'
+           forwarded_docket_no = $7, forwarded_remarks = $8,
+           forwarded_at = NOW(), forwarded_by = $9
+       WHERE id = $10 AND stage = 'MOVED_TO_ACCOUNTS' AND accounts_stage = 'RECEIVED'
              AND forwarded_to IS NULL
        RETURNING id`,
-      [to, route, name, mobile, date, courierName, docketNo, req.user.id, id],
+      [to, route, name, mobile, date, courierName, docketNo, remarks, req.user.id, id],
     );
 
     if (rows.length > 0) {

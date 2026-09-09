@@ -269,8 +269,17 @@
 
   --scrim: rgba(40, 26, 12, 0.44);
 
-  --room: url('./assets/bg-drape-light.svg');
-  --room-vignette: radial-gradient(115% 85% at 68% 4%, rgba(120, 96, 62, 0) 30%, rgba(120, 96, 62, 0.16) 76%, rgba(96, 76, 48, 0.28) 100%);
+  /* The dark drape's folds read as shadow -- the same warm-brown gradient on a
+     pale ground reads as a stain, because a brown patch on cream has no shadow
+     to be. So the room here carries a near-opaque paper-coloured wash as its
+     TOPMOST layer (background-image paints first-listed on top), which mutes
+     the photograph underneath to a whisper of grain rather than a visible
+     smear. The corner vignette below it is the same idea as the dark theme's,
+     just weakened for the same reason -- it only has to deepen the edges. */
+  /* --room: url('./assets/bg-drape-light.svg'); */
+  --room-vignette:
+    linear-gradient(rgba(236, 227, 211, 0.93), rgba(236, 227, 211, 0.93)),
+    radial-gradient(115% 85% at 68% 4%, rgba(120, 96, 62, 0) 30%, rgba(120, 96, 62, 0.05) 76%, rgba(96, 76, 48, 0.09) 100%);
 
   --tex-blend: soft-light;
   --face: linear-gradient(152deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 251, 243, 0.30) 40%, rgba(174, 152, 120, 0.16) 100%);
@@ -592,6 +601,57 @@ code, .mono {
   box-shadow: none;
 }
 .icon-btn-dark:hover:not(:disabled) { background: var(--brand-200); color: #fff; }
+
+/* --- the rail, re-poured for paper ------------------------------------------
+   Every rule above reads its light and dark as a literal rgba(255,255,255,a)
+   or rgba(0,0,0,a) rather than off a theme token, so none of it noticed the
+   theme changing underneath it -- the rail stayed the dark theme's own black,
+   dropped onto an otherwise light page like a leftover fragment. This gives it
+   its own light material instead: a panel one shade back from the page (so it
+   still reads as a rail, not a continuation of the content), dark ink for
+   type, and every rgba(255,255,255,a) reading white-on-black flipped to its
+   rgba(58,40,22,a) reading dark-on-paper. */
+[data-theme="light"] .sidebar {
+  --face: linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 251, 243, 0.15) 45%, rgba(174, 152, 120, 0.10) 100%);
+  background-color: #f1e8d7;
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.6), 1px 0 0 var(--border), 12px 0 30px rgba(58, 40, 22, 0.08);
+  color: var(--text);
+}
+[data-theme="light"] .sidebar::before {
+  background: radial-gradient(circle at 30% 30%, rgba(245, 134, 51, 0.16), transparent 62%);
+}
+[data-theme="light"] .sidebar-head,
+[data-theme="light"] .sidebar-foot {
+  border-color: var(--border);
+}
+[data-theme="light"] .brand-lockup.on-dark .brand-name { color: var(--text); }
+[data-theme="light"] .brand-lockup.on-dark .brand-sub { color: var(--text-2); }
+[data-theme="light"] .brand-lockup img {
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7), 0 2px 8px rgba(58, 40, 22, 0.18);
+}
+[data-theme="light"] .nav-section { color: var(--muted); }
+[data-theme="light"] .nav-item { color: var(--text-2); }
+[data-theme="light"] .nav-item:hover { background: rgba(58, 40, 22, 0.06); color: var(--text); }
+[data-theme="light"] .nav-item.active {
+  background: linear-gradient(90deg, var(--brand-100), rgba(245, 134, 51, 0.02));
+  color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), inset 0 -1px 0 rgba(58, 40, 22, 0.10);
+}
+[data-theme="light"] .nav-count { background: rgba(58, 40, 22, 0.08); color: var(--text-2); }
+[data-theme="light"] .user-chip {
+  background: rgba(58, 40, 22, 0.045);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+[data-theme="light"] .user-meta .user-name { color: var(--text); }
+[data-theme="light"] .user-meta .user-role { color: var(--muted); }
+[data-theme="light"] .icon-btn-dark { color: var(--text-2); }
+[data-theme="light"] .icon-btn-dark:hover:not(:disabled) { color: #fff; }
+[data-theme="light"] .rail-toggle {
+  border-color: var(--border-strong);
+  background: rgba(58, 40, 22, 0.05);
+  color: var(--text-2);
+}
+[data-theme="light"] .rail-toggle:hover { color: #fff; }
 
 /* Collapsed rail: icons only, labels removed from flow. Desktop only - below
    the drawer breakpoint the sidebar is an overlay and always shows its labels,

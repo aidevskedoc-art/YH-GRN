@@ -32,6 +32,23 @@ export function setUnauthorizedHandler(fn) {
 }
 
 /**
+ * What a status code means to someone who is not going to look it up. Only
+ * used when the server sent no `error` string of its own -- most routes do,
+ * and that wording wins every time (see `request` below) -- so this is the
+ * net under an unhandled crash or a proxy/gateway response with no JSON body.
+ */
+function fallbackMessage(status) {
+  if (status === 400) return 'That request was not valid.';
+  if (status === 403) return 'You do not have access to do that.';
+  if (status === 404) return 'That could not be found.';
+  if (status === 409) return 'That conflicts with something already there.';
+  if (status === 413) return 'File is too large.';
+  if (status === 429) return 'Too many requests. Please wait a moment and try again.';
+  if (status >= 500) return 'Something went wrong on our end. Please try again.';
+  return 'Something went wrong. Please try again.';
+}
+
+/**
  * `isSignIn` marks the one call made without a session: the login attempt. A
  * 401 there is the server refusing the credentials, not a session running out,
  * so it must be allowed through to the normal path and reach the form with the
@@ -44,11 +61,19 @@ async function request(path, { method = 'GET', body, isForm = false, isSignIn = 
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body && !isForm) headers['Content-Type'] = 'application/json';
 
-  const response = await fetch(`/api${path}`, {
-    method,
-    headers,
-    body: isForm ? body : body ? JSON.stringify(body) : undefined,
-  });
+  let response;
+  try {
+    response = await fetch(`/api${path}`, {
+      method,
+      headers,
+      body: isForm ? body : body ? JSON.stringify(body) : undefined,
+    });
+  } catch {
+    // The request never reached the server -- offline, DNS, a dropped VPN.
+    // The browser's own wording here ("Failed to fetch") names its API, not
+    // the user's problem.
+    throw new ApiError('Could not reach the server. Check your connection and try again.', 0);
+  }
 
   if (response.status === 401 && !isSignIn) {
     setToken(null);
@@ -64,7 +89,7 @@ async function request(path, { method = 'GET', body, isForm = false, isSignIn = 
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new ApiError(payload.error || `Request failed (${response.status}).`, response.status);
+    throw new ApiError(payload.error || fallbackMessage(response.status), response.status);
   }
   return payload;
 }
@@ -207,9 +232,9 @@ export const api = {
   /**
    * Accounts' last move on a GRN: where it goes on to. `body` is
    * `{ to: 'BANK' | 'VENDOR' | 'OTHERS' | 'COURIER' }`, plus `route` when `to`
-   * is 'VENDOR', `name`/`mobile`/`date` when `to` is 'VENDOR' or 'OTHERS', and
-   * `courierName`/`docketNo` when `to` is 'COURIER' -- Bank needs nothing
-   * further.
+   * is 'VENDOR', `name`/`mobile`/`date` when `to` is 'VENDOR' or 'OTHERS',
+   * `remarks` when `to` is 'OTHERS', and `courierName`/`docketNo`/`date` when
+   * `to` is 'COURIER' -- Bank needs nothing further.
    */
   forwardAccountsReturn: (id, body) =>
     request(`/accounts-returns/${id}/forward`, { method: 'PATCH', body }),

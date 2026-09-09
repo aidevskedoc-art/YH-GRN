@@ -134,12 +134,12 @@ const TURNAROUND_PARTICULARS = [
   { key: 'billDate', label: 'Bill Date', date: true, group: 'Particulars' },
   { key: 'vendorName', label: 'Vendor', group: 'Particulars' },
   { key: 'vendorCode', label: 'Vendor Code', group: 'Particulars' },
-  // The GRN report's own amount breakdown, ahead of PayableAmount -- the same
-  // four columns and the same order as Total GRNS and Pending.
-  { key: 'billAmount', label: 'Bill.Amount', numeric: true, group: 'Particulars' },
-  { key: 'transportAmount', label: 'Transport Amount', numeric: true, group: 'Particulars' },
-  { key: 'addAmount', label: 'Add.Amount', numeric: true, group: 'Particulars' },
-  { key: 'dedAmount', label: 'Ded.Amount', numeric: true, group: 'Particulars' },
+  // The ageing report's own amount breakdown, ahead of PayableAmount -- the
+  // same order as NetAmt through PayableAmount on the CSD and Valid GRNs tabs.
+  { key: 'netAmt', label: 'NetAmt', numeric: true, group: 'Particulars' },
+  { key: 'adjPurReturn', label: 'AdjPurReturn', numeric: true, group: 'Particulars' },
+  { key: 'adjustedJv', label: 'AdjustedJV', numeric: true, group: 'Particulars' },
+  { key: 'tdsJv', label: 'TDSJV', numeric: true, group: 'Particulars' },
   { key: 'payableAmount', label: 'PayableAmount', numeric: true, group: 'Particulars' },
   { key: 'chequeNo', label: 'Cheque No', group: 'Particulars' },
   // The ageing report's payment document number, right after the cheque it
@@ -227,6 +227,7 @@ const CSD_COLUMNS = [
   { key: 'paymentDocNo', label: 'PaymentDocNo' },
   { key: 'chequeNo', label: 'Cheque No' },
   { key: 'chqDate', label: 'Cheque Date', date: true },
+  { key: 'accountNo', label: 'Account No' },
   { key: 'stage', label: 'Status' },
   { key: 'queueDate', label: 'Queue Date' },
   { key: 'receivedDate', label: 'Received Date' },
@@ -243,7 +244,7 @@ const CSD_COLUMNS = [
 const STATUS_LABELS = {
   MATCHED: 'Moved to accounts',
   MATCHED_WITH_DIFF: 'Moved to accounts',
-  PENDING: 'Pending - not in accounts',
+  PENDING: 'Not received by Accounts',
 };
 
 /**

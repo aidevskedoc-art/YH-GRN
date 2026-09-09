@@ -13,7 +13,7 @@ import { requireAuth, requireAdmin, requireScreen } from '../middleware/auth.js'
 import { asyncHandler } from '../middleware/error.js';
 import { normKey } from '../services/normalize.js';
 import { branchFor } from '../config/screens.js';
-import { branchScope, branchPick } from '../services/branchScope.js';
+import { branchScope, branchPick, branchAccountNo } from '../services/branchScope.js';
 
 export const csdRouter = express.Router();
 
@@ -102,11 +102,22 @@ function stageFilter(stage, params) {
   return `c.stage = $${params.length}`;
 }
 
+/**
+ * The configured bank account of the branch a dispatch belongs to, resolved
+ * off its own snapshotted division_code and location -- the same lookup
+ * results.js runs for the results and turnaround tables, see branchAccountNo.
+ */
+const BRANCH_ACCOUNT_NO = branchAccountNo({
+  divisionCode: 'c.division_code',
+  location: 'c.location',
+});
+
 const DISPATCH_COLUMNS = `
   SELECT c.id, c.dpr_no, c.division_code, c.dpr_date, c.bill_no, c.bill_date,
          c.vendor_code, c.vendor_name, c.location, c.ageing_grn_no,
          c.net_amt, c.adj_pur_return, c.adjusted_jv, c.tds_jv, c.payable_amount,
          c.cheque_no, c.chq_date, c.payment_doc_no,
+         ${BRANCH_ACCOUNT_NO} AS account_no,
          c.status, c.discrepancy_notes,
          c.batch_id, c.sent_at,
          c.stage, c.stage_at, c.received_at, c.approved_at, c.rejected_at,
@@ -154,6 +165,9 @@ function mapDispatch(r) {
     // cleared, which this table does not track at all.
     chqDate: r.chq_date,
     paymentDocNo: r.payment_doc_no,
+    // The account the dispatch's branch banks through, off the configuration
+    // screen -- null when that branch has no account recorded, or none claims it.
+    accountNo: r.account_no ?? null,
     // The reconciliation's verdict, fixed at the moment of sending. Named apart
     // from `stage` so the two are never mistaken for each other on the client.
     matchStatus: r.status,
@@ -526,19 +540,26 @@ csdRouter.patch(
 );
 
 /**
- * The CSD stamps that can be corrected, and the column behind each.
+ * The stamps that can be corrected, and the column behind each.
  *
  * Recorded automatically when a button is pressed, so unlike the ageing
  * report's checkpoints they cannot arrive mistyped -- but a handover entered a
  * day late, or a status ticked on the Monday for something that arrived on the
  * Friday, still leaves the wrong date on the record. These are correctable for
  * that.
+ *
+ * The three Accounts hand-back stamps sit alongside the four CSD ones for the
+ * same reason: each is still just the day a button was pressed, and that can
+ * be entered late exactly as a CSD stamp can.
  */
 const EDITABLE_CSD_DATES = {
   sentToCsd: 'sent_at',
   csdReceived: 'received_at',
   csdApproved: 'approved_at',
   csdRejected: 'rejected_at',
+  movedToAccountsAt: 'moved_to_accounts_at',
+  accountsReceivedAt: 'accounts_received_at',
+  forwardedAt: 'forwarded_at',
 };
 
 /** The stage a stamp belongs to, for the message when it has not been reached. */
@@ -547,6 +568,9 @@ const STAMP_STAGE = {
   csdReceived: 'received',
   csdApproved: 'approved',
   csdRejected: 'rejected',
+  movedToAccountsAt: 'moved to accounts',
+  accountsReceivedAt: 'received by accounts',
+  forwardedAt: 'forwarded',
 };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -564,7 +588,7 @@ function isCalendarDate(value) {
 /**
  * PATCH /api/csd/:id/dates
  *
- * Body: any subset of the four stamps, each yyyy-MM-dd. Absent fields are left
+ * Body: any subset of the seven stamps, each yyyy-MM-dd. Absent fields are left
  * alone.
  *
  * Only a stamp the handover already carries can be corrected. Writing one for a
@@ -591,7 +615,9 @@ csdRouter.patch(
     }
 
     const { rows: existing } = await query(
-      'SELECT sent_at, received_at, approved_at, rejected_at FROM csd_dispatches WHERE id = $1',
+      `SELECT sent_at, received_at, approved_at, rejected_at,
+              moved_to_accounts_at, accounts_received_at, forwarded_at
+       FROM csd_dispatches WHERE id = $1`,
       [id],
     );
     if (existing.length === 0) {

@@ -32,6 +32,7 @@ function DateField({ value, onChange, disabled }) {
     <input
       className="cell-date__input cell-date__input--bulk"
       type="date"
+      lang="en-GB"
       value={value || ''}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
@@ -273,13 +274,13 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
                   results and CSD tables column for column so the three
                   screens read the same way. */}
               <th>Vendor Code</th>
-              {/* The GRN report's own amount breakdown, ahead of
+              {/* The ageing report's own amount breakdown, ahead of
                   PayableAmount -- the same four columns and the same order as
-                  Total GRNS and Pending. */}
-              <th className="table__num">Bill.Amount</th>
-              <th className="table__num">Transport Amount</th>
-              <th className="table__num">Add.Amount</th>
-              <th className="table__num">Ded.Amount</th>
+                  the CSD and Valid GRNs tabs. */}
+              <th className="table__num">NetAmt</th>
+              <th className="table__num">AdjPurReturn</th>
+              <th className="table__num">AdjustedJV</th>
+              <th className="table__num">TDSJV</th>
               <th className="table__num">PayableAmount</th>
               {/* The cheque the bill was paid by. It sits with the identifiers
                   rather than in the Reached group: it is not a checkpoint, it
@@ -339,10 +340,10 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
                 <td className="table__mono">
                   {row.vendorCode || <span className="table__miss">&mdash;</span>}
                 </td>
-                <td className="table__num">{formatAmountOrDash(row.billAmount)}</td>
-                <td className="table__num">{formatAmountOrDash(row.transportAmount)}</td>
-                <td className="table__num">{formatAmountOrDash(row.addAmount)}</td>
-                <td className="table__num">{formatAmountOrDash(row.dedAmount)}</td>
+                <td className="table__num">{formatAmountOrDash(row.netAmt)}</td>
+                <td className="table__num">{formatAmountOrDash(row.adjPurReturn)}</td>
+                <td className="table__num">{formatAmountOrDash(row.adjustedJv)}</td>
+                <td className="table__num">{formatAmountOrDash(row.tdsJv)}</td>
                 <td className="table__num">{formatAmount(row.payableAmount)}</td>
                 <td className="table__mono">
                   {row.chequeNo || <span className="table__miss">&mdash;</span>}
@@ -366,16 +367,18 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
                   </td>
                 )}
                 {dateColumns.map((c) => {
-                  // The seven checkpoints off the ageing report are read here
-                  // and corrected at source; only the three CSD stamps are
-                  // editable, and only in the one row whose Edit button has
-                  // been pressed.
+                  // The checkpoints off the ageing report itself are read here
+                  // and corrected at source; only the seven stamps this
+                  // application writes itself (the three CSD ones and the
+                  // three Accounts hand-back ones) are editable, and only in
+                  // the one row whose Edit button has been pressed.
                   //
                   // Even then, a stamp is editable only where there is one to
                   // edit: a stage not yet reached has no date to correct. Those
-                  // stay a dash, and the status dropdown on the CSD screen is
-                  // what moves a GRN far enough for the stamp to exist.
-                  const editable = isEditing && c.csd && row[c.key];
+                  // stay a dash, and the status dropdown or the Accounts
+                  // buttons are what move a GRN far enough for the stamp to
+                  // exist.
+                  const editable = isEditing && c.editable && row[c.key];
                   return (
                     <td key={c.key}>
                       {editable ? (

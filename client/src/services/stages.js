@@ -126,10 +126,10 @@ export function totalDays(row) {
  * one as a From and a To, and the export names its columns from it. A second
  * copy anywhere would let the file and the screen drift apart on the wording.
  *
- * `csd: true` marks the three CSD stamps the turnaround table can correct in
- * place. The Accounts hand-back stamps further down are also written by this
- * application, but each is set once, automatically, by the button behind it,
- * so none of them carries the flag.
+ * `editable: true` marks the seven stamps the turnaround table can correct in
+ * place: the three CSD ones plus the three Accounts hand-back ones further
+ * down. All seven are written automatically, by a button rather than typed in
+ * -- so what is being fixed is never a typo, only a date entered a day late.
  */
 export const CHECKPOINTS = [
   { key: 'indentDate', label: 'PR' },
@@ -139,16 +139,13 @@ export const CHECKPOINTS = [
   { key: 'billToAudit', label: 'Audit' },
   { key: 'billHandOverToAcc', label: 'Accounts' },
   { key: 'chqDate', label: 'Cheque' },
-  { key: 'sentToCsd', csd: true, label: 'Sent to CSD' },
-  { key: 'csdReceived', csd: true, label: 'CSD Received' },
-  { key: 'csdApproved', csd: true, label: 'CSD Approved' },
-  // Accounts' side of the hand-back. Not correctable in place, unlike the
-  // three CSD stamps above: each is written once, automatically, by the
-  // button behind it (Moved to accounts, Received, then the forward choice),
-  // so there is no typo to fix -- only the fact of when it happened.
-  { key: 'movedToAccountsAt', label: 'Moved To Accounts' },
-  { key: 'accountsReceivedAt', label: 'Accounts Received' },
-  { key: 'forwardedAt', label: 'Cheque Forwarded' },
+  { key: 'sentToCsd', editable: true, label: 'Sent to CSD' },
+  { key: 'csdReceived', editable: true, label: 'CSD Received' },
+  { key: 'csdApproved', editable: true, label: 'CSD Approved' },
+  // Accounts' side of the hand-back.
+  { key: 'movedToAccountsAt', editable: true, label: 'Moved To Accounts' },
+  { key: 'accountsReceivedAt', editable: true, label: 'Accounts Received' },
+  { key: 'forwardedAt', editable: true, label: 'Cheque Forwarded' },
   // Last. Its value is read off the bank statement by matching the cheque
   // number; correcting it here does not touch the statement, it records an
   // override that wins over it -- and clearing the cell hands the answer back

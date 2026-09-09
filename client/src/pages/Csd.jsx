@@ -134,12 +134,12 @@ const STAGE_DATES = [
 ];
 
 /**
- * The header row below, counted: seventeen columns from GRN No through Status,
+ * The header row below, counted: eighteen columns from GRN No through Status,
  * then one per stage date, then Action. Worked out rather than written as a
  * number, which is what it was -- and the number had already drifted out of
  * step with the row it is meant to span.
  */
-const COLUMN_COUNT = 17 + STAGE_DATES.length + 1;
+const COLUMN_COUNT = 18 + STAGE_DATES.length + 1;
 
 /**
  * The two matched statuses, spelled for a reader. A GRN reaches CSD from either
@@ -624,7 +624,7 @@ export default function Csd() {
                 onClick={bulkRemove}
                 disabled={selected.size === 0 || bulkBusy}
               >
-                {bulkBusy ? 'Working…' : selected.size > 0 ? `Take back ${selected.size}` : 'Take back'}
+                {bulkBusy ? 'Working…' : selected.size > 0 ? `Sent back ${selected.size}` : 'Sent back'}
               </button>
             </>
           )}
@@ -693,6 +693,10 @@ export default function Csd() {
                         not the day it cleared, which this table does not
                         track. */}
                     <th>Cheque Date</th>
+                    {/* The account the dispatch's branch banks through, off
+                        the configuration screen -- same lookup and same spot
+                        as the results table's own Account No column. */}
+                    <th>Account No</th>
 
                     {/* <th>Match</th> */}
                     <th>Status</th>
@@ -754,6 +758,9 @@ export default function Csd() {
                         {row.chequeNo || <span className="table__miss">&mdash;</span>}
                       </td>
                       <td>{formatDate(row.chqDate) || <span className="table__miss">&mdash;</span>}</td>
+                      <td className="table__mono">
+                        {row.accountNo || <span className="table__miss">&mdash;</span>}
+                      </td>
 
                       {/* <td>
                         <span
@@ -813,7 +820,7 @@ export default function Csd() {
                             <span className="csd__icon">
                               <IconTrash size={14} />
                             </span>
-                            Take back
+                            Sent back
                           </button>
                         </div>
                       </td>

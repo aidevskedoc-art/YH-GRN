@@ -403,8 +403,9 @@ ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS accounts_received_by INTEGER
 -- and date apply to VENDOR and OTHERS alike, since both hand the GRN to a
 -- person; Bank does not, and is recorded with nothing more than the fact and
 -- the day, which is why those three stay nullable rather than forming their
--- own NOT NULL columns. Courier hands it to neither a person nor a bank, so it
--- carries its own two columns below instead of these three.
+-- own NOT NULL columns. Courier hands it to a service rather than a person, so
+-- it carries its own two columns below in place of name/mobile -- but still
+-- uses this same date column, same as VENDOR and OTHERS.
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_to TEXT
                                                        CHECK (forwarded_to IN ('BANK', 'VENDOR', 'OTHERS', 'COURIER'));
 -- Which of the two doors a VENDOR hand-off went out of -- the vendor directly,
@@ -415,6 +416,10 @@ ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_route TEXT
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_name   TEXT;
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_mobile TEXT;
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_date   DATE;
+-- OTHERS' own note: there is no vendor record and no purchase-department door
+-- behind an arbitrary destination, so a free-text remark is what explains it.
+-- Null for every other destination.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_remarks TEXT;
 -- COURIER's own pair, in place of name/mobile: which courier it was handed to
 -- and the docket number it went out under. Null for every other destination.
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_courier_name TEXT;
