@@ -282,7 +282,7 @@ const CSD_STAGE_LABELS = {
   // Not "Moved to accounts": on this export that phrase already names a
   // different fact (see STATUS_LABELS above), so this names who sent it back
   // instead. Overridden below once Accounts has acknowledged the hand-back.
-  MOVED_TO_ACCOUNTS: 'Returned by CSD',
+  MOVED_TO_ACCOUNTS: 'Handover by CSD',
 };
 
 /**

@@ -78,7 +78,7 @@ const CSD_STAGES = {
  * thing twice about two different things.
  */
 const ACCOUNTS_RETURN_STATES = {
-  QUEUED: { label: 'Returned by CSD', tone: 'moved_to_accounts' },
+  QUEUED: { label: 'Handover by CSD', tone: 'moved_to_accounts' },
   RECEIVED: { label: 'Accounts received', tone: 'approved' },
 };
 
@@ -391,8 +391,15 @@ function AccountsStagePicker({ row, busy, onReceive, onForwardSimple, onOpenForw
  * accounts hands the GRN off through on the vendor's side of the ledger, and
  * Others additionally carries a remark, since there is no vendor record or
  * department name behind it to say what it actually was.
+ *
+ * `subject` names what is being sent -- "GRN 100234" for a single row, or
+ * "12 GRNs" for a bulk send from the toolbar's own "Select multiple" -- and is
+ * the only thing that differs between the two: the same fields, the same
+ * validation and the same submit shape apply whether the answer is written to
+ * one dispatch or copied across several. Exported so Results.jsx can reuse it
+ * for its own bulk dialog rather than keeping a second copy of these fields.
  */
-function ForwardDetailsDialog({ row, to, busy, error, onSubmit, onClose }) {
+export function ForwardDetailsDialog({ subject, to, busy, error, onSubmit, onClose }) {
   const isVendor = to === 'VENDOR';
   const isCourier = to === 'COURIER';
   const [route, setRoute] = useState('');
@@ -412,7 +419,7 @@ function ForwardDetailsDialog({ row, to, busy, error, onSubmit, onClose }) {
   const label = isCourier ? 'Courier' : othersChosen ? 'Others' : 'Vendor';
 
   return (
-    <Sheet label={`Send GRN ${row.dprNo} to ${label}`} narrow onClose={busy ? () => {} : onClose}>
+    <Sheet label={`Send ${subject} to ${label}`} narrow onClose={busy ? () => {} : onClose}>
       <form
         className="sheet__form"
         onSubmit={(e) => {
@@ -465,6 +472,7 @@ function ForwardDetailsDialog({ row, to, busy, error, onSubmit, onClose }) {
                 <input
                   className="field__input"
                   type="tel"
+                  maxLength={12}
                   value={mobile}
                   onChange={(e) => setMobile(e.target.value)}
                   autoComplete="off"
@@ -643,14 +651,26 @@ export default function ResultsTable({
   const isFiled = (row) => row.recordsSent || justFiled.has(row.dprNo);
 
   /**
-   * Whether a row may show the bulk-select checkbox at all: the same rows the
-   * single-row dropdown offers "Send to CSD" on -- reached accounts, not
-   * already sent or filed, not past CSD already. Grouping ticked rows by
-   * cheque number, and the send itself, are Results.jsx's own doing -- see
-   * canBulkSelect there -- this only decides whether the box is there to tick.
+   * Whether a row may show the bulk-select checkbox at all, across the three
+   * things "Select multiple" can now batch: sending several to CSD, receiving
+   * several CSD has handed back, and forwarding several Accounts has already
+   * received on to Bank, Vendor or Courier. Only one of the three ever applies
+   * to a given row -- they are consecutive steps in its own journey -- so the
+   * three checks below are mutually exclusive in practice even though nothing
+   * here enforces that.
+   *
+   * Grouping ticked rows by cheque number, which of the three actions the
+   * ticked rows are offered, and the actions themselves are Results.jsx's own
+   * doing -- see its own copies of these three checks -- this only decides
+   * whether the box is there to tick at all.
    */
-  const canBulkSelect = (row) =>
+  const canBulkCsd = (row) =>
     can('csd') && row.status !== 'PENDING' && row.csdStage !== 'MOVED_TO_ACCOUNTS' && !isSent(row) && !isFiled(row);
+  const canBulkReceive = (row) =>
+    row.csdStage === 'MOVED_TO_ACCOUNTS' && (row.csdAccountsStage || 'QUEUED') === 'QUEUED';
+  const canBulkForward = (row) =>
+    row.csdStage === 'MOVED_TO_ACCOUNTS' && row.csdAccountsStage === 'RECEIVED' && !row.csdForwardedTo;
+  const canBulkSelect = (row) => canBulkCsd(row) || canBulkReceive(row) || canBulkForward(row);
 
   /**
    * Send one GRN to its destination.
@@ -831,7 +851,7 @@ export default function ResultsTable({
                       type="checkbox"
                       checked={selected.has(row.dprNo)}
                       onChange={() => onToggleRow(row)}
-                      aria-label={`Select GRN ${row.dprNo} for bulk send to CSD`}
+                      aria-label={`Select GRN ${row.dprNo} for a bulk action`}
                     />
                   )}
                 </td>
@@ -961,7 +981,7 @@ export default function ResultsTable({
       </div>
       {forwardFormRow && (
         <ForwardDetailsDialog
-          row={forwardFormRow}
+          subject={`GRN ${forwardFormRow.dprNo}`}
           to={forwardFormTo}
           busy={busy === forwardFormRow.dprNo}
           error={forwardFormError}

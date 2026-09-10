@@ -73,14 +73,43 @@ function findHeaderRow(grid, signature, tight) {
   return -1;
 }
 
-/** Build a {token -> column index} lookup for a header row. */
+/**
+ * Build a {token -> column index} lookup for a header row.
+ *
+ * A blank cell BETWEEN two labels is skipped rather than counted as a column
+ * of its own, because it is a label-row artifact rather than a column the data
+ * has. The August GRN export ("01. HIS GRNs Aug'26.xls") writes exactly one:
+ * an empty cell sits where "Bill  No" should be, pushing that label and every
+ * label after it one place to the right of the data they name. Read literally,
+ * the vendor code lands under "DC No", the vendor name under "Vendor Code",
+ * Bill.Amount reads 0, Total Amount reads the location text (so parses as
+ * null) and Location comes out empty on all 3,402 rows.
+ *
+ * Empty Location is the damaging one. A GRN with no ageing row has no
+ * DivisionCode either, so Location is the only thing that can place it in a
+ * branch -- and with branches ticked on the configuration screen, every
+ * pending row then falls outside the scope and the Pending tab reads empty
+ * (see branchScope in services/branchScope.js).
+ *
+ * Counting from the first label's own position rather than from zero keeps a
+ * LEADING blank meaning what it has always meant: an unlabelled first column
+ * that the data really does carry. Only the gaps between labels are treated as
+ * spurious. Every other report on file -- both ageing exports, the bank
+ * statement, the April GRN report -- labels every column, so for those this
+ * behaves exactly as counting the literal position did.
+ */
 function indexHeaders(headerRow, tight) {
   const tokenize = tight ? tightToken : headerToken;
   const index = new Map();
-  headerRow.forEach((cell, col) => {
+  let col = -1;
+
+  headerRow.forEach((cell, literalCol) => {
     const token = tokenize(cell);
-    if (token && !index.has(token)) index.set(token, col);
+    if (!token) return;
+    col = col === -1 ? literalCol : col + 1;
+    if (!index.has(token)) index.set(token, col);
   });
+
   return index;
 }
 

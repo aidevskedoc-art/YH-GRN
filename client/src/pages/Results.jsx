@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportResults } from '../services/exporter.js';
-import ResultsTable, { formatAmount } from '../components/ResultsTable.jsx';
+import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
@@ -108,7 +108,7 @@ const PROGRESS_LABELS = {
   REJECTED: 'CSD rejected',
   // Accounts' own hand-back ladder, once CSD reaches MOVED_TO_ACCOUNTS -- see
   // ACCOUNTS_RETURN_STATES in ResultsTable.jsx for the same two labels.
-  RETURNED_BY_CSD: 'Returned by CSD',
+  RETURNED_BY_CSD: 'Handover by CSD',
   ACCOUNTS_RECEIVED: 'Accounts received',
   // Where Accounts forwards a received GRN on to -- see forwardedLabel in
   // ResultsTable.jsx for the same four labels.
@@ -219,14 +219,23 @@ export default function Results() {
   const [exporting, setExporting] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
 
-  // Sending several GRNs paid by the same cheque to CSD in one action, instead
-  // of one dropdown per row. `multiMode` is the checkbox column showing at
-  // all; `selected` is which GRN numbers are ticked within it. Both live here
-  // rather than in ResultsTable because the toggle and the bulk send button
-  // sit in this page's toolbar, beside the search box.
+  // Acting on several GRNs paid by the same cheque in one action, instead of
+  // one dropdown per row -- sending several to CSD, receiving several back
+  // from it, or forwarding several on to Bank, Vendor or Courier. `multiMode`
+  // is the checkbox column showing at all; `selected` is which GRN numbers
+  // are ticked within it. Both live here rather than in ResultsTable because
+  // the toggle and the bulk action controls sit in this page's toolbar,
+  // beside the search box.
   const [multiMode, setMultiMode] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [bulkSending, setBulkSending] = useState(false);
+  // Which destination the bulk forward dialog is open for (VENDOR or
+  // COURIER), or null -- Bank has nothing further to collect and acts at
+  // once, the same as the per-row picker. Its own error stays apart from the
+  // table's, same reason ResultsTable keeps forwardFormError apart: a
+  // rejected submit has to stay on the dialog where the fields are.
+  const [bulkForwardTo, setBulkForwardTo] = useState(null);
+  const [bulkForwardError, setBulkForwardError] = useState('');
 
   // `search` is what is in the box; `q` is what has been asked for. Typing
   // "SRI VENKATESWARA" would otherwise be sixteen round trips.
@@ -302,25 +311,47 @@ export default function Results() {
   }, [batchId, rowStatus, page, pageSize, q, progress, location]);
 
   /**
-   * Whether a row may join the bulk send: the same rows the table's own
-   * per-row dropdown offers "Send to CSD" on -- reached accounts, not already
-   * sent or filed to Records, not past CSD already -- and only when this
-   * account has access to CSD at all.
+   * The three things "Select multiple" can now batch, mirroring the row's own
+   * journey: sending several to CSD, acknowledging several CSD has handed
+   * back to Accounts, and forwarding several Accounts has already received on
+   * to Bank, Vendor or Courier. A row only ever qualifies for one of the
+   * three at a time -- they are consecutive steps -- so a selection is only
+   * ever actioned once every ticked row agrees on which one applies; see
+   * `allSelectedCsd`/`allSelectedReceive`/`allSelectedForward` below.
+   *
+   * Kept in step by hand with ResultsTable's own copies of these three
+   * checks, which decide only whether a row's checkbox is there to tick at
+   * all -- these decide what ticking it, and the rows it drags in by cheque
+   * number, are allowed to do.
    */
-  const canBulkSelect = (row) =>
+  const canBulkCsd = (row) =>
     can('csd') &&
     row.status !== 'PENDING' &&
     row.csdStage !== 'MOVED_TO_ACCOUNTS' &&
     !row.csdSent &&
     !row.recordsSent;
+  const canBulkReceive = (row) =>
+    row.csdStage === 'MOVED_TO_ACCOUNTS' && (row.csdAccountsStage || 'QUEUED') === 'QUEUED';
+  const canBulkForward = (row) =>
+    row.csdStage === 'MOVED_TO_ACCOUNTS' && row.csdAccountsStage === 'RECEIVED' && !row.csdForwardedTo;
+
+  /** Which of the three above a row currently qualifies for, or null for none. */
+  function bulkCategory(row) {
+    if (canBulkCsd(row)) return 'CSD';
+    if (canBulkReceive(row)) return 'RECEIVE';
+    if (canBulkForward(row)) return 'FORWARD';
+    return null;
+  }
 
   /**
-   * Ticking one row also ticks every other row on the page still eligible
-   * that shares its cheque number -- a cheque pays a group of GRNs together,
-   * so selecting one of them is read as meaning the whole group. Unticking
-   * only lets go of the one row: narrowing the group back down is a
-   * deliberate choice, not one this page should second-guess by dragging the
-   * rest off with it.
+   * Ticking one row also ticks every other row on the page still eligible for
+   * the SAME action that shares its cheque number -- a cheque pays a group of
+   * GRNs together, so selecting one of them is read as meaning the whole
+   * group. Restricted to the same category so ticking a row awaiting CSD
+   * never silently drags in a same-cheque row that has already come back from
+   * it. Unticking only lets go of the one row: narrowing the group back down
+   * is a deliberate choice, not one this page should second-guess by dragging
+   * the rest off with it.
    */
   function toggleSelectRow(row) {
     setSelected((prev) => {
@@ -330,9 +361,10 @@ export default function Results() {
         return next;
       }
       next.add(row.dprNo);
-      if (row.chequeNo) {
+      const category = bulkCategory(row);
+      if (row.chequeNo && category) {
         for (const r of data?.rows || []) {
-          if (r.chequeNo === row.chequeNo && canBulkSelect(r)) next.add(r.dprNo);
+          if (r.chequeNo === row.chequeNo && bulkCategory(r) === category) next.add(r.dprNo);
         }
       }
       return next;
@@ -344,6 +376,11 @@ export default function Results() {
     setSelected(new Set());
   }
 
+  const selectedRows = (data?.rows || []).filter((row) => selected.has(row.dprNo));
+  const allSelectedCsd = selectedRows.length > 0 && selectedRows.every(canBulkCsd);
+  const allSelectedReceive = selectedRows.length > 0 && selectedRows.every(canBulkReceive);
+  const allSelectedForward = selectedRows.length > 0 && selectedRows.every(canBulkForward);
+
   /**
    * Send every ticked row to CSD in one go. Each still goes over as its own
    * POST -- the server has no bulk endpoint of its own -- but firing them
@@ -351,13 +388,12 @@ export default function Results() {
    * than one dropdown per row.
    */
   async function sendSelectedToCsd() {
-    const targets = (data?.rows || []).filter((row) => selected.has(row.dprNo));
-    if (targets.length === 0) return;
+    if (selectedRows.length === 0) return;
     setBulkSending(true);
     setError('');
     try {
       await Promise.all(
-        targets.map((row) =>
+        selectedRows.map((row) =>
           api.sendToCsd({ ...row, batchId: typeof batchId === 'number' ? batchId : null }),
         ),
       );
@@ -365,6 +401,71 @@ export default function Results() {
       loadRows();
     } catch (err) {
       setError(err.message);
+    } finally {
+      setBulkSending(false);
+    }
+  }
+
+  /** Acknowledge every ticked row CSD has handed back, in one go. */
+  async function receiveSelected() {
+    if (selectedRows.length === 0) return;
+    setBulkSending(true);
+    setError('');
+    try {
+      await Promise.all(selectedRows.map((row) => api.receiveAccountsReturn(row.csdDispatchId)));
+      exitMultiMode();
+      loadRows();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBulkSending(false);
+    }
+  }
+
+  /** Bank: nothing further to say, so this acts on every ticked row at once. */
+  async function forwardSelectedSimple(to) {
+    if (selectedRows.length === 0) return;
+    setBulkSending(true);
+    setError('');
+    try {
+      await Promise.all(selectedRows.map((row) => api.forwardAccountsReturn(row.csdDispatchId, { to })));
+      exitMultiMode();
+      loadRows();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBulkSending(false);
+    }
+  }
+
+  /**
+   * Vendor or Courier for every ticked row: the bulk dialog's own submit, once
+   * its fields are in. One form, filled in once, and the same answer is
+   * copied onto every selected row's own dispatch -- see the note on
+   * ForwardDetailsDialog for why `route: 'OTHERS'` is translated back into
+   * `to: 'OTHERS'` here, same as the single-row version in ResultsTable does.
+   */
+  async function submitBulkForward({ route, name, mobile, date, courierName, docketNo, remarks }) {
+    const to = bulkForwardTo === 'VENDOR' && route === 'OTHERS' ? 'OTHERS' : bulkForwardTo;
+    setBulkSending(true);
+    setBulkForwardError('');
+    try {
+      await Promise.all(
+        selectedRows.map((row) =>
+          api.forwardAccountsReturn(row.csdDispatchId, {
+            to,
+            ...(to === 'VENDOR' ? { route } : {}),
+            ...(to === 'OTHERS' ? { remarks } : {}),
+            ...(to === 'COURIER' ? { courierName, docketNo, date } : {}),
+            ...(to === 'VENDOR' || to === 'OTHERS' ? { name, mobile, date } : {}),
+          }),
+        ),
+      );
+      setBulkForwardTo(null);
+      exitMultiMode();
+      loadRows();
+    } catch (err) {
+      setBulkForwardError(err.message);
     } finally {
       setBulkSending(false);
     }
@@ -680,34 +781,60 @@ export default function Results() {
             aria-label="Search by vendor name, GRN number, bill number or cheque number"
           />
 
-          {/* Sending several GRNs paid by the same cheque to CSD at once,
-              rather than one dropdown per row -- only where a row could be
-              sent to CSD in the first place. The toggle doubles as its own
-              cancel: once a selection is open, pressing it again is the same
-              button reading a cross rather than a second control beside it. */}
-          {status !== 'PENDING' && status !== TURNAROUND && can('csd') && (
+          {/* Acting on several GRNs paid by the same cheque at once, rather
+              than one dropdown per row -- sending them to CSD, receiving them
+              back from it, or forwarding them on to Bank, Vendor or Courier,
+              whichever the ticked rows agree on (see
+              allSelectedCsd/allSelectedReceive/allSelectedForward). The
+              toggle doubles as its own cancel: once a selection is open,
+              pressing it again is the same button reading a cross rather
+              than a second control beside it. */}
+          {status !== 'PENDING' && status !== TURNAROUND && (
             <>
-             
-              {multiMode && (
+              {multiMode && allSelectedCsd && (
                 <button
                   type="button"
                   className="primary"
                   onClick={sendSelectedToCsd}
-                  disabled={selected.size === 0 || bulkSending}
+                  disabled={bulkSending}
                 >
-                  {bulkSending
-                    ? 'Sending…'
-                    : selected.size > 0
-                      ? `Send ${selected.size} to CSD`
-                      : 'Send to CSD'}
+                  {bulkSending ? 'Sending…' : `Send ${selected.size} to CSD`}
                 </button>
               )}
-               <button
+              {multiMode && allSelectedReceive && (
+                <button
+                  type="button"
+                  className="primary"
+                  onClick={receiveSelected}
+                  disabled={bulkSending}
+                >
+                  {bulkSending ? 'Receiving…' : `Receive ${selected.size}`}
+                </button>
+              )}
+              {multiMode && allSelectedForward && (
+                <select
+                  className="stage-select send-select"
+                  value=""
+                  disabled={bulkSending}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === 'VENDOR' || value === 'COURIER') setBulkForwardTo(value);
+                    else if (value === 'BANK') forwardSelectedSimple('BANK');
+                  }}
+                  aria-label={`Send ${selected.size} selected GRNs on to their next destination`}
+                >
+                  <option value="">Send {selected.size} to…</option>
+                  <option value="BANK">Send to Bank</option>
+                  <option value="VENDOR">Send to Vendor</option>
+                  <option value="COURIER">Send to Courier</option>
+                </select>
+              )}
+              <button
                 type="button"
                 className={multiMode ? 'ghost icon-btn' : 'ghost'}
                 onClick={() => (multiMode ? exitMultiMode() : setMultiMode(true))}
-                title={multiMode ? 'Cancel selecting' : 'Select multiple GRNs to send to CSD together'}
-                aria-label={multiMode ? 'Cancel selecting' : 'Select multiple GRNs to send to CSD together'}
+                title={multiMode ? 'Cancel selecting' : 'Select multiple GRNs to act on together'}
+                aria-label={multiMode ? 'Cancel selecting' : 'Select multiple GRNs to act on together'}
               >
                 {multiMode ? <IconX size={14} /> : 'Select multiple'}
               </button>
@@ -717,6 +844,17 @@ export default function Results() {
       </div>
 
       {error && <div className="alert alert--error">{error}</div>}
+
+      {bulkForwardTo && (
+        <ForwardDetailsDialog
+          subject={`${selected.size} GRNs`}
+          to={bulkForwardTo}
+          busy={bulkSending}
+          error={bulkForwardError}
+          onSubmit={submitBulkForward}
+          onClose={() => setBulkForwardTo(null)}
+        />
+      )}
 
       {status === TURNAROUND ? (
         <TurnaroundView
