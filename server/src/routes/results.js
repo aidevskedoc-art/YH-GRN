@@ -30,6 +30,14 @@ const MAX_PAGE_SIZE = 200;
 const TURNAROUND = 'TURNAROUND';
 
 /**
+ * The BPAD tab's identifier. Like TURNAROUND above it travels in the `status`
+ * parameter without being a reconciliation bucket: it selects rows from the
+ * BPAD register rather than a slice of the reconciliation, so it is kept out
+ * of VALID_STATUSES and answered by its own endpoint below.
+ */
+const BPAD = 'BPAD';
+
+/**
  * The Valid GRNs tab's identifier, and the two stored statuses it covers.
  *
  * A GRN whose number appears in the ageing report has reached accounts whether
@@ -678,6 +686,11 @@ resultsRouter.get(
       ]),
     );
 
+    // The BPAD register's own count, for the tab's chip. Its own query over
+    // its own table -- see bpadSummary -- and scoped by the same search and
+    // branch clauses as everything else on the page.
+    summary.bpad = await bpadSummary(req, scope, req.query.q);
+
     res.json({ batchId: scope.id, name: scope.name, summary });
   }),
 );
@@ -769,6 +782,13 @@ resultsRouter.get(
       });
     }
 
+    // Nor is BPAD: it is the register's own table, so it exports the whole of
+    // what the tab shows rather than a filtered slice of the results.
+    if (status === BPAD) {
+      const { rows: bpad } = await bpadRows(req, scope, { all: true });
+      return res.json({ batchId: scope.id, name: scope.name, status, rows: bpad });
+    }
+
     if (status && !isKnownStatus(status)) {
       return res.status(400).json({ error: `Unknown status "${status}".` });
     }
@@ -795,6 +815,301 @@ resultsRouter.get(
       name: scope.name,
       status: status || null,
       rows: rows.map(mapRow),
+    });
+  }),
+);
+
+/* ==========================================================================
+   BPAD: the register of bills pending at the accounts department.
+
+   One row per GRN the upload is about. The register's own row where it had
+   one -- matched on the vendor code and the GRN number together, while the
+   workbook is read (see readBpadReport and grnMatchKeys) -- and a row carrying
+   only what the GRN report knows where it did not, flagged in_register false
+   (see bpadRowsForGrns).
+
+   So by the time anything here runs the several hundred thousand register rows
+   are already the few thousand worth showing, and this tab is a plain read of
+   them rather than a reconciliation of anything.
+   ========================================================================== */
+
+/**
+ * The GRN row a BPAD record was matched to, for its Location.
+ *
+ * The register writes its own Location as a short site code ("HTC", "MLK"),
+ * which is not the vocabulary the configuration screen holds branches under --
+ * that is the GRN report's longer Location string. So the branch a BPAD row
+ * belongs to is resolved through the GRN row it matched, which is the same
+ * column every other screen resolves a branch from, and a person confined to
+ * one branch sees the same set of GRNs on this tab as on the others.
+ *
+ * Matched on the GRN number alone. The vendor code was already required for
+ * the row to be stored at all, so adding it here would narrow nothing.
+ *
+ * LEFT JOIN LATERAL over one row, newest upload first, so it can neither
+ * multiply a record nor drop one whose GRN report has since been deleted.
+ */
+const BPAD_GRN_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT gg.location
+    FROM grn_transactions gg
+    WHERE gg.dpr_no_key = b.grn_no_key
+    ORDER BY gg.batch_id DESC, gg.id DESC
+    LIMIT 1
+  ) g ON TRUE`;
+
+/**
+ * The same two branch narrowings every other query on this router carries --
+ * the account's own grant and the Location dropdown -- resolved off the
+ * matched GRN row's Location.
+ *
+ * The DivisionCode half is written as a typed NULL rather than left out: these
+ * builders take both spellings, and a BPAD row has no ageing entry to read a
+ * DivisionCode from, so that half of the either/or simply never fires. The
+ * cast is what stops Postgres having to guess a type for a bare NULL.
+ */
+const BPAD_BRANCH_COLUMNS = { divisionCode: 'CAST(NULL AS text)', location: 'g.location' };
+const BPAD_BRANCH_SCOPE = branchScope(BPAD_BRANCH_COLUMNS);
+const BPAD_LOCATION_FILTER = branchPick(BPAD_BRANCH_COLUMNS);
+const BPAD_BRANCH_DIVISION_CODE = branchDivisionCode(BPAD_BRANCH_COLUMNS);
+
+function bpadBranchClauses(req, params) {
+  return [
+    BPAD_LOCATION_FILTER(branchFor(req.user), params),
+    BPAD_LOCATION_FILTER(req.query.location, params),
+  ];
+}
+
+/**
+ * What the search box looks in on this tab: the two columns the row was
+ * matched by, plus the three a bill is chased by. Deliberately not the same
+ * list as SEARCH_COLUMNS above -- there is no ageing side here to search, and
+ * a cheque number the register does not carry.
+ */
+const BPAD_SEARCH_COLUMNS = [
+  'b.grn_no',
+  'b.vendor_code',
+  'b.vendor_name',
+  'b.inv_no',
+  'b.po_number',
+  'b.pending_with_user',
+];
+
+function bpadSearchFilter(term, params) {
+  const trimmed = String(term || '').trim();
+  if (!trimmed) return null;
+  params.push(`%${trimmed.replace(/[\\%_]/g, '\\$&')}%`);
+  const n = params.length;
+  return `(${BPAD_SEARCH_COLUMNS.map((col) => `${col} ILIKE $${n}`).join(' OR ')})`;
+}
+
+/**
+ * One row per GRN number, for the combined view -- the same rule
+ * DEDUPED_RESULTS applies, for the same reason.
+ *
+ * The register is a snapshot of where a bill had got to on the day it was
+ * exported, so a GRN appearing in two uploads has two answers and the newer
+ * one is the true one. Within a single upload the register can still carry a
+ * GRN twice (it repeats one across a split invoice), and that is left alone:
+ * one upload's rows are the file as it arrived.
+ */
+const DEDUPED_BPAD = `(
+  SELECT DISTINCT ON (db.grn_no_key) db.*
+  FROM bpad_records db
+  ORDER BY db.grn_no_key, db.batch_id DESC, db.id DESC
+)`;
+
+/** The relation the BPAD queries read from, deduplicated when scope is all. */
+function bpadFrom(scope) {
+  return scope.all ? DEDUPED_BPAD : 'bpad_records';
+}
+
+const BPAD_JOINS = (scope) => `
+  FROM ${bpadFrom(scope)} b
+  ${BPAD_GRN_JOIN}
+`;
+
+const BPAD_COLUMNS_SQL = `
+  SELECT b.id, b.in_register,
+         b.sl_no, b.location, b.warehouse,
+         b.vendor_code, b.vendor_name, b.vendor_category,
+         b.inv_no, b.inv_date,
+         b.grn_no, b.grn_date, b.grn_amount,
+         b.po_number, b.po_date,
+         b.pending_with_dept, b.bpad_received_date, b.accounts_received_date,
+         b.pending_with_user, b.pend_reason,
+         b.query_ageing, b.ageing, b.grn_age,
+         ${BPAD_BRANCH_DIVISION_CODE} AS branch_division_code
+`;
+
+/** Push the parameter for the BPAD batch filter, or null for every batch. */
+function bpadBatchFilter(scope, params) {
+  if (scope.all) return null;
+  params.push(scope.id);
+  return `b.batch_id = $${params.length}`;
+}
+
+/**
+ * The GRNs the register had no entry for lead, then the register's own rows in
+ * its own Sl.No order.
+ *
+ * Those rows carry no Sl.No -- there is no register row to have one -- so
+ * ordering on Sl.No alone would drop every one of them onto the last page,
+ * which is where nobody looks. They are ten rows in three thousand and they
+ * are the exceptions worth seeing, so they go first: anyone opening this tab
+ * to check coverage finds them without paging, and anyone reading the register
+ * scrolls past ten rows to reach it.
+ *
+ * Sl.No is the register's own and restarts per upload, so more than one batch
+ * in scope groups by batch first -- same as rowOrder.
+ */
+function bpadOrder(scope) {
+  return scope.all
+    ? 'ORDER BY b.in_register, b.batch_id, b.sl_no NULLS LAST, b.id'
+    : 'ORDER BY b.in_register, b.sl_no NULLS LAST, b.id';
+}
+
+function mapBpadRow(r) {
+  return {
+    // The register repeats a GRN across a split invoice, so the GRN number is
+    // not a key on this tab the way it is on the others -- the row's own id is.
+    id: r.id,
+    // False on a GRN the register had no entry for. Every register column on
+    // such a row is null; what it does carry came from the GRN report. See
+    // bpadRowsForGrns in routes/batches.js.
+    inRegister: r.in_register ?? true,
+    slNo: r.sl_no,
+    // The register's own site code ("HTC"), as it wrote it -- not the branch.
+    // The GRN report's longer Location string is what the configuration screen
+    // holds branches under, and it is what BPAD_GRN_JOIN above filters on;
+    // branchDivisionCode below is that lookup's answer, and the column the tab
+    // actually shows as Division.
+    location: r.location,
+    branchDivisionCode: r.branch_division_code ?? null,
+    warehouse: r.warehouse,
+    vendorCode: r.vendor_code,
+    vendorName: r.vendor_name,
+    vendorCategory: r.vendor_category,
+    invNo: r.inv_no,
+    invDate: r.inv_date,
+    grnNo: r.grn_no,
+    grnDate: r.grn_date,
+    grnAmount: r.grn_amount,
+    poNumber: r.po_number,
+    poDate: r.po_date,
+    pendingWithDept: r.pending_with_dept,
+    // The two dates the register exists to report. Null on a bill that has not
+    // reached that desk, which is the answer rather than missing data.
+    bpadReceivedDate: r.bpad_received_date,
+    accountsReceivedDate: r.accounts_received_date,
+    pendingWithUser: r.pending_with_user,
+    pendReason: r.pend_reason,
+    queryAgeing: r.query_ageing,
+    ageing: r.ageing,
+    grnAge: r.grn_age,
+  };
+}
+
+/**
+ * How many BPAD records are in scope, and what they come to.
+ *
+ * Its own small query rather than a bucket of the summary's main one: the
+ * register is a different table with a different population, and folding it
+ * into a GROUP BY over reconciliation_results would have it counted against
+ * statuses it has none of.
+ */
+async function bpadSummary(req, scope, search) {
+  const params = [];
+  const where = whereFrom([
+    bpadBatchFilter(scope, params),
+    bpadSearchFilter(search, params),
+    BPAD_BRANCH_SCOPE,
+    ...bpadBranchClauses(req, params),
+  ]);
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS count,
+            COALESCE(SUM(b.grn_amount), 0) AS amount,
+            (COUNT(*) FILTER (WHERE NOT b.in_register))::int AS missing
+     ${BPAD_JOINS(scope)}
+     ${where}`,
+    params,
+  );
+  return {
+    count: rows[0]?.count ?? 0,
+    amount: Number(rows[0]?.amount ?? 0),
+    // How many of those the register had no entry for. The tab reports it, so
+    // a gap between the GRN count and the register's coverage is stated rather
+    // than left to be worked out from two numbers on different screens.
+    missing: rows[0]?.missing ?? 0,
+  };
+}
+
+/**
+ * Every BPAD row in scope, for the tab and for its sheet in the export.
+ *
+ * `all` drops the pagination, which is what the export asks for.
+ */
+async function bpadRows(req, scope, { page, pageSize, all = false } = {}) {
+  const params = [];
+  const where = whereFrom([
+    bpadBatchFilter(scope, params),
+    bpadSearchFilter(req.query.q, params),
+    BPAD_BRANCH_SCOPE,
+    ...bpadBranchClauses(req, params),
+  ]);
+
+  if (all) {
+    const { rows } = await query(
+      `${BPAD_COLUMNS_SQL} ${BPAD_JOINS(scope)} ${where} ${bpadOrder(scope)}`,
+      params,
+    );
+    return { total: rows.length, rows: rows.map(mapBpadRow) };
+  }
+
+  const { rows: countRows } = await query(
+    `SELECT COUNT(*)::int AS total ${BPAD_JOINS(scope)} ${where}`,
+    params,
+  );
+  const total = countRows[0].total;
+
+  const { rows } = await query(
+    `${BPAD_COLUMNS_SQL} ${BPAD_JOINS(scope)} ${where} ${bpadOrder(scope)}
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, pageSize, (page - 1) * pageSize],
+  );
+
+  return { total, rows: rows.map(mapBpadRow) };
+}
+
+/**
+ * GET /api/batches/:id/bpad?page=&pageSize=&q=&location=
+ *
+ * The BPAD register's rows for the GRNs in scope. No status filter: every row
+ * here is in the register because it matched a GRN, and the register's own
+ * verdict on a bill is `pendingWithDept` rather than anything this system
+ * decided.
+ */
+resultsRouter.get(
+  '/:id/bpad',
+  asyncHandler(async (req, res) => {
+    const scope = await resolveScope(req.params.id);
+
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || 50));
+
+    const { total, rows } = await bpadRows(req, scope, { page, pageSize });
+    const { missing } = await bpadSummary(req, scope, req.query.q);
+
+    return res.json({
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      // How many of `total` the register had no entry for -- counted over
+      // everything in scope, not over this page, because it is a fact about
+      // the upload rather than about the fifty rows on screen.
+      missing,
+      rows,
     });
   }),
 );

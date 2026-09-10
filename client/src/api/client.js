@@ -152,6 +152,20 @@ export const api = {
     return request(`/batches/${id}/results?${params}`);
   },
 
+  /**
+   * The BPAD register's rows for the GRNs in scope -- the BPAD tab.
+   *
+   * No `status` or `progress`: every row on this tab is in the register
+   * because it matched a GRN on file, and the register's own verdict on a bill
+   * is a column of it rather than something this system decided.
+   */
+  bpad: (id, { page = 1, pageSize = 50, q, location } = {}) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (q) params.set('q', q);
+    if (location) params.set('location', location);
+    return request(`/batches/${id}/bpad?${params}`);
+  },
+
   /** Per-stage day counts for the Turnaround tab. Statistics cover every row in
    *  scope; only `rows` is paginated. */
   turnaround: (id, { page = 1, pageSize = 50, q, location } = {}) => {

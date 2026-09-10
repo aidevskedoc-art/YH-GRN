@@ -4,21 +4,9 @@ import { api } from '../api/client.js';
 import FileDrop from '../components/FileDrop.jsx';
 import { IconAlert, IconArrowRight } from '../components/icons.jsx';
 
-/**
- * Suggest a name for the upload: the previous month is what is normally
- * reconciled, so it is a sensible starting point. It is only a suggestion --
- * the name is free text and is what the upload is listed under afterwards.
- */
-function suggestedName() {
-  const now = new Date();
-  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-  return `${prev.toLocaleString('en-GB', { month: 'long' })} reconciliation`;
-}
-
 export default function Upload() {
   const navigate = useNavigate();
 
-  const [name, setName] = useState(suggestedName);
   // All three optional, and every one works uploaded on its own: a GRN report
   // with no ageing report reconciles as every row PENDING, an ageing report
   // with no GRN report has nothing to reconcile yet but is still stored for
@@ -29,6 +17,14 @@ export default function Upload() {
   const [grnFile, setGrnFile] = useState(null);
   const [ageingFile, setAgeingFile] = useState(null);
   const [bankFile, setBankFile] = useState(null);
+  // The BPAD register, and optional like the two beside it. Unlike them it is
+  // the whole group's file rather than this installation's: only the rows
+  // naming a GRN this upload is about are kept -- matched on the vendor code
+  // and the GRN number together -- and the several hundred thousand others are
+  // read past. Which GRNs those are depends on the slot beside it: the GRN
+  // report's own rows when one is included, and every GRN ever uploaded when
+  // one is not, so the register still works uploaded on its own.
+  const [bpadFile, setBpadFile] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -45,26 +41,23 @@ export default function Upload() {
     event.preventDefault();
     setError('');
 
-    if (!name.trim()) {
-      setError('Please give this upload a name.');
-      return;
-    }
-
-    if (!grnFile && !ageingFile && !bankFile) {
-      setError('Please choose at least one file: the GRN report, the Vendor Ageing report, or the bank statement.');
+    if (!grnFile && !ageingFile && !bankFile && !bpadFile) {
+      setError('Please choose at least one file: the GRN report, the Vendor Ageing report, the bank statement, or the BPAD register.');
       return;
     }
 
     const formData = new FormData();
-    formData.append('name', name.trim());
     if (grnFile) formData.append('grnFile', grnFile);
     if (ageingFile) formData.append('ageingFile', ageingFile);
     if (bankFile) formData.append('bankFile', bankFile);
+    if (bpadFile) formData.append('bpadFile', bpadFile);
 
     setBusy(true);
     try {
-      const { batchId } = await api.uploadBatch(formData);
-      navigate(`/results/${batchId}`);
+      await api.uploadBatch(formData);
+      // The results page reports on every upload at once, so there is no
+      // batch to point it at -- the one just made is already included.
+      navigate('/results');
     } catch (err) {
       setError(err.message);
     } finally {
@@ -87,21 +80,6 @@ export default function Upload() {
       </div>
 
       <form className="card upload" onSubmit={handleSubmit}>
-        <div className="field">
-          <label className="field__label" htmlFor="batch-name">
-            Name this upload
-          </label>
-          <input
-            id="batch-name"
-            className="field__input"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="April reconciliation"
-            maxLength={120}
-            required
-          />
-        </div>
-
         <div className="upload__rule">
           <span>The reports</span>
         </div>
@@ -134,6 +112,22 @@ export default function Upload() {
             onSelect={pick(setBankFile)}
             onReject={setError}
           />
+          {/* Sat beside the GRN report because that is what it is read
+              against: only the register's rows whose vendor code AND GRN
+              number match a GRN already on file are kept, and those become the
+              BPAD tab on the results page. .xlsx only -- the register is
+              exported from a system that writes nothing else, and it is far
+              too large to be a BIFF8 .xls. */}
+          <FileDrop
+            step={4}
+            label="BPAD Register — optional"
+            hint="Matched to the GRN report's rows by vendor code and GRN number; the rest of the register is read past."
+            example="BPAD.xlsx"
+            accept=".xlsx"
+            file={bpadFile}
+            onSelect={pick(setBpadFile)}
+            onReject={setError}
+          />
         </div>
 
         {error && (
@@ -157,8 +151,15 @@ export default function Upload() {
                   ? 'Ageing report ready — GRN report not included, so nothing reconciles yet'
                   : bankFile
                     ? 'Bank statement ready — no report included, so nothing reconciles yet'
-                    : 'Choose the GRN report, the ageing report, or the bank statement'}
+                    : bpadFile
+                      ? // On its own it still has something to match
+                        // against: every GRN uploaded before now. It is the
+                        // one slot that never needs a report beside it -- but
+                        // with one, that report is what it narrows to.
+                        'BPAD register ready — no GRN report included, so it matches against every GRN already uploaded'
+                      : 'Choose the GRN report, the ageing report, the bank statement or the BPAD register'}
             {bankFile && ready > 0 && ' — bank statement included'}
+            {bpadFile && ready > 0 && ' — BPAD register included'}
           </p>
 
           {/* The button stays live with a slot still empty: a dead control
@@ -174,7 +175,13 @@ export default function Upload() {
           <div className="progress" role="status">
             <span className="progress__bar" />
             <p className="upload__note">
-              Reading the workbook{ready === 2 ? 's' : ''} and matching several thousand rows. This usually takes a few seconds.
+              {bpadFile
+                ? // The register is several hundred thousand rows and fifty
+                  // megabytes, and it is read whole before it is narrowed --
+                  // half a minute, not the few seconds the other three take.
+                  // Saying so is what keeps a wait from reading as a hang.
+                  'Reading the workbooks. The BPAD register is a large file, so this takes up to a minute.'
+                : `Reading the workbook${ready === 2 ? 's' : ''} and matching several thousand rows. This usually takes a few seconds.`}
             </p>
           </div>
         )}

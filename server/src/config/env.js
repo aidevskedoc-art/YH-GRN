@@ -51,6 +51,10 @@ export const config = {
     password: process.env.SEED_ADMIN_PASSWORD || 'Admin@123',
     fullName: process.env.SEED_ADMIN_NAME || 'Administrator',
   },
-  maxUploadBytes: (Number(process.env.MAX_UPLOAD_MB) || 25) * 1024 * 1024,
+  // 100 MB, not 25. The BPAD register is the whole group's -- the sample on
+  // file is 49 MB of it -- and every other upload is a fraction of that, so the
+  // cap has to clear the largest file the system is asked to read rather than
+  // the typical one.
+  maxUploadBytes: (Number(process.env.MAX_UPLOAD_MB) || 100) * 1024 * 1024,
   clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
 };

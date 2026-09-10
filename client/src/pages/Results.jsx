@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportResults } from '../services/exporter.js';
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
+import BpadView from '../components/BpadView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
-import { useConfirm } from '../components/ConfirmDialog.jsx';
 import { IconX } from '../components/icons.jsx';
 
 /** How long the search box waits for the typing to stop before it asks. */
@@ -29,6 +29,13 @@ const SEARCH_DELAY_MS = 300;
  * strip but not in the row of stat cards.
  */
 const TURNAROUND = 'TURNAROUND';
+/**
+ * The BPAD register's own tab. Like TURNAROUND it is `card: false` and reads a
+ * different table from the three reconciliation tabs -- so it fetches its own
+ * rows (see BpadView) rather than going through /results, and the toolbar's
+ * filters below have nothing to ask it.
+ */
+const BPAD = 'BPAD';
 const VALID = 'VALID';
 /**
  * Every GRN in scope, pending and valid together -- the upload as it arrived,
@@ -49,6 +56,12 @@ const TABS = [
   // population that journey has not started for. The tab keeps its own count.
   { status: 'PENDING', label: 'Pending GRNS', hint: 'Not yet in accounts', card: false },
   { status: VALID, label: 'Accounts ', hint: 'Found in the ageing report' },
+  // After Accounts, because it is the same question asked of a different
+  // register: the ageing report says a GRN reached accounts, and BPAD says
+  // which desk it is sitting on and how long it has been there. `countKey`
+  // because the summary carries it under its own name rather than as a
+  // reconciliation bucket.
+  { status: BPAD, label: 'BPAD', hint: 'Matched to the BPAD register', card: false, countKey: 'bpad' },
   { status: TURNAROUND, label: 'GRN age from PR to Bank', hint: 'Days at each step', card: false },
 ];
 
@@ -152,44 +165,24 @@ const CSD_CARDS = [
 const TURNAROUND_SCOPE = VALID;
 
 /**
- * "All uploads": every batch reconciled together. It travels in the same place
- * as a batch id -- the `:batchId` route segment and the selector's value -- and
- * the server drops its batch filter when it sees it.
+ * "All uploads": every batch reconciled together, which is the only scope the
+ * page has. It travels where a batch id used to -- the value handed to every
+ * API call below -- and the server drops its batch filter when it sees it.
  */
 const ALL = 'all';
 
-/** The `:batchId` segment as a batch id, the all sentinel, or null. */
-function parseBatchId(param) {
-  if (!param) return null;
-  if (String(param).toLowerCase() === ALL) return ALL;
-  const n = Number(param);
-  return Number.isInteger(n) && n > 0 ? n : null;
-}
-
-/**
- * The upload header's one-line description of what this batch actually holds.
- *
- * Either report may have been uploaded on its own, so this covers all three
- * shapes a batch can take rather than assuming both counts are non-zero.
- */
-function batchDescription(batch) {
-  const grn = batch.grnRowCount;
-  const ageing = batch.ageingRowCount;
-  const n = (x) => x.toLocaleString('en-IN');
-
-  if (grn > 0 && ageing > 0) return `${n(grn)} GRN transactions checked against ${n(ageing)} ageing rows.`;
-  if (grn > 0) return `${n(grn)} GRN transactions — no ageing report uploaded, so every GRN shows as pending.`;
-  if (ageing > 0) return `${n(ageing)} ageing rows — no GRN report uploaded, so there is nothing yet to reconcile them against.`;
-  return 'No rows in this upload.';
-}
-
 export default function Results() {
-  const { isAdmin, can } = useAuth();
-  const { batchId: batchIdParam } = useParams();
+  const { can } = useAuth();
   const navigate = useNavigate();
 
+  // Every upload, always. There is no picker any more: the page reports on
+  // everything on file, counting a GRN number that repeats across uploads
+  // only once (the server deduplicates for this scope).
+  const batchId = ALL;
+
+  // Kept only for the header's count and for telling "nothing uploaded yet"
+  // apart from "still loading".
   const [batches, setBatches] = useState([]);
-  const [batchId, setBatchId] = useState(parseBatchId(batchIdParam));
   const [summary, setSummary] = useState(null);
   const [status, setStatus] = useState('PENDING');
   // Which Status value the table is narrowed to, or '' for every row.
@@ -217,7 +210,6 @@ export default function Results() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
-  const [confirm, confirmDialog] = useConfirm();
 
   // Acting on several GRNs paid by the same cheque in one action, instead of
   // one dropdown per row -- sending several to CSD, receiving several back
@@ -250,29 +242,20 @@ export default function Results() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Load the batch list, and fall back to the newest batch when none is in the URL.
+  // The batch list is no longer a choice, only a count -- and the one thing
+  // that tells an empty database apart from a slow one.
   useEffect(() => {
     api
       .listBatches()
       .then(({ batches: list }) => {
         setBatches(list);
-        if (!batchIdParam && list.length > 0) {
-          setBatchId(list[0].id);
-          navigate(`/results/${list[0].id}`, { replace: true });
-        }
         if (list.length === 0) setLoading(false);
       })
       .catch((err) => {
         setError(err.message);
         setLoading(false);
       });
-    // Runs once on mount; later batch changes go through selectBatch.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  useEffect(() => {
-    if (batchIdParam) setBatchId(parseBatchId(batchIdParam));
-  }, [batchIdParam]);
 
   useEffect(() => {
     if (!batchId) return;
@@ -289,9 +272,10 @@ export default function Results() {
 
   const loadRows = useCallback(() => {
     if (!batchId) return;
-    // Turnaround is not a reconciliation status -- /results would reject it as
-    // an unknown filter. That tab fetches its own data in TurnaroundView.
-    if (status === TURNAROUND) return;
+    // Neither Turnaround nor BPAD is a reconciliation status -- /results would
+    // reject either as an unknown filter. Both tabs fetch their own data, in
+    // TurnaroundView and BpadView.
+    if (status === TURNAROUND || status === BPAD) return;
     setLoading(true);
     api
       .results(batchId, { status: rowStatus, page, pageSize, q, progress, location })
@@ -471,13 +455,6 @@ export default function Results() {
     }
   }
 
-  function selectBatch(id) {
-    setBatchId(id);
-    setPage(1);
-    setSummary(null);
-    navigate(`/results/${id}`);
-  }
-
   function selectStatus(next) {
     setStatus(next);
     setPage(1);
@@ -533,24 +510,6 @@ export default function Results() {
     }
   }
 
-  async function handleDelete() {
-    const ok = await confirm({
-      title: 'Delete this upload?',
-      message: 'Are you sure? This cannot be undone.',
-      confirmLabel: 'Delete upload',
-    });
-    if (!ok) return;
-    try {
-      await api.deleteBatch(batchId);
-      const remaining = batches.filter((b) => b.id !== batchId);
-      setBatches(remaining);
-      if (remaining.length > 0) selectBatch(remaining[0].id);
-      else navigate('/upload');
-    } catch (err) {
-      setError(err.message);
-    }
-  }
-
   if (batches.length === 0 && !loading) {
     return (
       <div className="empty empty--page">
@@ -562,9 +521,6 @@ export default function Results() {
       </div>
     );
   }
-
-  const isAll = batchId === ALL;
-  const activeBatch = batches.find((b) => b.id === batchId);
 
   // The progress dropdown's own options: every key the server's summary
   // carries (see PROGRESS in routes/results.js), not a fixed list copied out
@@ -586,82 +542,36 @@ export default function Results() {
 
   return (
     <>
-      {confirmDialog}
       {/* The shell's top bar already names the page, so this row carries the
-          batch context and its controls only. */}
+          scope and its controls only. */}
       <div className="page__head page__head--row">
         <div>
-          {isAll ? (
-            <>
-              <h2 className="page__title">All uploads</h2>
-              {/* The row counts are not the sum of the uploads': a GRN number
-                  repeating across uploads is counted once, so the total comes
-                  from the deduplicated summary rather than from the batch list. */}
-              <p className="page__lead">
-                {batches.length} upload{batches.length === 1 ? '' : 's'} combined —{' '}
-                {summary ? `${summary.total.count.toLocaleString('en-IN')} GRNs` : 'every GRN'},
-                counting a GRN number that repeats across uploads only once.
-              </p>
-            </>
-          ) : (
-            activeBatch && (
-              <>
-                {/* The selector shows names only, so the upload date lives here. */}
-                <h2 className="page__title">{activeBatch.name}</h2>
-                <p className="page__lead">
-                  Uploaded {new Date(activeBatch.uploadedAt).toLocaleDateString('en-GB')} —{' '}
-                  {batchDescription(activeBatch)}
-                </p>
-              </>
-            )
-          )}
+          <h2 className="page__title">All uploads</h2>
+          {/* The row counts are not the sum of the uploads': a GRN number
+              repeating across uploads is counted once, so the total comes
+              from the deduplicated summary rather than from the batch list. */}
+          <p className="page__lead">
+            {batches.length} upload{batches.length === 1 ? '' : 's'} combined —{' '}
+            {summary ? `${summary.total.count.toLocaleString('en-IN')} GRNs` : 'every GRN'},
+            counting a GRN number that repeats across uploads only once.
+          </p>
         </div>
 
-        {/* The page's scope, in the order it is decided: which upload, then
-            which branch of it. Both are labelled and sized alike, because they
-            are two halves of one answer -- everything below reads as "this
-            upload, this location" -- rather than a control and an afterthought
-            bolted beside it. The filters in the toolbar under the cards are a
-            different kind of question: they ask about the rows this pair
+        {/* Every upload is always in scope, so the only scope left to choose
+            is which branch of it. The filters in the toolbar under the cards
+            are a different kind of question: they ask about the rows this one
             selects, so they stay down there with the table. */}
         <div className="page__actions">
-           <LocationFilter value={location} onChange={selectLocation} />
-          <label className="picker">
-            <span className="picker__label">Uploaded files</span>
-            <select
-              className="field__input picker__input"
-              value={batchId ?? ''}
-              onChange={(e) => selectBatch(parseBatchId(e.target.value))}
-            >
-              <option value={ALL}>All uploads</option>
-              {batches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <LocationFilter value={location} onChange={selectLocation} />
 
           {/* One workbook, every tab -- see the note on exportResults for why
               the progress dropdown and the Total GRNS match filter do not
-              narrow it. Sits beside Delete upload since both act on the
-              upload as a whole, rather than down with the table's own
-              filters, which act on the rows they narrow. */}
+              narrow it. It acts on the whole scope rather than on the rows one
+              tab's filters narrow, so it sits up here rather than down with
+              the table. */}
           <button className="ghost" type="button" onClick={handleExport} disabled={exporting}>
             {exporting ? 'Preparing…' : 'Export Excel'}
           </button>
-
-          {/* Administrators only, and never when every upload is in scope --
-              there is no single one to delete then. Being given the upload
-              screen is permission to add a month's reports, not to remove one:
-              a delete takes its GRN rows, its ageing rows and every reconciled
-              result with it. The server refuses it too; this only keeps a
-              button that would 403 off the screen. */}
-          {isAdmin && !isAll && (
-            <button className="ghost danger" type="button" onClick={handleDelete}>
-              Delete upload
-            </button>
-          )}
         </div>
       </div>
 
@@ -736,8 +646,9 @@ export default function Results() {
               Accounts is already one bucket and the open question there is how
               far through CSD its rows have got. Pending GRNS has no ageing
               entry and so no Status column for either question to be about, so
-              it gets no dropdown at all. */}
-          {status === ALL_GRNS ? (
+              it gets no dropdown at all -- and neither does BPAD, which is the
+              register's own table and answers to its own column instead. */}
+          {status === BPAD ? null : status === ALL_GRNS ? (
             <select
               className="field__input stage-filter"
               value={matchFilter}
@@ -789,7 +700,7 @@ export default function Results() {
               toggle doubles as its own cancel: once a selection is open,
               pressing it again is the same button reading a cross rather
               than a second control beside it. */}
-          {status !== 'PENDING' && status !== TURNAROUND && (
+          {status !== 'PENDING' && status !== TURNAROUND && status !== BPAD && (
             <>
               {multiMode && allSelectedCsd && (
                 <button
@@ -856,7 +767,9 @@ export default function Results() {
         />
       )}
 
-      {status === TURNAROUND ? (
+      {status === BPAD ? (
+        <BpadView batchId={batchId} q={q} location={location} />
+      ) : status === TURNAROUND ? (
         <TurnaroundView
           batchId={batchId}
           q={q}

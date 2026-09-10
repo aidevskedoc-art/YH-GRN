@@ -120,6 +120,49 @@ const GRN_COLUMNS = [
 ];
 
 /**
+ * The BPAD register's own columns, in the register's own order and spelled the
+ * way it spells them -- the same reasoning as GRN_COLUMNS above: the sheet is
+ * meant to be checkable against the file it was extracted from, and reordering
+ * or renaming its columns would make that harder rather than easier.
+ *
+ * Division leads, as it does on the tab and on every other sheet: it is the
+ * branch resolved through the GRN row each record matched, since the
+ * register's own Location beside it is a short site code rather than a branch.
+ *
+ * The three ageing counts are numeric -- they are day counts and are meant to
+ * be summed and sorted -- while Sl.No. is an integer, matching GRN_COLUMNS.
+ */
+const BPAD_COLUMNS = [
+  { key: 'branchDivisionCode', label: 'Division' },
+  // Whether the register had an entry at all. Ahead of its columns rather than
+  // after them, because it is what says how to read the rest of the row: on a
+  // "Not in register" row everything from Sl.No. to GRN Age is empty because
+  // BPAD has never been told about the bill, not because the export dropped it.
+  { key: 'inRegister', label: 'In BPAD Register' },
+  { key: 'slNo', label: 'Sl.No.', integer: true },
+  { key: 'location', label: 'Location' },
+  { key: 'warehouse', label: 'WareHouse' },
+  { key: 'vendorCode', label: 'Vendor Code' },
+  { key: 'vendorName', label: 'Vendor Name' },
+  { key: 'vendorCategory', label: 'Vendor Category' },
+  { key: 'invNo', label: 'Inv.No.' },
+  { key: 'invDate', label: 'Inv Date', date: true },
+  { key: 'grnNo', label: 'GRN No' },
+  { key: 'grnDate', label: 'GRN Date', date: true },
+  { key: 'grnAmount', label: 'GRN Amount', numeric: true },
+  { key: 'poNumber', label: 'PO Number' },
+  { key: 'poDate', label: 'PO Date', date: true },
+  { key: 'pendingWithDept', label: 'Pending With Dept.' },
+  { key: 'bpadReceivedDate', label: 'BPAD Received Date', date: true },
+  { key: 'accountsReceivedDate', label: 'Accounts Received Date', date: true },
+  { key: 'pendingWithUser', label: 'Pending With User/Status' },
+  { key: 'pendReason', label: 'Pend.Reason/Pend Dept' },
+  { key: 'queryAgeing', label: 'QueryAgeing', numeric: true },
+  { key: 'ageing', label: 'Ageing', numeric: true },
+  { key: 'grnAge', label: 'GRN Age', numeric: true },
+];
+
+/**
  * What every Turnaround file carries, whatever it is measuring: the thirteen
  * identifying columns, in the order the screen shows them.
  *
@@ -310,6 +353,7 @@ const TITLES = {
   VALID: 'Accounts Report',
   PENDING: 'GRN Pendings Report',
   TURNAROUND: 'GRN Age From GRN to Accounts Report',
+  BPAD: 'BPAD Register Report',
   CSD: 'CSD GRN Report',
 };
 
@@ -335,6 +379,7 @@ export function columnsForStatus(status, spans = []) {
   if (status === 'PENDING') return GRN_COLUMNS;
   if (status === 'TURNAROUND') return turnaroundColumns(spans);
   if (status === 'VALID') return MATCHED_COLUMNS;
+  if (status === 'BPAD') return BPAD_COLUMNS;
   if (status === 'CSD') return CSD_COLUMNS;
   return COLUMNS;
 }
@@ -350,6 +395,9 @@ function toDisplayDate(value) {
 }
 
 function toCell(row, column) {
+  // Yes/No rather than TRUE/FALSE: the column is read by people, and a
+  // spreadsheet filter on it should offer words. See BPAD_COLUMNS above.
+  if (column.key === 'inRegister') return row.inRegister ? 'Yes' : 'Not in register';
   // The ageing report's own DivisionCode where the row has one, and the
   // configuration screen's resolved branch code where it does not -- see
   // branchDivisionCode on the server. One column rather than two, because a

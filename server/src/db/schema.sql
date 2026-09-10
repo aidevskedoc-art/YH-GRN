@@ -497,14 +497,127 @@ ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bank_row_count INTEGER NOT N
 ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bank_account_no TEXT;
 
 -- upload_batches_has_a_file predates the bank statement column above and so
--- only names the other two -- a batch naming just a statement was refused by
+-- named only the other two -- a batch naming just a statement was refused by
 -- this same rule, even though it is stored and useful entirely on its own
--- (see routes/batches.js). Dropped and re-added every migration run so an
--- existing database picks up the widened rule: CHECK has no ADD ... IF NOT
--- EXISTS form to guard just the recreate the way the DO block above did.
+-- (see routes/batches.js). It has to be widened to allow one.
+--
+-- Widened where the BPAD columns are added further down, and deliberately not
+-- here as well. This block used to drop and re-add the constraint naming three
+-- files, and that made this file order-dependent in a way that eventually bit:
+-- once a BPAD-only batch existed, replaying the schema re-added the
+-- three-file rule BEFORE reaching the four-file one below it, and the
+-- three-file ADD was rejected by the very row the four-file rule exists to
+-- allow -- taking the whole migration down with it, on a database whose data
+-- was perfectly valid.
+--
+-- So the constraint is defined in exactly one place, and it is the last word
+-- on the subject: see the DROP/ADD pair beside bpad_file_name. Adding a fifth
+-- optional file means editing that one, and nothing here.
+
+-- --------------------------------------------------------------------------
+-- The BPAD register (Bills Pending at Accounts Department), narrowed to this
+-- installation's own GRNs.
+--
+-- The source workbook is the whole group's register -- 327,000 rows and fifty
+-- megabytes of it -- and all but a few thousand of those rows are about GRNs
+-- this upload is not about. Storing it whole would be storing somebody else's
+-- report, so only the matching rows are kept: the match is on the vendor code
+-- AND the GRN number together, against the GRN report uploaded beside it (or
+-- against every GRN on file when none was), both halves folded through the
+-- same normKey the reconciliation matches with. The filtering happens while
+-- the sheet is being read -- see readBpadReport and grnMatchKeys -- so the
+-- rows that are not kept are never built in the first place.
+--
+-- Not joined to grn_transactions by a foreign key, and deliberately. A BPAD
+-- upload is a snapshot of where a bill had got to on the day it was taken, and
+-- it has to still read correctly once the upload it was matched against has
+-- been deleted -- the same reasoning csd_dispatches is written under. The two
+-- keys are carried instead, which is what the results screen re-joins on.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bpad_records (
+  id                     SERIAL PRIMARY KEY,
+  batch_id               INTEGER NOT NULL REFERENCES upload_batches(id) ON DELETE CASCADE,
+  source_row_no          INTEGER,
+  sl_no                  INTEGER,
+  location               TEXT,
+  warehouse              TEXT,
+  vendor_code            TEXT,
+  -- The two halves of the match, normalised. Stored rather than derived on
+  -- read for the same reason bank_statement_transactions stores
+  -- extracted_cheque_no: it is what the row is looked up by, and an index over
+  -- a stored column is worth the few bytes it costs.
+  vendor_code_key        TEXT,
+  vendor_name            TEXT,
+  vendor_category        TEXT,
+  inv_no                 TEXT,
+  inv_date               DATE,
+  grn_no                 TEXT,
+  grn_no_key             TEXT,
+  grn_date               DATE,
+  grn_amount             NUMERIC(18, 4),
+  po_number              TEXT,
+  po_date                DATE,
+  pending_with_dept      TEXT,
+  -- The two dates the register exists to report: when BPAD took the bill in,
+  -- and when Accounts did. Empty on a bill that has not got that far, which is
+  -- the answer rather than missing data.
+  bpad_received_date     DATE,
+  accounts_received_date DATE,
+  pending_with_user      TEXT,
+  pend_reason            TEXT,
+  -- The register's own three ageing counts, in days. NUMERIC rather than
+  -- INTEGER because GRN Age arrives fractional ("9.44").
+  query_ageing           NUMERIC(12, 2),
+  ageing                 NUMERIC(12, 2),
+  grn_age                NUMERIC(12, 2)
+);
+
+-- Whether the register actually had an entry for this GRN.
+--
+-- The tab shows every GRN the upload is about, not only the ones the register
+-- knew -- so a GRN with no entry is stored here too, carrying the identity the
+-- GRN report has for it (vendor, GRN number and date, PO, invoice, amount --
+-- the facts both files spell the same way) and nothing else. The register's own
+-- columns stay null on it, which is the truth: BPAD has not been told about
+-- this bill.
+--
+-- In practice those are the GRNs received on a delivery challan with no vendor
+-- invoice raised yet -- the GRN report writes "-" in Bill No for them -- and
+-- BPAD is a register of BILLS pending, so a GRN with no bill has nothing to be
+-- pending. Worth showing rather than silently dropping: goods received with no
+-- invoice against them is exactly what an accounts department wants to see.
+--
+-- DEFAULT TRUE so rows stored before this column existed read as what they
+-- were: register rows, every one of them.
+ALTER TABLE bpad_records ADD COLUMN IF NOT EXISTS in_register BOOLEAN NOT NULL DEFAULT TRUE;
+
+CREATE INDEX IF NOT EXISTS idx_bpad_batch ON bpad_records (batch_id);
+
+-- The results screen reads this by GRN number, across every batch, newest
+-- first -- see the BPAD tab in routes/results.js. Same shape as
+-- idx_grn_dpr_no_key for the same reason.
+CREATE INDEX IF NOT EXISTS idx_bpad_grn_no_key ON bpad_records (grn_no_key, batch_id DESC);
+
+-- The BPAD register is optional, so a batch uploaded without one keeps a null
+-- file name and a zero count rather than being a different kind of batch.
+-- bpad_matched_count is what was kept; bpad_row_count is what was read, and
+-- the pair is what lets the upload say "3,468 of 327,292" rather than leaving
+-- a reader to wonder where the rest went.
+ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bpad_file_name     TEXT;
+ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bpad_row_count     INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE upload_batches ADD COLUMN IF NOT EXISTS bpad_matched_count INTEGER NOT NULL DEFAULT 0;
+
+-- upload_batches_has_a_file predates this column too, the same way it predated
+-- the bank statement's -- and unlike a statement, a BPAD register uploaded on
+-- its own is a perfectly ordinary thing to do: it is matched against every GRN
+-- already on file, not only against one uploaded beside it. Dropped and
+-- re-added for the reason given above the last time it was widened.
 ALTER TABLE upload_batches DROP CONSTRAINT IF EXISTS upload_batches_has_a_file;
 ALTER TABLE upload_batches ADD CONSTRAINT upload_batches_has_a_file
-  CHECK (grn_file_name IS NOT NULL OR ageing_file_name IS NOT NULL OR bank_file_name IS NOT NULL);
+  CHECK (grn_file_name IS NOT NULL
+      OR ageing_file_name IS NOT NULL
+      OR bank_file_name IS NOT NULL
+      OR bpad_file_name IS NOT NULL);
 
 -- --------------------------------------------------------------------------
 -- Handed to Records.

@@ -19,6 +19,11 @@ import {
 /** Column names that identify each report's header row. */
 const GRN_SIGNATURE = ['DPR.NO', 'BILL NO', 'VENDOR NAME'];
 const AGEING_SIGNATURE = ['GRN_NO', 'BILLNO', 'VENDORNAME'];
+/* "GRN NO" with a space is the BPAD register's own spelling and nothing else's:
+   the GRN report calls the same number DPR.No, and the ageing report writes
+   GRN_NO, which only collapses to this under the tight tokenizer the ageing
+   reader uses. So the three signatures cannot claim each other's files. */
+const BPAD_SIGNATURE = ['GRN NO', 'VENDOR CODE', 'GRN AMOUNT'];
 
 /** How far down the sheet to look for the header before giving up. */
 const HEADER_SEARCH_LIMIT = 30;
@@ -388,4 +393,119 @@ export function readBankStatement(buffer) {
     // transactions belong to.
     accountNo: findAccountNo(grid, headerIdx),
   };
+}
+
+/* ==========================================================================
+   The BPAD register: Bills Pending at Accounts Department.
+
+   Unlike the three readers above, this one is given a filter and applies it
+   while it reads. The register is the whole group's -- 327,000 rows of it --
+   and only the few thousand about GRNs this system already knows are wanted.
+   Building all 327,000 row objects and then throwing away 99% of them would
+   cost several hundred megabytes for no purpose, so the rows that are not kept
+   are never built: `keep` is asked about two small strings per source row, and
+   only an answer of true assembles anything.
+   ========================================================================== */
+
+/**
+ * A BPAD date written as text with a midnight time trailing after it.
+ *
+ * Every date column in the register is a real date cell -- an Excel serial,
+ * which toIsoDateString reads -- except PO Date, which arrives as
+ * "27/08/2026  12:00:00AM". That is dd/MM/yyyy, which toIsoDateString also
+ * reads, but only once the time is off the end of it: with the time still
+ * there the string matches no pattern and the column comes out empty on every
+ * row.
+ */
+const BPAD_TIME_SUFFIX = /^(.*?)\s+\d{1,2}:\d{2}(?::\d{2})?\s*[AP]\.?M\.?$/i;
+
+function bpadDate(value) {
+  const m = BPAD_TIME_SUFFIX.exec(toText(value));
+  return toIsoDateString(m ? m[1] : value);
+}
+
+/**
+ * Parse the BPAD register, keeping only the rows `keep` accepts.
+ *
+ * Columns: Sl.No., Location, WareHouse, Vendor Code, Vendor Name, Vendor
+ * Category, Inv.No., Inv Date, GRN No, GRN Date, GRN Amount, PO Number, PO
+ * Date, Pending With Dept., BPAD Received Date., Accounts Received Date.,
+ * Pending With User/Status, Pend.Reason/Pend Dept, QueryAgeing, Ageing, GRN
+ * Age.
+ *
+ * `Accounts Received Date.` carries a carriage return inside the label on the
+ * source sheet; headerToken folds every run of whitespace to one space, so it
+ * is found under the name it reads as.
+ *
+ * @param {Buffer} buffer
+ * @param {(vendorCodeKey: string, grnNoKey: string) => boolean} [keep]
+ *   Called once per source row, before anything is built. Default keeps every
+ *   row, which is what makes this readable on its own for a smaller register.
+ * @returns {{ sheetName, headerRow, headers, rows, scanned }} `scanned` is how
+ *   many data rows the sheet held, against `rows.length` kept -- the pair is
+ *   what the upload reports back.
+ */
+export function readBpadReport(buffer, { keep = () => true } = {}) {
+  const { sheetName, grid } = readGrid(buffer);
+  const headerIdx = findHeaderRow(grid, BPAD_SIGNATURE, false);
+
+  if (headerIdx === -1) {
+    throw new ExcelFormatError(
+      'This does not look like a BPAD register - could not find a header row containing GRN No, Vendor Code and GRN Amount.',
+    );
+  }
+
+  const headers = (grid[headerIdx] || []).map((h) => toText(h)).filter(Boolean);
+  const index = indexHeaders(grid[headerIdx], false);
+  const rows = [];
+  let scanned = 0;
+
+  for (let i = headerIdx + 1; i < grid.length; i += 1) {
+    const get = makeGetter(grid[i] || [], index);
+    const grnNo = toText(get('GRN NO'));
+    if (!grnNo) continue; // blank spacers, and the repeated page headers
+
+    scanned += 1;
+
+    const vendorCode = toText(get('VENDOR CODE'));
+    const grnNoKey = normKey(grnNo);
+    const vendorCodeKey = normKey(vendorCode);
+    if (!keep(vendorCodeKey, grnNoKey)) continue;
+
+    rows.push({
+      sourceRowNo: i + 1,
+      slNo: toNumber(get('SL.NO.', 'SL.NO')),
+      location: toText(get('LOCATION')),
+      warehouse: toText(get('WAREHOUSE')),
+      vendorCode,
+      vendorCodeKey,
+      vendorName: toText(get('VENDOR NAME')),
+      vendorCategory: toText(get('VENDOR CATEGORY')),
+      invNo: toText(get('INV.NO.', 'INV NO')),
+      invDate: bpadDate(get('INV DATE')),
+      grnNo,
+      grnNoKey,
+      grnDate: bpadDate(get('GRN DATE')),
+      // " 1,32,716.00 " -- the register writes its amounts as text, padded and
+      // grouped Indian-style. toNumber strips the commas; the padding is gone
+      // by the time it sees it.
+      grnAmount: toNumber(get('GRN AMOUNT')),
+      poNumber: toText(get('PO NUMBER')),
+      poDate: bpadDate(get('PO DATE')),
+      pendingWithDept: toText(get('PENDING WITH DEPT.', 'PENDING WITH DEPT')),
+      // The two the register exists for. Empty on a bill that has not reached
+      // that desk yet, which is the answer rather than missing data.
+      bpadReceivedDate: bpadDate(get('BPAD RECEIVED DATE.', 'BPAD RECEIVED DATE')),
+      accountsReceivedDate: bpadDate(get('ACCOUNTS RECEIVED DATE.', 'ACCOUNTS RECEIVED DATE')),
+      pendingWithUser: toText(get('PENDING WITH USER/STATUS')),
+      pendReason: toText(get('PEND.REASON/PEND DEPT')),
+      queryAgeing: toNumber(get('QUERYAGEING')),
+      ageing: toNumber(get('AGEING')),
+      grnAge: toNumber(get('GRN AGE')),
+    });
+  }
+
+  if (scanned === 0) throw new ExcelFormatError('The BPAD register contains no data rows.');
+
+  return { sheetName, headerRow: headerIdx + 1, headers, rows, scanned };
 }

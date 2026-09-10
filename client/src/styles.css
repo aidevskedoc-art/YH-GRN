@@ -1304,11 +1304,12 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
    over the whole box at zero opacity (see components/FileDrop.jsx), so
    everything drawn inside has to be made invisible to the pointer or it would
    shield the control that does the work. */
-.drops { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-/* Three across while each still has room for a filename; two, then one, as
-   that room runs out. They shrink together rather than one wrapping under the
-   pair, which would put the optional slot back in a half-empty row. */
-@media (max-width: 1180px) { .drops { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.drops { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+/* Four across while each still has room for a filename; two, then one, as that
+   room runs out. They shrink together rather than one wrapping under the rest,
+   which would leave the last slot alone in a half-empty row -- and two across
+   breaks four into an even pair of rows rather than three and a straggler. */
+@media (max-width: 1420px) { .drops { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 680px) { .drops { grid-template-columns: minmax(0, 1fr); } }
 
 /* A column so the target below the caption takes whatever height the row

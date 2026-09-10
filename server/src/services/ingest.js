@@ -94,6 +94,23 @@ const BANK_COLUMNS = [
   'extracted_cheque_no', 'value_date', 'withdrawal_amt', 'deposit_amt', 'closing_balance',
 ];
 
+/**
+ * One row per GRN the upload is about: the register's own row where it had one
+ * (already narrowed by readBpadReport, which filters as it reads rather than
+ * handing 327,000 rows over to be thrown away here), and a row carrying only
+ * what the GRN report knows where it did not -- see bpadRowsForGrns in
+ * routes/batches.js. `in_register` is which of the two a row is.
+ */
+const BPAD_COLUMNS = [
+  'batch_id', 'source_row_no', 'sl_no', 'location', 'warehouse',
+  'vendor_code', 'vendor_code_key', 'vendor_name', 'vendor_category',
+  'inv_no', 'inv_date', 'grn_no', 'grn_no_key', 'grn_date', 'grn_amount',
+  'po_number', 'po_date', 'pending_with_dept',
+  'bpad_received_date', 'accounts_received_date',
+  'pending_with_user', 'pend_reason', 'query_ageing', 'ageing', 'grn_age',
+  'in_register',
+];
+
 const RESULT_COLUMNS = [
   'batch_id', 'grn_transaction_id', 'matched_ageing_id', 'status',
   'bill_no_match', 'vendor_name_match', 'discrepancy_notes',
@@ -110,6 +127,10 @@ const RESULT_COLUMNS = [
  * @param {Array}  params.results     from reconcile()
  * @param {string} [params.bankFileName] the bank statement, if one was given
  * @param {Array}  [params.bankRows]     its parsed transaction rows
+ * @param {string} [params.bpadFileName] the BPAD register, if one was given
+ * @param {Array}  [params.bpadRows]     one row per GRN in scope: the
+ *   register's own where it had one, a GRN-report-only row where it did not
+ * @param {number} [params.bpadScanned]  how many rows the register held
  * @returns {Promise<number>} the new batch id
  */
 export function saveBatch({
@@ -123,17 +144,25 @@ export function saveBatch({
   bankFileName = null,
   bankRows = [],
   bankAccountNo = null,
+  bpadFileName = null,
+  bpadRows = [],
+  bpadScanned = 0,
 }) {
   return withTransaction(async (client) => {
     const { rows: batchRows } = await client.query(
       `INSERT INTO upload_batches
          (name, grn_file_name, ageing_file_name, grn_row_count, ageing_row_count, uploaded_by,
-          bank_file_name, bank_row_count, bank_account_no)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          bank_file_name, bank_row_count, bank_account_no,
+          bpad_file_name, bpad_row_count, bpad_matched_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [
         name, grnFileName, ageingFileName, grnRows.length, ageingRows.length, userId,
         bankFileName, bankRows.length, bankAccountNo,
+        // Both counts, not just the one that was kept: "3,468 of 327,292" is
+        // what tells a reader the register was read whole and narrowed, rather
+        // than leaving them to wonder where the other 323,824 rows went.
+        bpadFileName, bpadScanned, bpadRows.length,
       ],
     );
     const batchId = batchRows[0].id;
@@ -264,6 +293,24 @@ export function saveBatch({
       await bulkInsert(client, 'bank_statement_transactions', BANK_COLUMNS, bankRows, (r) => [
         batchId, r.sourceRowNo, r.txnDate, r.narration, r.chqRefNo,
         r.extractedChequeNo, r.valueDate, r.withdrawalAmt, r.depositAmt, r.closingBalance,
+      ]);
+    }
+
+    // Optional too, and reconciled against nothing here: the matching was done
+    // while the register was read (see readBpadReport), and the GRNs it had no
+    // entry for were filled in afterwards, so what arrives is already one row
+    // per GRN and ready to store.
+    if (bpadRows.length > 0) {
+      await bulkInsert(client, 'bpad_records', BPAD_COLUMNS, bpadRows, (r) => [
+        batchId, r.sourceRowNo, r.slNo, r.location, r.warehouse,
+        r.vendorCode, r.vendorCodeKey, r.vendorName, r.vendorCategory,
+        r.invNo, r.invDate, r.grnNo, r.grnNoKey, r.grnDate, r.grnAmount,
+        r.poNumber, r.poDate, r.pendingWithDept,
+        r.bpadReceivedDate, r.accountsReceivedDate,
+        r.pendingWithUser, r.pendReason, r.queryAgeing, r.ageing, r.grnAge,
+        // Defaulted rather than required, so a row built straight off the
+        // register -- which knows nothing about this flag -- is a register row.
+        r.inRegister ?? true,
       ]);
     }
 
