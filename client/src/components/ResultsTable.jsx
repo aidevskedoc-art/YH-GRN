@@ -3,6 +3,8 @@ import { api } from '../api/client.js';
 import { IconCheck, IconSend } from './icons.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import Sheet from './Sheet.jsx';
+import { chequePrepared } from '../services/cheque.js';
+import { useConfirm } from './ConfirmDialog.jsx';
 
 const currency = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -242,7 +244,60 @@ function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, fo
 const SEND_CSD = 'CSD';
 const SEND_RECORDS = 'RECORDS';
 
-function SendPicker({ row, sent, filed, busy, canCsd, onSend }) {
+/**
+ * The CSD stages a handover can still be taken back from -- kept in step by
+ * hand with TAKE_BACK_STAGES in routes/csd.js, which is what actually refuses
+ * the ones that cannot.
+ *
+ * While CSD have only queued or received it, nothing of theirs is undone by
+ * recalling it. Once they have approved or rejected it they have answered, and
+ * the answer is not this screen's to delete.
+ */
+const TAKE_BACK_STAGES = ['QUEUED', 'RECEIVED'];
+
+/**
+ * Whether the Take back option is offered on a row that has gone to CSD.
+ *
+ * Needs the dispatch's own id, which is what the endpoint addresses -- a row
+ * still showing as sent from the optimistic flag set a moment ago has not been
+ * reloaded yet and has no id to send, so it waits for the reload rather than
+ * offering a button that cannot work.
+ *
+ * Records is not takeable-back at all: it keeps only the GRN number and has no
+ * screen to take anything back from.
+ */
+function canTakeBack(row, canCsd) {
+  return Boolean(
+    canCsd && row.csdDispatchId && TAKE_BACK_STAGES.includes(row.csdStage || 'QUEUED'),
+  );
+}
+
+function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, onSend, onTakeBack }) {
+  // Sent to CSD and still recallable -- the GRN went by mistake and CSD have
+  // not acted on it yet.
+  //
+  // A picker rather than a button beside the badge, because that is the idiom
+  // this column already uses: it rests on where the row has got to and its
+  // options are the moves available from there, the same shape the unsent
+  // state and the Accounts hand-back picker both have. It also keeps the one
+  // destructive control on this screen behind a deliberate choose-then-confirm
+  // rather than a single click next to "Sent".
+  if (sent && canTakeBack(row, canCsd)) {
+    return (
+      <select
+        className="stage-select send-select"
+        value=""
+        disabled={busy}
+        onChange={(e) => e.target.value && onTakeBack(row)}
+        aria-label={`GRN ${row.dprNo} is in the CSD queue - take it back`}
+        title={`GRN ${row.dprNo} is in the CSD queue. Take it back while CSD have not acted on it.`}
+      >
+        <option value="">Sent</option>
+        <option value="TAKE_BACK">Take back</option>
+      </select>
+    );
+  }
+
   // Where it has gone, if it has. Both read as an arrival rather than as a
   // disabled control: the row is finished with, and the Status column beside
   // this one carries the detail.
@@ -277,6 +332,31 @@ function SendPicker({ row, sent, filed, busy, canCsd, onSend }) {
     );
   }
 
+  /* Nothing has been drawn up for this bill yet -- see chequePrepared -- so
+     neither destination is open to it. The whole picker is disabled rather
+     than the CSD option alone: a bill with no cheque has nothing to hand to
+     CSD and nothing to file with Records either, and a dropdown that opens on
+     a single live option invites the one send that is still wrong.
+
+     Disabled where it stands rather than replaced by a dash, so the cell keeps
+     the shape it has on every other row and reads as an action not yet
+     available instead of one this row never has. The resting text says which,
+     and the title spells it out -- a browser will not always surface a title
+     on a disabled control, so the reason has to be legible without it. */
+  if (!chequeReady) {
+    return (
+      <select
+        className="stage-select send-select"
+        value=""
+        disabled
+        aria-label={`GRN ${row.dprNo} cannot be sent yet - no cheque has been prepared for it`}
+        title="No cheque prepared for this bill yet - there is nothing to send"
+      >
+        <option value="">No cheque yet</option>
+      </select>
+    );
+  }
+
   return (
     <select
       className="stage-select send-select"
@@ -290,7 +370,10 @@ function SendPicker({ row, sent, filed, busy, canCsd, onSend }) {
           stays, disabled, rather than being dropped: the row still reads as one
           that COULD go to CSD, and says plainly why this account cannot send
           it. Records is gated on the results screen, which anyone looking at
-          this table already has. */}
+          this table already has.
+
+          The other reason a GRN cannot go to CSD -- no cheque prepared -- is
+          handled above, where it stops both destinations rather than this one. */}
       <option value={SEND_CSD} disabled={!canCsd}>
         {canCsd ? 'Send to CSD' : 'Send to CSD — no access'}
       </option>
@@ -621,6 +704,10 @@ export default function ResultsTable({
   // springing back to "Send to CSD" for a moment.
   const [busy, setBusy] = useState(null);
   const [justSent, setJustSent] = useState(() => new Set());
+  // Taking a GRN back off the CSD queue is the one destructive thing this
+  // table does, so it asks first -- the same dialog the CSD screen's own
+  // version of this action uses.
+  const [confirm, confirmDialog] = useConfirm();
   const [justFiled, setJustFiled] = useState(() => new Set());
   const [error, setError] = useState('');
   // The row ForwardDetailsDialog is open for, or null, and which of its two
@@ -644,8 +731,9 @@ export default function ResultsTable({
     7 + // Division, GRN No, GRN Date, Bill No, Bill Date, Vendor, Vendor Code
     // Bill.Amount, Transport Amount, Total Amount, Add.Amount, Ded.Amount
     (showGrnSide ? 5 : 0) +
-    // Focus doc_no, the amounts, Cheque No, Cheque Date, Account No, Action, Status
-    (showAgeing ? AMOUNT_COLUMNS.length + 6 : 0);
+    // Focus doc_no, the amounts, Cheque No, Cheque Date, PaymentDocNo,
+    // Account No, Action, Status
+    (showAgeing ? AMOUNT_COLUMNS.length + 7 : 0);
 
   const isSent = (row) => row.csdSent || justSent.has(row.dprNo);
   const isFiled = (row) => row.recordsSent || justFiled.has(row.dprNo);
@@ -665,7 +753,14 @@ export default function ResultsTable({
    * whether the box is there to tick at all.
    */
   const canBulkCsd = (row) =>
-    can('csd') && row.status !== 'PENDING' && row.csdStage !== 'MOVED_TO_ACCOUNTS' && !isSent(row) && !isFiled(row);
+    can('csd') &&
+    row.status !== 'PENDING' &&
+    // No cheque drawn up yet, so there is nothing to hand over -- the same bar
+    // the Send picker puts on the single-row version of this action.
+    chequePrepared(row) === true &&
+    row.csdStage !== 'MOVED_TO_ACCOUNTS' &&
+    !isSent(row) &&
+    !isFiled(row);
   const canBulkReceive = (row) =>
     row.csdStage === 'MOVED_TO_ACCOUNTS' && (row.csdAccountsStage || 'QUEUED') === 'QUEUED';
   const canBulkForward = (row) =>
@@ -695,6 +790,48 @@ export default function ResultsTable({
       }
       // Let the page reload, so the row carries the server's own answer from
       // here on and the CSD screen's count is not stale behind this one.
+      onSent?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Take a GRN back off the CSD queue -- the undo for one sent by mistake.
+   *
+   * The dispatch row is deleted, which is what taking it back means here:
+   * `csdSent` is read from that table rather than stored on the result, so the
+   * GRN stops being in the queue and comes back to Accounts as one that has
+   * not been handed over, Send picker and all. The CSD screen loses the row at
+   * the same time, being a view of the same table.
+   *
+   * Confirmed, because it is destructive and silent -- nothing on either
+   * screen afterwards says the GRN was ever sent. Refused by the server once
+   * CSD have acted (see TAKE_BACK_STAGES in routes/csd.js); the picker is not
+   * offered then either, and the two disagree only in the seconds between CSD
+   * approving it and this page reloading, which is what the error is for.
+   */
+  async function takeBack(row) {
+    const ok = await confirm({
+      title: 'Take this GRN back?',
+      message: `GRN ${row.dprNo} will come off the CSD queue and go back to Accounts as one that has not been sent. It can be sent again afterwards.`,
+      confirmLabel: 'Take back',
+    });
+    if (!ok) return;
+
+    setBusy(row.dprNo);
+    setError('');
+    try {
+      await api.removeFromCsd(row.csdDispatchId);
+      // The optimistic flag from a send made earlier in this page's life would
+      // otherwise go on claiming the row is sent after the reload disagrees.
+      setJustSent((prev) => {
+        const next = new Set(prev);
+        next.delete(row.dprNo);
+        return next;
+      });
       onSent?.();
     } catch (err) {
       setError(err.message);
@@ -823,6 +960,18 @@ export default function ResultsTable({
                 cheque it belongs to, and not to be read as the day it cleared.
                 That is the bank's answer, and it is in Status. */}
             {showAgeing && <th>Cheque Date</th>}
+            {/* The ageing report's own reference for the payment -- "Pmt:SE1/
+                26-27/RTG/929", "ADVP:..." for an advance. After the cheque
+                rather than beside Focus doc_no, because it identifies the
+                payment that cheque belongs to and is read with it. Off the
+                report, so it is blank on a row the report has not paid yet,
+                which is most of them.
+
+                Headed as the report spells it, which is how NetAmt through
+                PayableAmount beside it are headed and how every sheet of the
+                export spells it -- one name for the column wherever it is
+                read. */}
+            {showAgeing && <th>PaymentDocNo</th>}
             {/* The account the branch banks through, off the configuration
                 screen rather than off any of the three reports -- so it sits
                 after the cheque, as the account that cheque was drawn on. */}
@@ -909,6 +1058,15 @@ export default function ResultsTable({
                 <td>{formatDate(row.chqDate) || <span className="table__miss">&mdash;</span>}</td>
               )}
               {showAgeing && (
+                /* Mono, like every other identifier in this table: it is a
+                   reference to be read character by character and compared,
+                   not a phrase. A dash where the report carries none, which is
+                   how every other unanswered cell here reads. */
+                <td className="table__mono">
+                  {row.paymentDocNo || <span className="table__miss">&mdash;</span>}
+                </td>
+              )}
+              {showAgeing && (
                 <td className="table__mono">
                   {/* Blank when the row's branch has no account recorded, or
                       no configured branch claims it -- there is nothing to
@@ -946,7 +1104,9 @@ export default function ResultsTable({
                       filed={isFiled(row)}
                       busy={busy === row.dprNo}
                       canCsd={can('csd')}
+                      chequeReady={chequePrepared(row) === true}
                       onSend={send}
+                      onTakeBack={takeBack}
                     />
                   )}
                 </td>
@@ -979,6 +1139,7 @@ export default function ResultsTable({
         </tbody>
       </table>
       </div>
+      {confirmDialog}
       {forwardFormRow && (
         <ForwardDetailsDialog
           subject={`GRN ${forwardFormRow.dprNo}`}

@@ -20,6 +20,7 @@
  */
 import { api } from '../api/client.js';
 import { CHECKPOINTS, STAGE_KEYS, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
+import { chequePrepared } from './cheque.js';
 
 const COLUMNS = [
   { key: 'status', label: 'Status' },
@@ -83,6 +84,25 @@ const MATCHED_COLUMNS = [
   // The day the cheque was cut, from the ageing report -- not the day it
   // cleared, which is the bank's answer in Cheque Status beside it.
   { key: 'chqDate', label: 'Cheque Date', date: true },
+  // The report's own reference for the payment the cheque belongs to
+  // ("Pmt:SE1/26-27/RTG/929"). Here rather than beside Focus doc_no so the
+  // sheet runs in the same order as the table it is taken off.
+  //
+  // Text, for the reason Cheque No is: it is an identifier, and one that
+  // carries colons and slashes Excel would otherwise try to read as something
+  // else. PaymentDocNo, the ageing report's own spelling and the one the CSD
+  // and register sheets already use -- one name for it across the workbook and
+  // the screen, rather than a friendlier one on the sheet that happens to
+  // mirror the table.
+  { key: 'paymentDocNo', label: 'PaymentDocNo' },
+  // Whether a cheque has been drawn up at all, which is the three columns
+  // above read as one answer -- the same rule the Cheque Prepared cards count
+  // by (see CHEQUE_PREPARED in routes/results.js). Derived rather than stored,
+  // so it lives in toCell below.
+  //
+  // Right after the three it is read off, and before Cheque Status, which is
+  // the next thing that happens to a cheque once one exists.
+  { key: 'chequePrepared', label: 'Cheque Prepared' },
   // The bank statement's answer on that cheque. Blank when no statement carries
   // the number, which is not the same as "not cleared".
   { key: 'chequeStatus', label: 'Cheque Status' },
@@ -129,16 +149,15 @@ const GRN_COLUMNS = [
  * branch resolved through the GRN row each record matched, since the
  * register's own Location beside it is a short site code rather than a branch.
  *
- * The three ageing counts are numeric -- they are day counts and are meant to
- * be summed and sorted -- while Sl.No. is an integer, matching GRN_COLUMNS.
+ * Sl.No. is an integer, matching GRN_COLUMNS.
+ *
+ * The register's own QueryAgeing, Ageing and GRN Age used to close the sheet.
+ * They are gone from the whole feature -- the register recomputes them from
+ * dates it also carries, so an exported copy was only true on the day the file
+ * was uploaded.
  */
 const BPAD_COLUMNS = [
   { key: 'branchDivisionCode', label: 'Division' },
-  // Whether the register had an entry at all. Ahead of its columns rather than
-  // after them, because it is what says how to read the rest of the row: on a
-  // "Not in register" row everything from Sl.No. to GRN Age is empty because
-  // BPAD has never been told about the bill, not because the export dropped it.
-  { key: 'inRegister', label: 'In BPAD Register' },
   { key: 'slNo', label: 'Sl.No.', integer: true },
   { key: 'location', label: 'Location' },
   { key: 'warehouse', label: 'WareHouse' },
@@ -157,9 +176,6 @@ const BPAD_COLUMNS = [
   { key: 'accountsReceivedDate', label: 'Accounts Received Date', date: true },
   { key: 'pendingWithUser', label: 'Pending With User/Status' },
   { key: 'pendReason', label: 'Pend.Reason/Pend Dept' },
-  { key: 'queryAgeing', label: 'QueryAgeing', numeric: true },
-  { key: 'ageing', label: 'Ageing', numeric: true },
-  { key: 'grnAge', label: 'GRN Age', numeric: true },
 ];
 
 /**
@@ -395,9 +411,7 @@ function toDisplayDate(value) {
 }
 
 function toCell(row, column) {
-  // Yes/No rather than TRUE/FALSE: the column is read by people, and a
-  // spreadsheet filter on it should offer words. See BPAD_COLUMNS above.
-  if (column.key === 'inRegister') return row.inRegister ? 'Yes' : 'Not in register';
+
   // The ageing report's own DivisionCode where the row has one, and the
   // configuration screen's resolved branch code where it does not -- see
   // branchDivisionCode on the server. One column rather than two, because a
@@ -424,6 +438,15 @@ function toCell(row, column) {
     return CSD_STAGE_LABELS[row.csdStage] || 'Not sent';
   }
   if (column.key === 'chequeStatus') return CHEQUE_STATUS_LABELS[row.chequeStatus] ?? null;
+  // Words rather than Yes/No: this is read by people, and Excel's filter
+  // dropdown should offer the answer rather than make one up from the
+  // heading. Null where the question does not apply
+  // -- see chequePrepared, which is also what the Send picker gates on.
+  if (column.key === 'chequePrepared') {
+    const prepared = chequePrepared(row);
+    if (prepared === null) return null;
+    return prepared ? 'Prepared' : 'Not prepared';
+  }
   if (column.key === 'stage') {
     // The CSD queue's own row shape names these fields `accountsStage` and
     // `forwardedTo` (see mapDispatch in routes/csd.js), not the `csd`-prefixed

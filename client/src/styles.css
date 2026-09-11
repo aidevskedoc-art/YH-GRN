@@ -358,7 +358,6 @@ code, .mono {
 .stat,
 .table-wrap,
 .empty--page,
-.toolbar__tabs,
 .drop,
 .topbar,
 .sidebar,
@@ -1610,10 +1609,34 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 .stat__amount { font-weight: 600; font-variant-numeric: tabular-nums; }
 .stat__hint { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
+/* The whole population, so it takes the brand colour rather than one of the
+   semantic rungs: it is not a verdict on anything, it is everything the three
+   cards after it divide up. */
+.stat--all { --stat-tint: rgba(245, 134, 51, 0.14); --stat-key: var(--brand); }
+.stat--all .stat__value, .stat--all .stat__amount { color: var(--brand); }
+[data-theme="light"] .stat--all { --stat-tint: rgba(245, 134, 51, 0.11); }
 .stat--pending { --stat-tint: var(--st-pending-soft); --stat-key: var(--st-pending); }
 .stat--pending .stat__value, .stat--pending .stat__amount { color: var(--st-pending); }
 .stat--valid { --stat-tint: var(--st-matched-soft); --stat-key: var(--st-matched); }
 .stat--valid .stat__value, .stat--valid .stat__amount { color: var(--st-matched); }
+/* The BPAD register: a different table's answer about the same GRNs, so it
+   takes the informational blue rather than a pending/verdict colour. */
+.stat--bpad { --stat-tint: var(--st-review-soft); --stat-key: var(--st-review); }
+.stat--bpad .stat__value, .stat--bpad .stat__amount { color: var(--st-review); }
+
+/* One card per value of the BPAD register's Pending With Dept. column, on the
+   BPAD view. Deliberately toneless: these are a filter rather than a verdict,
+   there can be a dozen of them, and a dozen colours would say nothing. The key
+   bar stays the neutral one .stat defaults to, so the row reads as four
+   coloured counts followed by a group of plain ones. */
+.stat--dept { --stat-key: var(--border-strong); }
+
+/* The GRNs the BPAD register has no entry for, on the BPAD view. Amber rather
+   than red: it is work outstanding -- a delivery with no vendor invoice raised
+   against it yet -- and not an error, which is the same reading Pending takes
+   the colour for. */
+.stat--missing { --stat-tint: var(--warn-soft); --stat-key: var(--warn); }
+.stat--missing .stat__value, .stat--missing .stat__amount { color: var(--warn); }
 
 /* The four CSD stages. They borrow the same semantic rungs rather than
    inventing four more colours: queued is work outstanding, so it takes the
@@ -1630,53 +1653,9 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* --- toolbar */
 .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
-/* The strip is a segmented control, so its buttons must not wrap into a second
-   row. On a narrow screen it scrolls instead - without max-width it would be
-   the widest thing on the page and would stretch the whole layout past the
-   viewport, taking the cards and the table with it. */
-.toolbar__tabs {
-  display: flex;
-  gap: 4px;
-  max-width: 100%;
-  overflow-x: auto;
-  scrollbar-width: none;
-  background-color: var(--surface);
-  padding: 4px;
-  border-radius: var(--r-pill);
-  border: 1px solid var(--border);
-  /* A trough cut into the page, so the selected pill reads as sitting IN it. */
-  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.32), inset 0 -1px 0 rgba(255, 226, 195, 0.06);
-}
-[data-theme="light"] .toolbar__tabs {
-  box-shadow: inset 0 2px 5px rgba(120, 96, 62, 0.10), inset 0 -1px 0 rgba(255, 255, 255, 0.90);
-}
-.toolbar__tabs::-webkit-scrollbar { display: none; }
-.tab {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 15px;
-  border: none;
-  border-radius: var(--r-pill);
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-weight: 550;
-  cursor: pointer;
-  box-shadow: none;
-}
-.tab:hover { background: var(--surface-3); color: var(--text); box-shadow: none; }
-.tab.is-active {
-  background: linear-gradient(180deg, var(--brand-600), var(--brand));
-  color: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 226, 198, 0.50), 0 2px 8px rgba(245, 134, 51, 0.34);
-}
-.tab__count { padding: 1px 7px; border-radius: var(--r-pill); background: rgba(128, 128, 128, 0.22); font-size: 11.5px; font-weight: 700; }
-.tab.is-active .tab__count { background: rgba(255, 255, 255, 0.26); }
-/* Pinned right. `space-between` on .toolbar does that while the tab strip is
-   there to sit opposite; the margin is what holds it on the CSD page, where
-   this group is the strip's only child. */
+/* Pinned right. Nothing sits opposite it any more -- choosing a view moved up
+   to the head row, beside Location -- so the margin, not `space-between`, is
+   what holds this group against the right edge. */
 .toolbar__actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-left: auto; }
 /* One line, in source order: filter, then search, then the export button.
    Wrapping is kept for phone widths, where the three genuinely do not fit;

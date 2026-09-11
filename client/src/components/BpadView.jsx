@@ -33,46 +33,12 @@ function Text({ value }) {
 
 /**
  * Whether the register had an entry for this GRN.
- *
- * A pill rather than a Yes/No, and the same pills the rest of the app uses for
- * a row's standing: on a tab where most rows say the same thing, the exception
- * has to be the one that catches the eye. `unsent` is the muted grey the other
- * tables use for "this has not happened", which is exactly what this is.
- */
-function RegisterState({ inRegister }) {
-  return inRegister ? (
-    <span className="pill pill--valid" title="The BPAD register has an entry for this GRN">
-      In register
-    </span>
-  ) : (
-    <span
-      className="pill pill--unsent"
-      title="The BPAD register has no entry for this GRN — usually a delivery with no vendor invoice raised against it yet, and BPAD tracks bills"
-    >
-      Not in register
-    </span>
-  );
-}
-
 /** A date the register carries, or a dash where the bill has not reached it. */
 function DateText({ value }) {
   return value ? formatDate(value) : <span className="table__miss">&mdash;</span>;
 }
 
-/**
- * One of the register's three ageing counts, in days.
- *
- * GRN Age arrives fractional ("9.44") and the other two whole, so they are
- * formatted as they come rather than rounded to a common shape -- the register
- * means something slightly different by each, and rounding would quietly make
- * them look like the same measure.
- */
-function Days({ value }) {
-  if (value === null || value === undefined) return <span className="table__miss">&mdash;</span>;
-  return <span>{Number(value).toLocaleString('en-IN')}</span>;
-}
-
-export default function BpadView({ batchId, q, location }) {
+export default function BpadView({ batchId, q, location, dept, register, onDepartments }) {
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = usePageSize();
@@ -80,20 +46,28 @@ export default function BpadView({ batchId, q, location }) {
   const [loading, setLoading] = useState(true);
 
   // Page 7 of the old result set is rarely a page of the new one, so changing
-  // the upload or the search starts again from the first page.
+  // the upload, the search or the department starts again from the first page.
   useEffect(() => {
     setPage(1);
-  }, [batchId, q, location]);
+  }, [batchId, q, location, dept, register]);
 
   const load = useCallback(() => {
     if (!batchId) return;
     setLoading(true);
     api
-      .bpad(batchId, { page, pageSize, q, location })
-      .then(setData)
+      .bpad(batchId, { page, pageSize, q, location, dept, register })
+      .then((next) => {
+        setData(next);
+        // The departments the register knows about, handed up to the page that
+        // owns the dropdown. It sits in the toolbar with Search and Location
+        // rather than over the table, so the control is where every other
+        // filter on this screen is -- but its options come from this response,
+        // which is the only call that reads the register's own table.
+        onDepartments?.(next.departments ?? []);
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [batchId, page, pageSize, q, location]);
+  }, [batchId, page, pageSize, q, location, dept, register, onDepartments]);
 
   useEffect(load, [load]);
 
@@ -101,16 +75,17 @@ export default function BpadView({ batchId, q, location }) {
   if (loading && !data) return <div className="loading">Loading…</div>;
   if (!data) return null;
 
-  const { rows, total, totalPages, missing = 0 } = data;
+  const { rows, total, totalPages } = data;
 
   /*
    * Nothing here at all is worth explaining rather than showing as an empty
    * table: on this tab it almost always means the register has not been
    * uploaded yet, which is a thing to go and do rather than a search that
-   * found nothing. Guarded on there being no search: with one typed, an empty
-   * table is the ordinary answer and the pager below already says so.
+   * found nothing. Guarded on nothing being narrowed -- no search, no branch,
+   * no department: with any of them set, an empty table is the ordinary answer
+   * and the pager below already says so.
    */
-  if (total === 0 && !q && !location) {
+  if (total === 0 && !q && !location && !dept && !register) {
     return (
       <div className="alert alert--info">
         <strong>No BPAD register has been matched to this upload yet.</strong> Upload BPAD.xlsx on
@@ -122,23 +97,10 @@ export default function BpadView({ batchId, q, location }) {
 
   return (
     <>
-      {/* Stated once, above the table, rather than left to be inferred from a
-          run of grey pills at the top of the first page. Counted over
-          everything in scope rather than over this page, so it does not change
-          as the reader pages through. Only shown when there is a gap: on an
-          upload the register covers completely there is nothing to say. */}
-      {missing > 0 && (
-        <div className="alert alert--info">
-          <strong>
-            {missing.toLocaleString('en-IN')} of {total.toLocaleString('en-IN')} GRN
-            {total === 1 ? '' : 's'} {missing === 1 ? 'has' : 'have'} no entry in the BPAD register.
-          </strong>{' '}
-          They are listed first, with the register&rsquo;s own columns empty. Usually these are
-          goods received on a delivery challan with no vendor invoice raised yet — BPAD is a
-          register of bills pending, so a GRN with no bill has nothing to be pending on.
-        </div>
-      )}
-
+      {/* The gap between the GRNs in scope and the ones the register knows used
+          to be stated in a banner here. It is on the Not in BPAD card above the
+          table now -- counting the same rows, and able to show them when
+          pressed, which the banner never was. */}
       <div className="table-wrap table-wrap--sticky">
         <table className="table">
           <thead>
@@ -148,12 +110,6 @@ export default function BpadView({ batchId, q, location }) {
                   ("HTC"), which is not the vocabulary the configuration screen
                   holds branches under. First column, as on every other tab. */}
               <th>Division</th>
-              {/* Ahead of the register's columns rather than after them,
-                  because it is what says how to read the rest of the row: on a
-                  "Not in register" row everything from Sl.No. onwards is empty
-                  because BPAD has never been told about the bill, not because
-                  the data is missing. */}
-              <th>In BPAD Register</th>
               {/* From here on, the register's own columns in the register's own
                   order. It is a report somebody else produces and reads, and
                   reordering it would make the tab harder to check against the
@@ -176,10 +132,13 @@ export default function BpadView({ batchId, q, location }) {
               <th>BPAD Received Date</th>
               <th>Accounts Received Date</th>
               <th>Pending With User/Status</th>
+              {/* Last. The register's own QueryAgeing, Ageing and GRN Age used
+                  to follow -- they are gone, here and in the store: the
+                  register derives all three from dates it also carries, so a
+                  copy taken at upload time was only ever true on that day. The
+                  two dates above are the ones it reports, and they do not go
+                  stale. */}
               <th>Pend.Reason/Pend Dept</th>
-              <th className="table__num">QueryAgeing</th>
-              <th className="table__num">Ageing</th>
-              <th className="table__num">GRN Age</th>
             </tr>
           </thead>
           <tbody>
@@ -188,7 +147,7 @@ export default function BpadView({ batchId, q, location }) {
                 the page from jumping as a search is typed. */}
             {rows.length === 0 && (
               <tr>
-                <td className="table__empty" colSpan={23}>
+                <td className="table__empty" colSpan={19}>
                   Matches not found
                 </td>
               </tr>
@@ -201,9 +160,6 @@ export default function BpadView({ batchId, q, location }) {
               <tr key={row.id}>
                 <td>
                   <Text value={row.branchDivisionCode} />
-                </td>
-                <td>
-                  <RegisterState inRegister={row.inRegister} />
                 </td>
                 <td className="table__num">{row.slNo ?? ''}</td>
                 <td>
@@ -248,15 +204,6 @@ export default function BpadView({ batchId, q, location }) {
                 </td>
                 <td>
                   <Text value={row.pendReason} />
-                </td>
-                <td className="table__num">
-                  <Days value={row.queryAgeing} />
-                </td>
-                <td className="table__num">
-                  <Days value={row.ageing} />
-                </td>
-                <td className="table__num">
-                  <Days value={row.grnAge} />
                 </td>
               </tr>
             ))}

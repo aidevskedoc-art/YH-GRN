@@ -547,9 +547,10 @@ export default function Csd() {
           })}
         </div>
       )}
-      {/* The same strip the results page carries above its table. That page
-          fills the left half with its tab pills; this one has no tabs, so the
-          controls take the right and the strip is otherwise empty. */}
+      {/* The same strip the results page carries above its table. Neither page
+          fills the left half any more -- choosing a view moved up to the head
+          row -- so on both the controls take the right and the strip is
+          otherwise empty. */}
       <div className="toolbar">
         <div className="toolbar__actions">
           {/* Every stage, not just the four the cards count -- Moved to

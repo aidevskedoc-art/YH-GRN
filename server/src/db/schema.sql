@@ -564,13 +564,22 @@ CREATE TABLE IF NOT EXISTS bpad_records (
   bpad_received_date     DATE,
   accounts_received_date DATE,
   pending_with_user      TEXT,
-  pend_reason            TEXT,
-  -- The register's own three ageing counts, in days. NUMERIC rather than
-  -- INTEGER because GRN Age arrives fractional ("9.44").
-  query_ageing           NUMERIC(12, 2),
-  ageing                 NUMERIC(12, 2),
-  grn_age                NUMERIC(12, 2)
+  pend_reason            TEXT
 );
+
+-- The register's own three ageing counts -- QueryAgeing, Ageing and GRN Age --
+-- used to be stored here and shown on the tab. They are gone: the register
+-- recomputes all three from its own dates every time it is exported, so a
+-- stored copy was only ever as true as the day the file was uploaded, and the
+-- two dates it derives them from (bpad_received_date, accounts_received_date)
+-- are kept above.
+--
+-- DROP rather than left in place, so an installation that has already stored
+-- them stops carrying figures nothing reads. Same idiom as the ADD below: the
+-- whole file is re-run on every migrate, so it has to be safe to apply twice.
+ALTER TABLE bpad_records DROP COLUMN IF EXISTS query_ageing;
+ALTER TABLE bpad_records DROP COLUMN IF EXISTS ageing;
+ALTER TABLE bpad_records DROP COLUMN IF EXISTS grn_age;
 
 -- Whether the register actually had an entry for this GRN.
 --
@@ -593,10 +602,45 @@ ALTER TABLE bpad_records ADD COLUMN IF NOT EXISTS in_register BOOLEAN NOT NULL D
 
 CREATE INDEX IF NOT EXISTS idx_bpad_batch ON bpad_records (batch_id);
 
--- The results screen reads this by GRN number, across every batch, newest
--- first -- see the BPAD tab in routes/results.js. Same shape as
--- idx_grn_dpr_no_key for the same reason.
+-- The results screen reads this by GRN number -- see the BPAD tab in
+-- routes/results.js -- and the upload deletes by it, which is the heavier of
+-- the two: every upload with a register clears a few thousand GRNs before it
+-- inserts their replacements. Same shape as idx_grn_dpr_no_key.
 CREATE INDEX IF NOT EXISTS idx_bpad_grn_no_key ON bpad_records (grn_no_key, batch_id DESC);
+
+-- --------------------------------------------------------------------------
+-- One generation per GRN, not one per upload.
+--
+-- The register is re-exported and re-uploaded as bills move -- the same
+-- workbook, corrected, several times in a day -- and every upload used to
+-- leave its own copy of every row it matched behind. Six uploads of one
+-- register put 23,814 rows in a table describing 3,402 GRNs, and only the
+-- newest copy of each was ever read: the tab folded the rest away on every
+-- query and nothing else ever asked for them.
+--
+-- So an upload now clears a GRN's previous rows before inserting its new ones
+-- -- see clearBpadRecordsFor in services/ingest.js -- and this clears out what
+-- the old behaviour left behind.
+--
+-- Older generations only: the newest batch to mention a GRN keeps ALL of its
+-- rows for it, because the register repeats a GRN across a split invoice and
+-- those repeats are the file as it arrived rather than duplicates. Which is
+-- also why this cannot be a unique constraint instead.
+--
+-- Scoped per GRN rather than per batch, so an upload that covered a different
+-- month's GRNs keeps them -- what goes is a GRN's stale rows, never a batch's
+-- only ones.
+--
+-- Idempotent, which it has to be: this file is re-run on every migrate. Once
+-- no GRN has rows from two batches it deletes nothing.
+-- --------------------------------------------------------------------------
+DELETE FROM bpad_records b
+WHERE b.batch_id < (
+  SELECT MAX(b2.batch_id)
+  FROM bpad_records b2
+  WHERE b2.vendor_code_key IS NOT DISTINCT FROM b.vendor_code_key
+    AND b2.grn_no_key      IS NOT DISTINCT FROM b.grn_no_key
+);
 
 -- The BPAD register is optional, so a batch uploaded without one keeps a null
 -- file name and a zero count rather than being a different kind of batch.

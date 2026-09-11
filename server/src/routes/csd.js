@@ -668,11 +668,39 @@ csdRouter.patch(
 );
 
 /**
+ * The stages a handover can still be taken back from.
+ *
+ * A GRN sent to CSD by mistake has to be recallable, and while CSD has only
+ * queued or received it nothing has been decided -- taking it back leaves no
+ * answer of theirs undone. Once they have APPROVED or REJECTED it they have
+ * acted, and deleting the dispatch would erase that answer along with the
+ * dates the turnaround report measures it by. MOVED_TO_ACCOUNTS is further
+ * along still: Accounts have it back, possibly acknowledged and forwarded,
+ * and none of that can be undone by removing the row it hangs off.
+ *
+ * So the undo is for the mistake it is meant for -- the wrong GRN sent a
+ * moment ago -- and not a way of rewriting a handover after the fact.
+ */
+const TAKE_BACK_STAGES = ['QUEUED', 'RECEIVED'];
+
+/** Why it is too late, in the words of what CSD did. */
+const NO_TAKE_BACK_REASON = {
+  APPROVED: 'CSD have already approved it',
+  REJECTED: 'CSD have already rejected it',
+  MOVED_TO_ACCOUNTS: 'CSD have already handed it back to Accounts',
+};
+
+/**
  * DELETE /api/csd/:id
  *
- * Take a GRN back off the queue. The Send button on the results tab goes back
+ * Take a GRN back off the queue. The Send picker on the results tab goes back
  * to its unsent state, because that flag is read from this table rather than
- * stored on the result.
+ * stored on the result -- so the GRN returns to Accounts as one that has not
+ * been handed over, which is what taking it back means.
+ *
+ * Refused once CSD has acted. The check is here rather than only in the two
+ * screens that offer the button: this is the endpoint that does the deleting,
+ * and a control disabled in the browser is a courtesy, not a rule.
  */
 csdRouter.delete(
   '/:id',
@@ -682,9 +710,33 @@ csdRouter.delete(
       return res.status(400).json({ error: 'Unknown row.' });
     }
 
-    const { rowCount } = await query('DELETE FROM csd_dispatches WHERE id = $1', [id]);
-    if (rowCount === 0) {
+    // Read the stage before deleting, so the refusal can say which stage it is
+    // refusing on rather than "no".
+    const { rows } = await query('SELECT dpr_no, stage FROM csd_dispatches WHERE id = $1', [id]);
+    if (rows.length === 0) {
       return res.status(404).json({ error: 'That GRN is no longer in the CSD queue.' });
+    }
+
+    const { dpr_no: dprNo, stage } = rows[0];
+    if (!TAKE_BACK_STAGES.includes(stage)) {
+      return res.status(409).json({
+        error: `GRN ${dprNo} cannot be taken back: ${
+          NO_TAKE_BACK_REASON[stage] || 'CSD have already acted on it'
+        }.`,
+      });
+    }
+
+    const { rowCount } = await query(
+      // The stage again in the DELETE itself, so two people pressing the button
+      // either side of CSD approving it cannot both get through the check above
+      // and have the later one delete an approved handover.
+      `DELETE FROM csd_dispatches WHERE id = $1 AND stage = ANY($2)`,
+      [id, TAKE_BACK_STAGES],
+    );
+    if (rowCount === 0) {
+      return res.status(409).json({
+        error: `GRN ${dprNo} moved on at CSD while you were taking it back. Reload and try again.`,
+      });
     }
 
     return res.status(204).end();

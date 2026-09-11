@@ -47,6 +47,62 @@ async function bulkInsert(client, table, columns, rows, toValues) {
 }
 
 /**
+ * Clear whatever a previous upload stored for the GRNs this one is about.
+ *
+ * The register is a snapshot of where a set of bills had got to when it was
+ * exported, so a re-export is a newer snapshot of the same bills rather than a
+ * second set of them -- and it is re-exported and re-uploaded as bills move,
+ * several times in a day. Keeping both meant a table of 23,814 rows describing
+ * 3,402 GRNs, of which only the newest copy of each was ever read. The older
+ * copy is deleted here rather than filtered out on every read, which is where
+ * it used to go.
+ *
+ * Keyed on the vendor code and the GRN number together -- the same pair the
+ * register was matched on in the first place -- and only on the pairs this
+ * upload actually carries. A GRN this upload says nothing about keeps the rows
+ * it has: uploading May's register must not blank out April's answers, and a
+ * delete scoped to the table rather than to these keys would do exactly that.
+ *
+ * Deletes per GRN rather than per row, so the register's own repeats survive.
+ * It writes a GRN once per invoice across a split bill, and all of those rows
+ * go back in together immediately afterwards -- which is also why this is a
+ * delete and an insert rather than an upsert onto a unique key. There is no
+ * key here to be unique on.
+ */
+async function clearBpadRecordsFor(client, rows) {
+  const vendorCodeKeys = [];
+  const grnNoKeys = [];
+
+  for (const row of rows) {
+    // Both halves are filled on every row that gets this far -- a register row
+    // is only kept when the pair matched a GRN, and a filled-in row is built
+    // from a GRN that had both. A null would quietly match nothing here rather
+    // than complain, so it is worth not sending one.
+    if (!row.vendorCodeKey || !row.grnNoKey) continue;
+    vendorCodeKeys.push(row.vendorCodeKey);
+    grnNoKeys.push(row.grnNoKey);
+  }
+
+  if (grnNoKeys.length === 0) return 0;
+
+  // Two parallel arrays rather than a few thousand placeholders: unnest pairs
+  // them back up positionally, and DISTINCT folds the register's own repeats
+  // down to the one key they share before the join sees them.
+  const { rowCount } = await client.query(
+    `DELETE FROM bpad_records b
+      USING (
+        SELECT DISTINCT *
+        FROM unnest($1::text[], $2::text[]) AS t(vendor_code_key, grn_no_key)
+      ) k
+      WHERE b.vendor_code_key = k.vendor_code_key
+        AND b.grn_no_key      = k.grn_no_key`,
+    [vendorCodeKeys, grnNoKeys],
+  );
+
+  return rowCount;
+}
+
+/**
  * The most recent row per key, across every batch, restricted to a
  * caller-supplied set of keys -- an upload only ever needs to ask about the
  * keys it just saw, not the whole table.
@@ -107,7 +163,7 @@ const BPAD_COLUMNS = [
   'inv_no', 'inv_date', 'grn_no', 'grn_no_key', 'grn_date', 'grn_amount',
   'po_number', 'po_date', 'pending_with_dept',
   'bpad_received_date', 'accounts_received_date',
-  'pending_with_user', 'pend_reason', 'query_ageing', 'ageing', 'grn_age',
+  'pending_with_user', 'pend_reason',
   'in_register',
 ];
 
@@ -301,13 +357,18 @@ export function saveBatch({
     // entry for were filled in afterwards, so what arrives is already one row
     // per GRN and ready to store.
     if (bpadRows.length > 0) {
+      // Replacing rather than adding to. A re-uploaded register is a newer
+      // answer about the same bills, so the older answer about those bills
+      // goes first -- inside this transaction, so a failed upload leaves the
+      // rows it was about to replace exactly where they were.
+      await clearBpadRecordsFor(client, bpadRows);
       await bulkInsert(client, 'bpad_records', BPAD_COLUMNS, bpadRows, (r) => [
         batchId, r.sourceRowNo, r.slNo, r.location, r.warehouse,
         r.vendorCode, r.vendorCodeKey, r.vendorName, r.vendorCategory,
         r.invNo, r.invDate, r.grnNo, r.grnNoKey, r.grnDate, r.grnAmount,
         r.poNumber, r.poDate, r.pendingWithDept,
         r.bpadReceivedDate, r.accountsReceivedDate,
-        r.pendingWithUser, r.pendReason, r.queryAgeing, r.ageing, r.grnAge,
+        r.pendingWithUser, r.pendReason,
         // Defaulted rather than required, so a row built straight off the
         // register -- which knows nothing about this flag -- is a register row.
         r.inRegister ?? true,

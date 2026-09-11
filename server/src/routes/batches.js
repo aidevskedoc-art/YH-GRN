@@ -147,7 +147,7 @@ async function grnMatchKeys(grnRows) {
  * because a GRN received on a delivery challan with no invoice raised has no
  * bill for a register of bills to be pending on. Everything the register alone
  * would know -- its Sl.No., its site code, the two received dates, whose desk
- * it is on, the ageing counts -- stays null, because nothing knows it.
+ * it is on -- stays null, because nothing knows it.
  *
  * Location and WareHouse are deliberately left null too, even though the GRN
  * report has both: it writes them in a different vocabulary from the register
@@ -186,9 +186,6 @@ function bpadRowsForGrns(registerRows, identities) {
       accountsReceivedDate: null,
       pendingWithUser: null,
       pendReason: null,
-      queryAgeing: null,
-      ageing: null,
-      grnAge: null,
       inRegister: false,
     });
   }

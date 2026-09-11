@@ -94,6 +94,17 @@ export default function Upload() {
             onSelect={pick(setGrnFile)}
             onReject={setError}
           />
+         <FileDrop
+            step={4}
+            label="BPAD Register — optional"
+            hint="Matched to the GRN report's rows by vendor code and GRN number; the rest of the register is read past."
+            example="BPAD.xlsx"
+            accept=".xlsx"
+            file={bpadFile}
+            onSelect={pick(setBpadFile)}
+            onReject={setError}
+          />
+          
           <FileDrop
             step={2}
             label="Vendor Ageing Report"
@@ -118,16 +129,7 @@ export default function Upload() {
               BPAD tab on the results page. .xlsx only -- the register is
               exported from a system that writes nothing else, and it is far
               too large to be a BIFF8 .xls. */}
-          <FileDrop
-            step={4}
-            label="BPAD Register — optional"
-            hint="Matched to the GRN report's rows by vendor code and GRN number; the rest of the register is read past."
-            example="BPAD.xlsx"
-            accept=".xlsx"
-            file={bpadFile}
-            onSelect={pick(setBpadFile)}
-            onReject={setError}
-          />
+
         </div>
 
         {error && (

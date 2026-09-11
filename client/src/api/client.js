@@ -143,12 +143,16 @@ export const api = {
    * the counts beside the filter options -- because it is a scope rather than a
    * question about a row.
    */
-  results: (id, { status, page = 1, pageSize = 50, q, progress, location } = {}) => {
+  results: (id, { status, page = 1, pageSize = 50, q, progress, location, dept } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (status) params.set('status', status);
     if (q) params.set('q', q);
     if (progress) params.set('progress', progress);
     if (location) params.set('location', location);
+    // One BPAD desk, set by the breakdown cards under the Pending view -- the
+    // register's answer for where each pending bill stopped. Spelled the same
+    // as the BPAD tab's own `dept` below, because it is the same column.
+    if (dept) params.set('dept', dept);
     return request(`/batches/${id}/results?${params}`);
   },
 
@@ -158,11 +162,21 @@ export const api = {
    * No `status` or `progress`: every row on this tab is in the register
    * because it matched a GRN on file, and the register's own verdict on a bill
    * is a column of it rather than something this system decided.
+   *
+   * `dept` is that column -- Pending With Dept. -- narrowed to one of the
+   * desks a bill can be sitting at. The response carries the full list of them
+   * back as `departments`, so the dropdown is built from the register itself.
+   *
+   * `register` narrows the other column the tab has of its own: 'missing' for
+   * the GRNs the register had no entry for, which is what the Not in BPAD card
+   * asks for.
    */
-  bpad: (id, { page = 1, pageSize = 50, q, location } = {}) => {
+  bpad: (id, { page = 1, pageSize = 50, q, location, dept, register } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (location) params.set('location', location);
+    if (dept) params.set('dept', dept);
+    if (register) params.set('register', register);
     return request(`/batches/${id}/bpad?${params}`);
   },
 

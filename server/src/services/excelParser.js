@@ -430,8 +430,13 @@ function bpadDate(value) {
  * Columns: Sl.No., Location, WareHouse, Vendor Code, Vendor Name, Vendor
  * Category, Inv.No., Inv Date, GRN No, GRN Date, GRN Amount, PO Number, PO
  * Date, Pending With Dept., BPAD Received Date., Accounts Received Date.,
- * Pending With User/Status, Pend.Reason/Pend Dept, QueryAgeing, Ageing, GRN
- * Age.
+ * Pending With User/Status, Pend.Reason/Pend Dept.
+ *
+ * The sheet also carries QueryAgeing, Ageing and GRN Age. They are read past
+ * rather than read: the register derives all three from dates it also carries,
+ * so a stored copy goes stale the moment the register is exported again. A
+ * sheet that still has those columns parses exactly as before -- headers are
+ * looked up by name, so unread ones cost nothing.
  *
  * `Accounts Received Date.` carries a carriage return inside the label on the
  * source sheet; headerToken folds every run of whitespace to one space, so it
@@ -499,9 +504,6 @@ export function readBpadReport(buffer, { keep = () => true } = {}) {
       accountsReceivedDate: bpadDate(get('ACCOUNTS RECEIVED DATE.', 'ACCOUNTS RECEIVED DATE')),
       pendingWithUser: toText(get('PENDING WITH USER/STATUS')),
       pendReason: toText(get('PEND.REASON/PEND DEPT')),
-      queryAgeing: toNumber(get('QUERYAGEING')),
-      ageing: toNumber(get('AGEING')),
-      grnAge: toNumber(get('GRN AGE')),
     });
   }
 
