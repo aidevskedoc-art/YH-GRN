@@ -69,18 +69,25 @@ export function requireAdmin(req, res, next) {
 }
 
 /**
- * Refuse anyone who has not been given `screen`.
+ * Refuse anyone who holds none of `screens`.
  *
  * An administrator passes without being granted anything -- see screensFor --
  * so the account that hands out access can never be shut out of a screen by the
  * same list it edits.
+ *
+ * More than one key is allowed because a route can stand behind more than one
+ * screen: the Accounts Depot is the results screen with two of its five views,
+ * reading the same rows from the same endpoints, so those carry both keys (see
+ * routes/results.js) rather than a second copy of every query. Holding either
+ * is enough -- these are alternatives, not a set to satisfy all of.
  */
-export function requireScreen(screen) {
+export function requireScreen(...screens) {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Authentication required.' });
     }
-    if (screensFor(req.user).includes(screen)) return next();
+    const held = screensFor(req.user);
+    if (screens.some((screen) => held.includes(screen))) return next();
     return res.status(403).json({ error: 'You have not been given access to this screen.' });
   };
 }

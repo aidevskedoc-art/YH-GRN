@@ -4,8 +4,10 @@ import AppShell from './AppShell.jsx';
 import Login from './pages/Login.jsx';
 import NoAccess from './pages/NoAccess.jsx';
 import Upload from './pages/Upload.jsx';
+import Uploads from './pages/Uploads.jsx';
 import Results from './pages/Results.jsx';
 import Csd from './pages/Csd.jsx';
+import AccountsDepot from './pages/AccountsDepot.jsx';
 import Users from './pages/Users.jsx';
 import Config from './pages/Config.jsx';
 
@@ -42,6 +44,19 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        {/* What has been uploaded, and the only place a file can be taken
+            back out. Behind the same grant as the upload form rather than a
+            new one: it is the same screen's other half, and deleting is
+            gated on the role instead -- requireAdmin on the route that does
+            it, see server/src/routes/batches.js. */}
+        <Route
+          path="/uploads"
+          element={
+            <ProtectedRoute screen="upload">
+              <Uploads />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/results"
           element={
@@ -65,6 +80,19 @@ export default function App() {
           element={
             <ProtectedRoute screen="csd">
               <Csd />
+            </ProtectedRoute>
+          }
+        />
+        {/* The results screen's Accounts and PR-to-Bank views, and nothing
+            else. Its own screen grant rather than a filter on `results`: what
+            it leaves out is the point, so an account given this one must not
+            also be given the screen it is a narrowing of -- see
+            pages/AccountsDepot.jsx. */}
+        <Route
+          path="/accounts-depot"
+          element={
+            <ProtectedRoute screen="accounts-depot">
+              <AccountsDepot />
             </ProtectedRoute>
           }
         />

@@ -425,6 +425,64 @@ ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_remarks TEXT;
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_courier_name TEXT;
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_docket_no    TEXT;
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_at     TIMESTAMPTZ;
+
+-- Why CSD rejected the bill, in their own words. Required by the endpoint when
+-- a handover is moved to REJECTED and never written for any other stage, so a
+-- filled value is always the reason for the rejection beside it.
+--
+-- Nullable rather than NOT NULL: every row that is not rejected has nothing to
+-- say here, and rejections recorded before this column existed have no reason
+-- to backfill from. The rule that a new rejection must carry one lives in the
+-- stage endpoint, which is the only thing that writes it.
+ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS reject_remarks TEXT;
+
+-- Rejections that a later upload reopened.
+--
+-- A GRN CSD has rejected goes back to the branch to be put right. When it comes
+-- round again in a new report it is a fresh bill as far as this system is
+-- concerned: the dispatch is removed, so the results screen shows it unsent
+-- with its Send picker back, and it can go to CSD again. See
+-- reopenRejectedFor in services/ingest.js.
+--
+-- The dispatch cannot simply be deleted, though. dpr_no_key is UNIQUE on
+-- csd_dispatches -- one live handover per GRN, which is what lets every screen
+-- join to it without duplicating rows -- so the old rejection has nowhere to
+-- sit alongside the new one, and dropping it would take the reason CSD gave
+-- with it. That reason is the whole point of a rejection. So it is moved here
+-- first: the queue keeps one row per GRN, and why it was turned down the last
+-- time is still on file.
+--
+-- No unique key. The same GRN can be rejected and reopened as many times as it
+-- takes, and each of those is its own record.
+CREATE TABLE IF NOT EXISTS csd_rejection_history (
+  id                     SERIAL PRIMARY KEY,
+  dpr_no_key             TEXT NOT NULL,
+  dpr_no                 TEXT NOT NULL,
+  division_code          TEXT,
+  location               TEXT,
+  bill_no                TEXT,
+  vendor_code            TEXT,
+  vendor_name            TEXT,
+  cheque_no              TEXT,
+  payable_amount         NUMERIC(18, 4),
+  -- Why CSD turned it down, and when. The two together are what this table
+  -- exists to keep.
+  reject_remarks         TEXT,
+  rejected_at            TIMESTAMPTZ,
+  -- REJECTED is terminal on the CSD ladder, so whoever last moved the stage is
+  -- whoever rejected it.
+  rejected_by            INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sent_at                TIMESTAMPTZ,
+  sent_by                INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  -- The upload that brought the GRN round again. SET NULL rather than CASCADE,
+  -- for the same reason csd_dispatches.batch_id is: deleting the upload must
+  -- not delete the record of what happened.
+  superseded_by_batch_id INTEGER REFERENCES upload_batches(id) ON DELETE SET NULL,
+  superseded_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_csd_rejection_history_key
+  ON csd_rejection_history (dpr_no_key);
 ALTER TABLE csd_dispatches ADD COLUMN IF NOT EXISTS forwarded_by     INTEGER
                                                        REFERENCES users(id) ON DELETE SET NULL;
 

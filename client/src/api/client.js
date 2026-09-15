@@ -124,6 +124,18 @@ export const api = {
 
   listBatches: () => request('/batches'),
   deleteBatch: (id) => request(`/batches/${id}`, { method: 'DELETE' }),
+
+  /**
+   * Remove one file from an upload, leaving the others it arrived with alone.
+   *
+   * `kind` is one of grn, ageing, bank, bpad -- the same four the upload form
+   * sends. The rows that file put in the database go with it; removing the
+   * last file an upload carries removes the upload too, which the response
+   * reports as `batchDeleted` so the screen can say which of the two happened.
+   *
+   * Administrator-only at the API, like deleteBatch above.
+   */
+  deleteBatchFile: (id, kind) => request(`/batches/${id}/files/${kind}`, { method: 'DELETE' }),
   uploadBatch: (formData) => request('/batches', { method: 'POST', body: formData, isForm: true }),
 
   /** `q` is the search box: vendor name, GRN number or bill number, either side. */
@@ -143,7 +155,7 @@ export const api = {
    * the counts beside the filter options -- because it is a scope rather than a
    * question about a row.
    */
-  results: (id, { status, page = 1, pageSize = 50, q, progress, location, dept } = {}) => {
+  results: (id, { status, page = 1, pageSize = 50, q, progress, location, dept, chequeNo } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (status) params.set('status', status);
     if (q) params.set('q', q);
@@ -153,6 +165,11 @@ export const api = {
     // register's answer for where each pending bill stopped. Spelled the same
     // as the BPAD tab's own `dept` below, because it is the same column.
     if (dept) params.set('dept', dept);
+    // One cheque's bills, matched exactly rather than searched for. The Action
+    // column asks for this before it acts, so that a send moves the whole
+    // cheque and not just the bill on screen -- see chequeGroup in
+    // ResultsTable.jsx.
+    if (chequeNo) params.set('chequeNo', chequeNo);
     return request(`/batches/${id}/results?${params}`);
   },
 
@@ -207,7 +224,7 @@ export const api = {
    * Those counts follow `q` but not `stage` -- they are how a stage is picked.
    * `all` drops the pagination, for export.
    */
-  listCsd: ({ page = 1, pageSize = 20, q, stage, location, all } = {}) => {
+  listCsd: ({ page = 1, pageSize = 20, q, stage, location, all, chequeNo } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (stage) params.set('stage', stage);
@@ -215,6 +232,10 @@ export const api = {
     // note on LOCATION_FILTER in routes/csd.js.
     if (location) params.set('location', location);
     if (all) params.set('all', '1');
+    // One cheque's handovers, matched exactly rather than searched for. The
+    // Action column asks for this before it moves anything, so that a stage
+    // move carries the whole cheque -- see chequeGroup in Csd.jsx.
+    if (chequeNo) params.set('chequeNo', chequeNo);
     return request(`/csd?${params}`);
   },
 
@@ -229,7 +250,15 @@ export const api = {
    * Move one handover to a CSD stage: QUEUED, RECEIVED, APPROVED or REJECTED.
    * Any direction -- a stage set by mistake has to be settable back.
    */
-  setCsdStage: (id, stage) => request(`/csd/${id}/stage`, { method: 'PATCH', body: { stage } }),
+  /**
+   * Move one handover to a CSD stage. `remarks` is CSD's reason, required by
+   * the server when the stage is REJECTED and ignored for every other one.
+   */
+  setCsdStage: (id, stage, remarks) =>
+    request(`/csd/${id}/stage`, {
+      method: 'PATCH',
+      body: remarks ? { stage, remarks } : { stage },
+    }),
 
   /**
    * Correct one or more of a handover's CSD stamps. Each value is yyyy-MM-dd.
@@ -238,8 +267,20 @@ export const api = {
    */
   updateCsdDates: (id, dates) => request(`/csd/${id}/dates`, { method: 'PATCH', body: dates }),
 
-  /** Take a GRN back off the queue, by dispatch id. */
+  /** Take a GRN back off the queue, by dispatch id. Refused once CSD have
+   *  ruled on it -- deleteCsdRecord below is what reaches those. */
   removeFromCsd: (id) => request(`/csd/${id}`, { method: 'DELETE' }),
+
+  /**
+   * Delete a handover whatever stage it reached -- including one CSD have
+   * approved, rejected or handed back to Accounts, which removeFromCsd above
+   * refuses.
+   *
+   * A correction to the data rather than a move in the process, so it is
+   * administrator-only at the API. The GRN returns to Accounts as one that was
+   * never handed over, the same as a take-back.
+   */
+  deleteCsdRecord: (id) => request(`/csd/${id}/record`, { method: 'DELETE' }),
 
   /**
    * File one Valid GRNs row to Records -- the other destination on that row.
@@ -284,13 +325,24 @@ export const api = {
 
   deleteBranch: (id) => request(`/config/branches/${id}`, { method: 'DELETE' }),
 
-  /** Every row for a tab, unpaginated -- the input to services/exporter.js. */
-  exportRows: (id, status, q, progress, location) => {
+  /**
+   * Every row for one sheet, unpaginated -- the input to
+   * services/exporter.js.
+   *
+   * `status` is which view's rows; the rest are the narrowings the cards on a
+   * view set, so that a section's workbook can ask for one card's rows per
+   * sheet. `progress` is the Status column's own filter (the CSD stages and
+   * the cheque pair), `dept` one BPAD desk, `register` the 'missing' rows.
+   * Anything left out narrows nothing.
+   */
+  exportRows: (id, status, { q, progress, location, dept, register } = {}) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     if (q) params.set('q', q);
     if (progress) params.set('progress', progress);
     if (location) params.set('location', location);
+    if (dept) params.set('dept', dept);
+    if (register) params.set('register', register);
     return request(`/batches/${id}/export?${params}`);
   },
 };

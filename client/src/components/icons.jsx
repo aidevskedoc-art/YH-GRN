@@ -234,3 +234,20 @@ export const IconDepartment = (p) => (
     <path d="M8 21v-3.5a1.5 1.5 0 0 1 3 0V21" />
   </Icon>
 );
+
+/**
+ * The Accounts Depot: a bank front, the destination the PR-to-Bank ageing is
+ * measured to. Distinct at 18px from IconDepartment's office block beside it in
+ * the sidebar -- a pediment and columns rather than two flat-roofed boxes.
+ */
+export const IconBank = (p) => (
+  <Icon {...p}>
+    <path d="M3 10h18" />
+    <path d="M12 3 3 7.5h18L12 3Z" />
+    <path d="M6 10v8" />
+    <path d="M10 10v8" />
+    <path d="M14 10v8" />
+    <path d="M18 10v8" />
+    <path d="M3 21h18" />
+  </Icon>
+);

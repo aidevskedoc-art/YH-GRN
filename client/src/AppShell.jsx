@@ -4,6 +4,7 @@ import { useAuth } from './context/AuthContext.jsx';
 import { api } from './api/client.js';
 import { BrandLockup } from './components/Brand.jsx';
 import {
+  IconBank,
   IconChevronLeft,
   IconChevronRight,
   IconDepartment,
@@ -12,6 +13,7 @@ import {
   IconMoon,
   IconPlus,
   IconReport,
+  IconSheet,
   IconSliders,
   IconSun,
   IconUpload,
@@ -34,20 +36,40 @@ const NARROW = '(max-width: 940px)';
  */
 const NAV = [
   { to: '/upload', label: 'New uploads', icon: IconUpload, end: true, screen: 'upload' },
+  // The upload screen's other half: what is already in, and where one file
+  // is taken back out. Same grant as the form above -- the delete itself is
+  // gated on the role, not on the nav entry.
   // end:false so /results/:batchId keeps the entry highlighted.
   { to: '/results', label: 'Results', icon: IconReport, end: false, badge: true, screen: 'results' },
+    {
+    to: '/accounts-depot',
+    label: 'Accounts',
+    icon: IconBank,
+    end: true,
+    screen: 'accounts-depot',
+  },
   { to: '/csd', label: 'CS Departmemt', icon: IconDepartment, end: true, screen: 'csd' },
+  // The results screen's Accounts and PR-to-Bank views on their own. After
+  // Results rather than beside it: an admin sees both, and the fuller screen
+  // should come first for anyone who holds it.
+
   { to: '/config', label: 'Configuration', icon: IconSliders, end: true, screen: 'config' },
+  { to: '/uploads', label: 'Uploaded files', icon: IconSheet, end: true, screen: 'upload' },
   { to: '/users', label: 'User management', icon: IconUsers, end: true, adminOnly: true },
 ];
 
 /** Title and breadcrumb for the top bar, derived from the active route. */
 function pageTitle(pathname) {
+  // Tested before /upload, which is a prefix of it.
+  if (pathname.startsWith('/uploads')) return { title: 'Uploaded files', crumb: 'Uploads / Files' };
   if (pathname.startsWith('/upload')) return { title: 'New reconciliation', crumb: 'Uploads / New' };
   if (pathname.startsWith('/results')) {
     return { title: 'Reconciliation results', crumb: 'Results / Pending vs accounts' };
   }
   if (pathname.startsWith('/csd')) return { title: 'CS Departmemt', crumb: 'CSD / Handed over' };
+  if (pathname.startsWith('/accounts-depot')) {
+    return { title: 'Accounts Depot', crumb: 'Accounts / In accounts and ageing' };
+  }
   if (pathname.startsWith('/users')) return { title: 'User management', crumb: 'Admin / Accounts' };
   return { title: 'GRN Reconciliation', crumb: '' };
 }

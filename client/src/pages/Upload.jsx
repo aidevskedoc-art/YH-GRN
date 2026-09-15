@@ -54,10 +54,16 @@ export default function Upload() {
 
     setBusy(true);
     try {
-      await api.uploadBatch(formData);
+      const { reopenedRejections = 0 } = await api.uploadBatch(formData);
       // The results page reports on every upload at once, so there is no
       // batch to point it at -- the one just made is already included.
-      navigate('/results');
+      //
+      // The one thing worth carrying over is how many GRNs this upload took
+      // back off the CSD queue by naming a bill CSD had rejected. Those rows
+      // have just changed from rejected to unsent and somebody has to send
+      // them again, so the results page says so rather than leaving it to be
+      // noticed.
+      navigate('/results', reopenedRejections ? { state: { reopenedRejections } } : undefined);
     } catch (err) {
       setError(err.message);
     } finally {

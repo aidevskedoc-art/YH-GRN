@@ -103,6 +103,66 @@ async function clearBpadRecordsFor(client, rows) {
 }
 
 /**
+ * Rejected handovers for GRNs this upload carries: archived, then taken off
+ * the queue so the GRN reads as unsent again.
+ *
+ * A GRN CSD rejects goes back to the branch to be put right. When it turns up
+ * in a new report it is a fresh bill -- the thing that was wrong with it has
+ * been dealt with, or it would not have been sent round again -- so it should
+ * look like one: no dispatch, Send picker back, free to go to CSD afresh. That
+ * is what removing the dispatch does, since every screen reads "has this been
+ * sent" from the existence of that row rather than from a flag.
+ *
+ * Only REJECTED. A GRN still queued or received is with CSD now and a new
+ * upload says nothing about that; approved and moved-to-accounts have got past
+ * CSD entirely, and reopening either would throw away an answer nobody asked to
+ * revisit.
+ *
+ * Only the keys this upload actually carries -- the same scoping
+ * clearBpadRecordsFor uses, and for the same reason. Uploading May's reports
+ * must not reopen a rejection about a GRN May says nothing about. Both files'
+ * keys count: the GRN report names a GRN directly, and an ageing report naming
+ * it is equally a new statement about that bill.
+ *
+ * Archived rather than dropped, because dpr_no_key is UNIQUE on csd_dispatches
+ * -- there is no room for the old rejection beside the new handover -- and
+ * deleting it outright would take CSD's reason with it. See
+ * csd_rejection_history in schema.sql.
+ *
+ * One statement: the DELETE's own RETURNING feeds the INSERT, so a dispatch
+ * cannot be removed without its record being written. It runs inside the
+ * upload's transaction like everything else here, so a failed upload reopens
+ * nothing.
+ *
+ * Worth knowing: re-uploading the same file reopens its rejections too. The
+ * rule is "this GRN appears in an upload", and nothing here can tell a
+ * corrected report from the same one sent twice.
+ */
+async function reopenRejectedFor(client, batchId, grnKeys) {
+  if (grnKeys.length === 0) return 0;
+
+  const { rowCount } = await client.query(
+    `WITH superseded AS (
+       DELETE FROM csd_dispatches c
+        WHERE c.stage = 'REJECTED'
+          AND c.dpr_no_key = ANY($1)
+       RETURNING c.*
+     )
+     INSERT INTO csd_rejection_history
+       (dpr_no_key, dpr_no, division_code, location, bill_no, vendor_code,
+        vendor_name, cheque_no, payable_amount, reject_remarks, rejected_at,
+        rejected_by, sent_at, sent_by, superseded_by_batch_id)
+     SELECT dpr_no_key, dpr_no, division_code, location, bill_no, vendor_code,
+            vendor_name, cheque_no, payable_amount, reject_remarks, rejected_at,
+            stage_by, sent_at, sent_by, $2
+       FROM superseded`,
+    [grnKeys, batchId],
+  );
+
+  return rowCount;
+}
+
+/**
  * The most recent row per key, across every batch, restricted to a
  * caller-supplied set of keys -- an upload only ever needs to ask about the
  * keys it just saw, not the whole table.
@@ -187,7 +247,9 @@ const RESULT_COLUMNS = [
  * @param {Array}  [params.bpadRows]     one row per GRN in scope: the
  *   register's own where it had one, a GRN-report-only row where it did not
  * @param {number} [params.bpadScanned]  how many rows the register held
- * @returns {Promise<number>} the new batch id
+ * @returns {Promise<{batchId: number, reopenedRejections: number}>} the new
+ *   batch id, and how many GRNs this upload took back off the CSD queue by
+ *   carrying a bill CSD had rejected -- see reopenRejectedFor.
  */
 export function saveBatch({
   name,
@@ -375,6 +437,23 @@ export function saveBatch({
       ]);
     }
 
-    return batchId;
+    /*
+     * Last, once both files' rows are in: any GRN this upload carries that CSD
+     * had rejected comes back off the queue and reads as unsent again -- see
+     * reopenRejectedFor. Both files' keys, since either naming a GRN is a new
+     * statement about that bill.
+     *
+     * After the inserts rather than before, so that if anything above fails the
+     * transaction rolls back with the rejections untouched.
+     */
+    const reopenKeys = [
+      ...new Set([
+        ...grnRows.map((r) => r.dprNoKey),
+        ...ageingRows.map((r) => r.grnNumberKey),
+      ].filter(Boolean)),
+    ];
+    const reopenedRejections = await reopenRejectedFor(client, batchId, reopenKeys);
+
+    return { batchId, reopenedRejections };
   });
 }

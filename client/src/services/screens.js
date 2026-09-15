@@ -13,6 +13,10 @@ export const SCREEN_ROUTES = {
   upload: '/upload',
   results: '/results',
   csd: '/csd',
+  // The results screen's Accounts and PR-to-Bank views, and nothing else --
+  // see pages/AccountsDepot.jsx. Listed after `results` so an account holding
+  // both lands on the fuller screen, which is the superset of this one.
+  'accounts-depot': '/accounts-depot',
   config: '/config',
 };
 
@@ -21,6 +25,7 @@ export const SCREEN_LABELS = {
   upload: 'New reconciliation',
   results: 'Reconciliation results',
   csd: 'CS Departmemt',
+  'accounts-depot': 'Accounts Depot',
   config: 'Configuration',
 };
 

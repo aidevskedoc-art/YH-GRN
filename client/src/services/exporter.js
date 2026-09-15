@@ -121,9 +121,18 @@ const MATCHED_COLUMNS = [
  * Division is appended right after Warehouse -- a pending row has no ageing
  * entry to read a DivisionCode off, so it falls back to the configuration
  * screen's resolved branch code (see the `divisionCode` case in toCell).
+ *
+ * Sl.No goes too. It is the source workbook's row number, and nothing the
+ * reader is looking at is that workbook any more: a sheet here is the pending
+ * half of every upload combined, or one desk's share of it, so the numbers
+ * arrive starting wherever the first row happened to fall and full of gaps
+ * where the rows between went to another sheet. That reads as rows missing
+ * rather than as the source's numbering, and it is not on screen either -- the
+ * reconciliation table has never carried it. Anyone wanting to count the rows
+ * has Excel's own numbers down the side. (The BPAD layout below keeps a Sl.No.
+ * of its own, which is the register's column and does show on its tab.)
  */
 const GRN_COLUMNS = [
-  { key: 'slNo', label: 'Sl.No', integer: true },
   { key: 'warehouse', label: 'Warehouse' },
   { key: 'divisionCode', label: 'Division' },
   { key: 'dprNo', label: 'DPR.No' },
@@ -149,7 +158,8 @@ const GRN_COLUMNS = [
  * branch resolved through the GRN row each record matched, since the
  * register's own Location beside it is a short site code rather than a branch.
  *
- * Sl.No. is an integer, matching GRN_COLUMNS.
+ * Sl.No. is the register's own serial, kept because the BPAD tab shows it --
+ * not the GRN report's row number, which GRN_COLUMNS above drops.
  *
  * The register's own QueryAgeing, Ageing and GRN Age used to close the sheet.
  * They are gone from the whole feature -- the register recomputes them from
@@ -219,7 +229,7 @@ const TURNAROUND_PARTICULARS = [
  * the Total leaves with the checkpoints that would have explained it.
  *
  * The day counts arrive nested under `gaps` on each row and the span counts are
- * worked out row by row, so exportResults flattens both up a level before
+ * worked out row by row, so sheetRows flattens both up a level before
  * building -- toCell only reads top-level keys.
  */
 function turnaroundColumns(spans = []) {
@@ -441,7 +451,8 @@ function toCell(row, column) {
   // Words rather than Yes/No: this is read by people, and Excel's filter
   // dropdown should offer the answer rather than make one up from the
   // heading. Null where the question does not apply
-  // -- see chequePrepared, which is also what the Send picker gates on.
+  // -- see chequePrepared, which is also what gates the Send picker's CSD
+  // option.
   if (column.key === 'chequePrepared') {
     const prepared = chequePrepared(row);
     if (prepared === null) return null;
@@ -660,10 +671,51 @@ export async function buildWorkbook(sheets) {
   const ExcelJS = await loadExcelJS();
   const book = new ExcelJS.Workbook();
   book.creator = 'YH GRN Reconciliation';
-  for (const s of sheets) addSheet(book, s.rows, s);
+  const taken = new Set();
+  for (const s of sheets) addSheet(book, s.rows, { ...s, sheetName: uniqueSheetName(s.sheetName, taken) });
   return new Blob([await book.xlsx.writeBuffer()], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
+}
+
+/** The characters Excel will not have in a sheet name. */
+const SHEET_NAME_ILLEGAL = /[\\/?*:[\]]/g;
+
+/**
+ * A card's label, as a sheet name Excel will accept.
+ *
+ * Sheet names come from whatever the cards are called, and two of those are
+ * outside this file's control: the BPAD desks are the register's own wording
+ * ("PURCHASE DEPARTMENT", and whatever the next upload spells), and a desk
+ * named with a slash would have the workbook rejected outright rather than
+ * renamed. So the illegal characters go, the 31-character cap is applied, and
+ * a collision takes a number -- because Excel will not have two sheets of one
+ * name either, and two desks whose names agree for 31 characters is a thing
+ * a register can do.
+ */
+function uniqueSheetName(label, taken) {
+  const base =
+    String(label ?? '')
+      .replace(SHEET_NAME_ILLEGAL, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 31) || 'Sheet';
+
+  // Excel compares sheet names case-insensitively, so the register's ACCOUNTS
+  // and a tab's Accounts are the same name to it.
+  const key = (name) => name.toLowerCase();
+  if (!taken.has(key(base))) {
+    taken.add(key(base));
+    return base;
+  }
+  for (let n = 2; ; n += 1) {
+    const suffix = ` (${n})`;
+    const name = `${base.slice(0, 31 - suffix.length).trim()}${suffix}`;
+    if (!taken.has(key(name))) {
+      taken.add(key(name));
+      return name;
+    }
+  }
 }
 
 /** Hand a finished blob to the browser as a download. */
@@ -679,16 +731,28 @@ function save(blob, fileName) {
 }
 
 /**
- * One tab's rows, ready for its sheet.
+ * One sheet's rows, ready for it.
+ *
+ * A sheet is described by which view's rows it holds (`status`) and which of
+ * that view's cards narrowed them -- `progress` for a CSD stage or the cheque
+ * pair, `dept` for a BPAD desk, `register` for the GRNs the register never
+ * knew. Nothing narrowing is the view's own sheet. See sectionSheets in
+ * services/resultsViews.js, which turns the cards into these.
  *
  * Turnaround rows carry their day counts under `gaps`; lifted to the top
  * level here so the column keys resolve like every other column's, the same
  * way the table itself reads them.
  */
-async function tabRows(batchId, status, q, location, spans) {
-  const { name, rows: raw } = await api.exportRows(batchId, status, q, undefined, location);
+async function sheetRows(batchId, spec, { q, location, spans }) {
+  const { name, rows: raw } = await api.exportRows(batchId, spec.status, {
+    q,
+    location,
+    progress: spec.progress,
+    dept: spec.dept,
+    register: spec.register,
+  });
   const rows =
-    status === 'TURNAROUND'
+    spec.status === 'TURNAROUND'
       ? // The Total and the span counts are worked out here, from the same
         // helpers the table uses, so the file and the screen cannot disagree
         // about them. Both go in whether or not this layout has a column for
@@ -704,42 +768,85 @@ async function tabRows(batchId, status, q, location, spans) {
 }
 
 /**
- * The whole results page as one workbook: a sheet per tab, named the way the
- * tab strip names it, in the order the strip shows them.
+ * How many sheets are fetched at once.
  *
- * `tabs` is the results page's own TABS list (`{ status, label }`), so a tab
- * renamed there renames its sheet here with nothing to edit in this file.
- *
- * Only `q` and `location` travel across every sheet -- they are the page's
- * scope, not one tab's question. The progress dropdown and the Total GRNS
- * match filter are deliberately left out: both narrow one tab's rows to a
- * question that tab alone asks, and applying either to the other sheets would
- * quietly drop rows a reader expects to find there.
+ * Every sheet is an unpaginated query over the whole scope, and a section can
+ * carry a dozen cards -- the Pending view has one per desk the register names.
+ * All of them at once is a dozen full table scans landing together, which is
+ * how one person pressing Export makes the page slow for everybody else. Four
+ * keeps the file quick to build without doing that.
  */
-export async function exportResults(batchId, tabs, { q, location, spans = [] } = {}) {
-  const fetched = await Promise.all(tabs.map((tab) => tabRows(batchId, tab.status, q, location, spans)));
+const SHEET_FETCH_LIMIT = 4;
+
+/** `work` over every item, at most SHEET_FETCH_LIMIT at a time, in order. */
+async function inBatches(items, work) {
+  const out = [];
+  for (let i = 0; i < items.length; i += SHEET_FETCH_LIMIT) {
+    out.push(...(await Promise.all(items.slice(i, i + SHEET_FETCH_LIMIT).map(work))));
+  }
+  return out;
+}
+
+/**
+ * The section on screen as one workbook: its own sheet first, then a sheet
+ * per card standing over it, in the order the row shows them.
+ *
+ * A section's cards are how that section divides up -- Total GRNS into the
+ * registers each GRN has reached, Accounts into how far through the handover
+ * each row has got, Pending into the desk each bill is sitting at -- and the
+ * file is that reading of it. So Export Excel hands back the view somebody is
+ * actually looking at, card by card, rather than one fixed workbook of every
+ * view regardless of where they were when they pressed it. Which is also why
+ * it is per section: a reader on Total GRNS was not asking about CSD stages,
+ * and eleven sheets to find the four they wanted is a worse answer than four.
+ *
+ * `sheets` is `[{ sheetName, status, progress, dept, register, title }]` --
+ * built by sectionSheets in services/resultsViews.js out of the same card
+ * declarations the row on screen is rendered from, so a card renamed or
+ * reordered there moves its sheet with it and nothing here has to be edited.
+ * The first entry is the section itself, and it names the file.
+ *
+ * Only `q` and `location` travel across every sheet: they are the page's
+ * scope. The dropdown filters are left out, the same as before -- each sheet
+ * carries its own card's narrowing and nothing else, so a section's sheets
+ * always divide that section whole rather than whatever was left after a
+ * dropdown had already cut it down.
+ */
+export async function exportSection(batchId, sheets, { q, location, spans = [] } = {}) {
+  const fetched = await inBatches(sheets, (s) => sheetRows(batchId, s, { q, location, spans }));
   const name = fetched.find((f) => f.name)?.name ?? '';
 
-  const sheets = tabs.map((tab, i) => ({
-    sheetName: tab.label,
+  const built = sheets.map((s, i) => ({
+    sheetName: s.sheetName,
     rows: fetched[i].rows,
-    columns: columnsForStatus(tab.status, spans),
-    title: titleForStatus(tab.status),
+    columns: columnsForStatus(s.status, spans),
+    // A card's sheet says which card it is above its headers; a section's own
+    // sheet is just the report.
+    title: s.title ?? titleForStatus(s.status),
   }));
+
+  // Named after the section it was taken off, so two sections' files do not
+  // land in Downloads under one name.
+  const report = slug(sheets[0]?.title ?? titleForStatus(sheets[0]?.status)) || 'GRN_Report';
 
   // Strip characters Windows rejects in a filename.
   const safeName = String(name).replace(/[^A-Za-z0-9._-]+/g, '_');
   const fileName = `${[
-    'GRN_Report',
-    // A GRNS SPAN sheet narrowed to PR-to-PO is not the same report as the
-    // full one, so it must not arrive under the same name.
-    spans.length > 0 && slug(spans.map(spanLabel).join(' ')),
+    report,
+    // An ageing sheet narrowed to PR-to-PO is not the same report as the full
+    // one, so it must not arrive under the same name. Only where the workbook
+    // actually carries that sheet: the span picker belongs to that one view,
+    // and a Total GRNS file is not about PR-to-PO whatever the picker was left
+    // set to.
+    spans.length > 0 &&
+      sheets.some((s) => s.status === 'TURNAROUND') &&
+      slug(spans.map(spanLabel).join(' ')),
     safeName,
   ]
     .filter(Boolean)
     .join('_')}.xlsx`;
 
-  const blob = await buildWorkbook(sheets);
+  const blob = await buildWorkbook(built);
   save(blob, fileName);
 }
 

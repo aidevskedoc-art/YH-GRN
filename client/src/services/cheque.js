@@ -10,8 +10,13 @@
  *
  * Word for word the rule CHEQUE_PREPARED counts by in routes/results.js. Kept
  * here in one place because three callers ask it -- the Send picker and the
- * bulk-select checkbox, which will not hand a bill to CSD without one, and the
- * Excel export's own column -- and three copies of a rule like this drift.
+ * bulk-select checkbox, neither of which will hand a bill to CSD without one,
+ * and the Excel export's own column -- and three copies of a rule like this
+ * drift.
+ *
+ * It gates CSD only. Filing to Records asks nothing about a cheque: the bill
+ * reached accounts and accounts are done with it, which is the whole of what
+ * going on file means.
  *
  * Three answers, not two. `null` is a row the question cannot be asked of: it
  * has no ageing entry, so there are no cheque columns to read, and calling

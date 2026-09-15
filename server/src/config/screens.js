@@ -27,6 +27,24 @@ export const SCREENS = [
     hint: 'The handover queue and its stages.',
   },
   {
+    // The results screen narrowed to the two views Accounts works from: the
+    // GRNs the ageing report has picked up, and how long each step of the
+    // journey to the bank took. A screen of its own rather than a filter on
+    // `results`, because what it leaves out is the point -- an account given
+    // this one never sees the pending half, the whole-population count or the
+    // BPAD register, so the desk that only chases bills already in accounts
+    // opens a page with nothing on it to rule out first.
+    //
+    // It reads exactly what the results screen reads, so every route behind
+    // that screen admits this key as well -- see requireScreen('results',
+    // 'accounts-depot') in routes/results.js. That is the reason it is not
+    // simply granted alongside `results`: holding both would put the full
+    // screen back in the navigation, which is what this one exists to avoid.
+    key: 'accounts-depot',
+    label: 'Accounts Depot',
+    hint: 'Accounts and the PR-to-Bank ageing, without the pending half.',
+  },
+  {
     key: 'config',
     label: 'Configuration',
     hint: 'Branch codes, locations and bank accounts, and which branches are in scope.',

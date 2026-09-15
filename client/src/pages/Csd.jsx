@@ -16,10 +16,18 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { exportCsd } from '../services/exporter.js';
 import LocationFilter from '../components/LocationFilter.jsx';
-import { formatAmount, formatAmountOrDash, formatDate } from '../components/ResultsTable.jsx';
+import {
+  formatAmount,
+  formatAmountOrDash,
+  formatDate,
+  Remark,
+  PriorRejection,
+} from '../components/ResultsTable.jsx';
 import { IconTrash, IconX } from '../components/icons.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
+import Sheet from '../components/Sheet.jsx';
 
 
 /** Matches the results page's search box -- see the note there. */
@@ -50,12 +58,25 @@ const SEARCH_DELAY_MS = 300;
  * below, so a handed-back GRN is not hidden from the CSD screen, only left out
  * of the row of cards.
  */
+/*
+ * `note` rather than `hint`, because the card's small line is built at render
+ * time out of the stage's GRN count and this wording together -- the headline
+ * figure is the number of CHEQUES at that stage, not the number of rows. A
+ * cheque is what was physically handed to CSD and what they acknowledge and
+ * rule on, so it is the thing worth counting; the bills it covers read
+ * underneath. Same arrangement as the Accounts view's own CSD cards, see
+ * CSD_CARDS in Results.jsx.
+ *
+ * The cheque figures do not add up to anything: a cheque whose bills sit at
+ * two stages at once is counted at both. The GRN counts on the line below do
+ * partition the queue, and are what pressing a card filters the table to.
+ */
 const STAGES = [
-  { key: 'QUEUED', label: 'Queued', hint: 'Sent, not yet acknowledged', tone: 'queued' },
-  { key: 'RECEIVED', label: 'Received', hint: 'CSD have it', tone: 'received' },
-  { key: 'APPROVED', label: 'Approved', hint: 'Cleared by CSD', tone: 'approved' },
-  { key: 'REJECTED', label: 'Rejected', hint: 'Sent back', tone: 'rejected' },
-  { key: 'MOVED_TO_ACCOUNTS', label: 'Moved to accounts', hint: 'Handed back to Accounts', tone: 'moved_to_accounts', card: false },
+  { key: 'QUEUED', label: 'Queued', note: 'not yet acknowledged', tone: 'queued' },
+  { key: 'RECEIVED', label: 'Received', note: 'CSD have them', tone: 'received' },
+  { key: 'APPROVED', label: 'Approved', note: 'cleared by CSD', tone: 'approved' },
+  { key: 'REJECTED', label: 'Rejected', note: 'sent back', tone: 'rejected' },
+  { key: 'MOVED_TO_ACCOUNTS', label: 'Moved to accounts', note: 'handed back to Accounts', tone: 'moved_to_accounts', card: false },
 ];
 
 /** The stages that get a KPI card, in the same order. */
@@ -80,6 +101,19 @@ const NEXT_STAGES = {
   REJECTED: [],
   MOVED_TO_ACCOUNTS: [],
 };
+
+/**
+ * The stages a handover can still be taken back from -- kept in step by hand
+ * with TAKE_BACK_STAGES in routes/csd.js, which is what actually refuses the
+ * ones that cannot, and with ResultsTable.jsx's own copy of the same list.
+ *
+ * While CSD have only queued or received it, nothing of theirs is undone by
+ * recalling it. Once they have ruled, the answer is not this screen's to
+ * delete. Read here to decide which of a cheque's OTHER handovers a take-back
+ * should carry with it; the row it was pressed on goes either way, and the
+ * server has the last word on whether it may.
+ */
+const TAKE_BACK_STAGES = ['QUEUED', 'RECEIVED'];
 
 const STAGE_LABELS = Object.fromEntries(STAGES.map((s) => [s.key, s.label]));
 
@@ -180,6 +214,13 @@ function formatSentAt(value) {
 function StagePicker({ row, busy, onPick }) {
   const next = NEXT_STAGES[row.stage] ?? [];
   const label = describeStage(row).label;
+  // Whether the move will carry the rest of the cheque with it -- see
+  // chequeGroup. Whether, not how many: the count is only known once the
+  // server has been asked, and asking per row per render to fill in a tooltip
+  // would be a request per row for a number nobody has looked at yet.
+  const groupNote = row.chequeNo
+    ? ` — this moves every GRN paid by cheque ${row.chequeNo}, not just this one`
+    : '';
 
   if (next.length === 0) {
     return (
@@ -200,7 +241,8 @@ function StagePicker({ row, busy, onPick }) {
       value={row.stage}
       disabled={busy}
       onChange={(e) => onPick(e.target.value)}
-      aria-label={`Move GRN ${row.dprNo} to its next CSD stage`}
+      aria-label={`Move GRN ${row.dprNo} to its next CSD stage${groupNote}`}
+      title={`Move GRN ${row.dprNo} to its next CSD stage${groupNote}`}
     >
       {/* The current stage, as the selection the box rests on. Picking it again
           is a no-op, which handleStage returns early on. */}
@@ -211,6 +253,80 @@ function StagePicker({ row, busy, onPick }) {
         </option>
       ))}
     </select>
+  );
+}
+
+/**
+ * The reason a rejection carries, collected before it is recorded.
+ *
+ * A rejection is an instruction to somebody else to do something -- the GRN
+ * goes back to Accounts for them to act on -- and one with no reason on it is
+ * a GRN nobody can act on. So the reason is asked for as part of the verdict
+ * rather than left as a note somebody may or may not add afterwards, and the
+ * server refuses a REJECTED move without one regardless of what this dialog
+ * does (see STAGE_REMARKS_REQUIRED in routes/csd.js).
+ *
+ * A dialog rather than the confirm box every other destructive action here
+ * uses, because this one has to collect something: a confirm asks a question
+ * that can be answered with a button, and this cannot. Submitting IS the
+ * confirmation -- Reject is the submit button, and it stays disabled until
+ * there is something in the box, so the two steps the user asked for are the
+ * one form: write the reason, then press Reject.
+ *
+ * `subject` names what is being rejected, which for a cheque is more than the
+ * row the picker was used on.
+ */
+function RejectReasonDialog({ subject, busy, error, onSubmit, onClose }) {
+  const [remarks, setRemarks] = useState('');
+  const ready = remarks.trim().length > 0;
+
+  return (
+    <Sheet label={`Reject ${subject}`} narrow onClose={busy ? () => {} : onClose}>
+      <form
+        className="sheet__form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ready) onSubmit(remarks.trim());
+        }}
+      >
+        <div className="sheet__head">
+          <h2>Reject {subject}</h2>
+        </div>
+
+        <div className="sheet__body">
+          {error && <div className="alert alert--error">{error}</div>}
+
+          <p className="sheet__lead">
+            The reason goes back to Accounts with the GRN, so write what has to be put right.
+          </p>
+
+          <label className="field">
+            <span className="field__label">Reason for rejection</span>
+            <textarea
+              className="field__input"
+              rows={4}
+              value={remarks}
+              onChange={(e) => setRemarks(e.target.value)}
+              maxLength={1000}
+              autoFocus
+              required
+            />
+          </label>
+        </div>
+
+        <div className="sheet__foot">
+          <button type="button" className="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          {/* Disabled until there is a reason to send, so the rule is visible
+              on the button rather than only in the error the server would
+              otherwise answer with. */}
+          <button type="submit" className="primary" disabled={busy || !ready}>
+            {busy ? 'Rejecting…' : 'Reject'}
+          </button>
+        </div>
+      </form>
+    </Sheet>
   );
 }
 
@@ -231,8 +347,23 @@ export default function Csd() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
-  const [busy, setBusy] = useState(null);
+  // Which handovers are in flight. A set rather than one id: the per-row
+  // controls act on the row's whole cheque group (see chequeGroup below), so
+  // every picker in that group has to read as busy at once.
+  const [busy, setBusy] = useState(() => new Set());
   const [confirm, confirmDialog] = useConfirm();
+  // Deleting a handover CSD have ruled on is an administrator's, the same as
+  // deleting an upload -- see handleDeleteRecord below.
+  const { isAdmin } = useAuth();
+  // What a rejection is being written for, or null -- `{ row }` from a row's
+  // own stage picker, `{ bulk: true }` from the toolbar's "Move n to…". Both
+  // doors lead to the same dialog, because the server requires a reason on
+  // either and a rejection that can be recorded without one from one of them
+  // is the reason the rule is worth having. Its own error stays apart from the
+  // page's: a refused submit has to stay on the dialog where the reason is,
+  // not flash below a table the dialog is covering.
+  const [reject, setReject] = useState(null);
+  const [rejectError, setRejectError] = useState('');
 
   const [search, setSearch] = useState('');
   const [q, setQ] = useState('');
@@ -335,16 +466,27 @@ export default function Csd() {
     : [];
 
   /** Move every ticked row to one stage at once. */
-  async function bulkSetStage(next) {
+  async function bulkSetStage(next, remarks) {
     if (!next || selectedRows.length === 0) return;
+
+    // Same rule as the per-row picker: rejecting needs a reason first, and the
+    // dialog calls back into here with it.
+    if (next === 'REJECTED' && !remarks) {
+      setRejectError('');
+      setReject({ bulk: true });
+      return;
+    }
+
     setBulkBusy(true);
     setError('');
     try {
-      await Promise.all(selectedRows.map((row) => api.setCsdStage(row.id, next)));
+      await Promise.all(selectedRows.map((row) => api.setCsdStage(row.id, next, remarks)));
+      setReject(null);
       exitMultiMode();
       load();
     } catch (err) {
-      setError(err.message);
+      if (remarks) setRejectError(err.message);
+      else setError(err.message);
     } finally {
       setBulkBusy(false);
     }
@@ -376,6 +518,61 @@ export default function Csd() {
     } finally {
       setBulkBusy(false);
     }
+  }
+
+  /** A cheque this big would be a data problem, not a payment run. */
+  const GROUP_PAGE_SIZE = 200;
+  const GROUP_MAX_PAGES = 10;
+
+  /**
+   * The handovers an action chosen on one row actually applies to: that row,
+   * plus every other GRN the same cheque pays that could make the same move.
+   *
+   * A cheque is what was physically handed to CSD, so it is what CSD
+   * acknowledge, rule on and hand back -- one bill of it moving on its own was
+   * never the intent. This is the same rule the results screen's own Action
+   * column follows; see chequeGroup in ResultsTable.jsx.
+   *
+   * Asked of the SERVER rather than filtered out of `data.rows`, which is the
+   * one thing this could not be done locally. The queue is ordered by when
+   * each handover was sent and paged twenty at a time, so a cheque's bills are
+   * rarely all on the page the action was chosen from -- and filtering the
+   * page would quietly move one row and leave the rest behind, which is
+   * exactly what it would look like from the outside.
+   *
+   * The fetch carries no stage, search or location, so it finds the cheque's
+   * handovers wherever the screen happens to be narrowed to at the time.
+   * Branch scope still applies -- the server puts it on every query regardless
+   * of what is asked for -- so this can never reach a row the account may not
+   * see.
+   *
+   * `eligible` keeps the group honest: a same-cheque handover that cannot make
+   * this particular move is left out rather than sent over to be refused.
+   *
+   * A row with no cheque number is its own group of one -- there is nothing to
+   * group it by, and gathering every blank together would be a coincidence of
+   * missing data rather than a cheque.
+   */
+  async function chequeGroup(row, eligible) {
+    if (!row.chequeNo) return [row];
+
+    const found = [];
+    for (let p = 1; p <= GROUP_MAX_PAGES; p += 1) {
+      const res = await api.listCsd({ chequeNo: row.chequeNo, page: p, pageSize: GROUP_PAGE_SIZE });
+      found.push(...res.rows);
+      if (p >= res.totalPages) break;
+    }
+
+    const group = found.filter(eligible);
+    // The row the action was chosen on always belongs to its own group, even
+    // if the fetch or the predicate disagrees -- it is what the person
+    // pressed, and the one row whose action must not silently do nothing.
+    return group.some((r) => r.id === row.id) ? group : [row, ...group];
+  }
+
+  /** Mark every row of a group in flight, and nothing else. */
+  function beginBusy(group) {
+    setBusy(new Set(group.map((r) => r.id)));
   }
 
   /**
@@ -420,17 +617,40 @@ export default function Csd() {
    * cards count over every row in scope, and a row that changes stage changes
    * two of them. Editing the row alone would leave the numbers above it stale.
    */
-  async function handleStage(row, next) {
+  async function handleStage(row, next, remarks) {
     if (next === row.stage) return;
-    setBusy(row.id);
+
+    // Rejecting needs a reason before it can be recorded, so picking it opens
+    // the dialog rather than acting. The dialog calls back into here with the
+    // reason, which is the branch below.
+    if (next === 'REJECTED' && !remarks) {
+      setRejectError('');
+      setReject({ row });
+      return;
+    }
+
+    // Busy on the one row first, so the control it was chosen on stops
+    // responding while the group is being worked out.
+    beginBusy([row]);
     setError('');
     try {
-      await api.setCsdStage(row.id, next);
+      // Only the handovers that could make this very move. A same-cheque row
+      // sitting at a different stage is left where it is rather than sent over
+      // to be refused -- the server holds the same ladder and would say no.
+      const group = await chequeGroup(row, (r) => (NEXT_STAGES[r.stage] ?? []).includes(next));
+      beginBusy(group);
+      // The one reason is written onto every handover the cheque pays: they
+      // were rejected together, for the same thing, in one decision.
+      await Promise.all(group.map((r) => api.setCsdStage(r.id, next, remarks)));
+      setReject(null);
       load();
     } catch (err) {
-      setError(err.message);
+      // A rejection's error belongs on the dialog it was submitted from, which
+      // is still open and still holds the typed reason.
+      if (remarks) setRejectError(err.message);
+      else setError(err.message);
     } finally {
-      setBusy(null);
+      setBusy(new Set());
     }
   }
 
@@ -441,25 +661,89 @@ export default function Csd() {
    * results tab's Send button silently goes back to unsent when it lands.
    */
   async function handleRemove(row) {
+    beginBusy([row]);
+    setError('');
+
+    let group;
+    try {
+      // Only the handovers that can still be recalled -- the server refuses
+      // the rest (see TAKE_BACK_STAGES in routes/csd.js), and a cheque whose
+      // bills CSD has already ruled on should not have the whole action fail
+      // on their account.
+      group = await chequeGroup(row, (r) => TAKE_BACK_STAGES.includes(r.stage));
+    } catch (err) {
+      setError(err.message);
+      setBusy(new Set());
+      return;
+    }
+
+    const many = group.length > 1;
     const ok = await confirm({
-      title: 'Take this GRN back?',
-      message: `Are you sure you want to take GRN ${row.dprNo} off the CSD queue?`,
+      title: many ? `Take these ${group.length} GRNs back?` : 'Take this GRN back?',
+      message: many
+        ? `Cheque ${row.chequeNo} pays ${group.length} GRNs that can still be recalled. Are you sure you want to take all of them off the CSD queue?`
+        : `Are you sure you want to take GRN ${row.dprNo} off the CSD queue?`,
       confirmLabel: 'Take back',
+    });
+    if (!ok) {
+      setBusy(new Set());
+      return;
+    }
+
+    beginBusy(group);
+    try {
+      await Promise.all(group.map((r) => api.removeFromCsd(r.id)));
+      // Removing every row of the last page would otherwise leave the pager
+      // pointing past the end of a now-shorter queue.
+      const goneFromPage = data.rows.filter((r) => group.some((g) => g.id === r.id)).length;
+      if (goneFromPage >= data.rows.length && page > 1) setPage((p) => p - 1);
+      else load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(new Set());
+    }
+  }
+
+  /**
+   * Delete a handover CSD have already ruled on.
+   *
+   * The gap the take-back above leaves. Once CSD approve, reject or hand a GRN
+   * back to Accounts it can no longer be recalled -- rightly, because recalling
+   * it would undo their answer -- and until this button there was no way to
+   * remove the record at all, however wrong it was.
+   *
+   * One row, not the cheque group the rest of this screen acts on. Every other
+   * control here is a move in the process, and a cheque moves whole; this is a
+   * correction to one row somebody got wrong, and quietly deleting the six
+   * other bills on its cheque is not what pressing delete on a row means.
+   *
+   * Administrator-only, and the server says so too -- the button is hidden for
+   * everyone else, but requireAdmin on the route is the guard.
+   */
+  async function handleDeleteRecord(row) {
+    const ok = await confirm({
+      title: 'Delete this handover?',
+      message: [
+        `GRN ${row.dprNo} and its CSD record — ${STAGE_LABELS[row.stage] || row.stage}, and any remarks — will be deleted. This cannot be undone.`,
+        'It goes back to Accounts as a GRN that was never handed over.',
+      ],
+      confirmLabel: 'Delete handover',
     });
     if (!ok) return;
 
-    setBusy(row.id);
+    beginBusy([row]);
     setError('');
     try {
-      await api.removeFromCsd(row.id);
-      // Removing the last row of the last page would otherwise leave the pager
+      await api.deleteCsdRecord(row.id);
+      // Deleting the last row of the last page would otherwise leave the pager
       // pointing past the end of a now-shorter queue.
       if (data.rows.length === 1 && page > 1) setPage((p) => p - 1);
       else load();
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(null);
+      setBusy(new Set());
     }
   }
 
@@ -504,6 +788,31 @@ export default function Csd() {
   return (
     <>
       {confirmDialog}
+      {reject && (
+        <RejectReasonDialog
+          /* Named for what the submit will actually reject. From a row's own
+             picker that is the whole cheque, not the row the picker was used
+             on -- see chequeGroup -- and with no count, since the group is
+             only counted once the server has been asked, which is after this
+             is submitted. From the toolbar it is the ticked rows, which are
+             counted already because the person ticked them. */
+          subject={
+            reject.bulk
+              ? `${selected.size} GRN${selected.size === 1 ? '' : 's'}`
+              : reject.row.chequeNo
+                ? `every GRN on cheque ${reject.row.chequeNo}`
+                : `GRN ${reject.row.dprNo}`
+          }
+          busy={reject.bulk ? bulkBusy : busy.has(reject.row.id)}
+          error={rejectError}
+          onSubmit={(remarks) =>
+            reject.bulk
+              ? bulkSetStage('REJECTED', remarks)
+              : handleStage(reject.row, 'REJECTED', remarks)
+          }
+          onClose={() => setReject(null)}
+        />
+      )}
       <div className="page__head page__head--row">
         <div>
           <h2 className="page__title">Sent to CSD</h2>
@@ -529,7 +838,7 @@ export default function Csd() {
       {data?.stages && (
         <div className="cards">
           {CARD_STAGES.map((s) => {
-            const bucket = data.stages[s.key] || { count: 0, amount: 0 };
+            const bucket = data.stages[s.key] || { count: 0, cheques: 0, amount: 0 };
             return (
               <button
                 key={s.key}
@@ -539,9 +848,12 @@ export default function Csd() {
                 aria-pressed={stage === s.key}
               >
                 <div className="stat__label">{s.label}</div>
-                <div className="stat__value">{bucket.count.toLocaleString('en-IN')}</div>
+                {/* The cheque count, not the GRN count -- see STAGES. */}
+                <div className="stat__value">{(bucket.cheques ?? 0).toLocaleString('en-IN')}</div>
                 <div className="stat__amount">₹ {formatAmount(bucket.amount)}</div>
-                <div className="stat__hint">{s.hint}</div>
+                <div className="stat__hint">
+                  {`${bucket.count.toLocaleString('en-IN')} GRN${bucket.count === 1 ? '' : 's'} ${s.note}`}
+                </div>
               </button>
             );
           })}
@@ -780,9 +1092,28 @@ export default function Csd() {
                         )}
                       </td> */}
                       <td>
-                        <span className={`pill pill--${describeStage(row).tone}`}>
+                        <span
+                          className={`pill pill--${describeStage(row).tone}`}
+                          title={row.rejectRemarks || undefined}
+                        >
                           {describeStage(row).label}
                         </span>
+                        {/* Why it was rejected. The reason is the whole point
+                            of a rejection -- it is what Accounts have to act
+                            on -- so it reads in the cell rather than only on
+                            hover, the way the discrepancy note above used to.
+                            Only rejections carry one; see reject_remarks in
+                            schema.sql. */}
+                        {row.rejectRemarks && <Remark text={row.rejectRemarks} />}
+                        {/* Turned down once before and sent round again. Only
+                            where there is no current reason to read instead --
+                            see PriorRejection. Worth more here than anywhere:
+                            a reopened GRN arrives back in this queue looking
+                            like any other fresh handover, and this is the only
+                            thing saying CSD have seen it before. */}
+                        {!row.rejectRemarks && row.priorRejection && (
+                          <PriorRejection prior={row.priorRejection} />
+                        )}
                         {/* Who moved it, and when. Absent while a row is still
                             queued: nobody has answered for it yet. */}
                         {/* {row.stageAt && (
@@ -808,21 +1139,44 @@ export default function Csd() {
                         <div className="row-actions">
                           <StagePicker
                             row={row}
-                            busy={busy === row.id}
+                            busy={busy.has(row.id)}
                             onPick={(next) => handleStage(row, next)}
                           />
                           <button
                             type="button"
                             className="csd csd--take-back"
-                            disabled={busy === row.id}
+                            disabled={busy.has(row.id)}
                             onClick={() => handleRemove(row)}
-                            title={`Take GRN ${row.dprNo} back off the CSD queue`}
+                            title={
+                              row.chequeNo
+                                ? `Take GRN ${row.dprNo} back off the CSD queue — this takes back every recallable GRN paid by cheque ${row.chequeNo}`
+                                : `Take GRN ${row.dprNo} back off the CSD queue`
+                            }
                           >
                             <span className="csd__icon">
                               <IconTrash size={14} />
                             </span>
                             Sent back
                           </button>
+                          {/* Only where Sent back cannot reach, so a row never
+                              carries two buttons that mean nearly the same
+                              thing: a handover CSD have ruled on, which they
+                              refuse to give back and which until now could not
+                              be removed at all. */}
+                          {isAdmin && !TAKE_BACK_STAGES.includes(row.stage) && (
+                            <button
+                              type="button"
+                              className="csd csd--delete"
+                              disabled={busy.has(row.id)}
+                              onClick={() => handleDeleteRecord(row)}
+                              title={`Delete the CSD record for GRN ${row.dprNo} — it goes back to Accounts as never handed over`}
+                            >
+                              <span className="csd__icon">
+                                <IconTrash size={14} />
+                              </span>
+                              Delete
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

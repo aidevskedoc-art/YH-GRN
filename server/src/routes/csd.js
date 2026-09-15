@@ -103,6 +103,27 @@ function stageFilter(stage, params) {
 }
 
 /**
+ * Every handover paid by one cheque, or null when no cheque was asked for.
+ *
+ * An exact match, where `q` above matches this same column loosely along with
+ * four others. This is not a search: it is what the queue's own Action column
+ * reads to find the rest of a cheque's handovers before it moves them, and a
+ * fuzzy answer there would move a GRN because its bill number happened to
+ * contain the cheque's digits.
+ *
+ * It narrows the stage counts as well as the rows -- unlike `stage`, and for
+ * the opposite reason to the note above. Nothing reads the cards off a request
+ * that names a cheque; what does read them is the pager, through `total`, and
+ * a total taken over the whole queue would tell the caller there were more
+ * pages of this cheque to fetch than there are.
+ */
+function chequeFilter(chequeNo, params) {
+  if (!chequeNo) return null;
+  params.push(chequeNo);
+  return `c.cheque_no = $${params.length}`;
+}
+
+/**
  * The configured bank account of the branch a dispatch belongs to, resolved
  * off its own snapshotted division_code and location -- the same lookup
  * results.js runs for the results and turnaround tables, see branchAccountNo.
@@ -111,6 +132,30 @@ const BRANCH_ACCOUNT_NO = branchAccountNo({
   divisionCode: 'c.division_code',
   location: 'c.location',
 });
+
+/**
+ * The last time CSD rejected this GRN before the handover it is on now -- the
+ * newest row of csd_rejection_history for it, or nulls where there is none.
+ *
+ * A rejected GRN goes back, gets put right, and comes round again in a new
+ * upload, which takes the old dispatch off this queue (see reopenRejectedFor in
+ * services/ingest.js). When it is sent again it arrives here looking like any
+ * other fresh handover -- and the one thing worth knowing about it is that it
+ * is not one: CSD turned it down last time, and this is what for.
+ *
+ * LATERAL with LIMIT 1, so a GRN rejected and reopened several times
+ * contributes one row rather than one per rejection. ON TRUE keeps it a LEFT
+ * join, so every dispatch comes back exactly once either way -- which matters,
+ * because the queue's own counts are taken over this same select.
+ */
+const PRIOR_REJECTION_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT h.reject_remarks, h.rejected_at, h.superseded_at
+    FROM csd_rejection_history h
+    WHERE h.dpr_no_key = c.dpr_no_key
+    ORDER BY h.superseded_at DESC, h.id DESC
+    LIMIT 1
+  ) pr ON TRUE`;
 
 const DISPATCH_COLUMNS = `
   SELECT c.id, c.dpr_no, c.division_code, c.dpr_date, c.bill_no, c.bill_date,
@@ -124,6 +169,10 @@ const DISPATCH_COLUMNS = `
          c.moved_to_accounts_at, c.accounts_stage, c.accounts_received_at,
          c.forwarded_to, c.forwarded_route, c.forwarded_name, c.forwarded_mobile,
          c.forwarded_date, c.forwarded_at,
+         c.reject_remarks,
+         pr.reject_remarks AS prior_reject_remarks,
+         pr.rejected_at    AS prior_rejected_at,
+         pr.superseded_at  AS prior_reopened_at,
          u.full_name  AS sent_by_name,
          u.username   AS sent_by_username,
          su.full_name AS stage_by_name,
@@ -139,6 +188,7 @@ const DISPATCH_COLUMNS = `
   LEFT JOIN users au ON au.id = c.accounts_received_by
   LEFT JOIN users fu ON fu.id = c.forwarded_by
   LEFT JOIN upload_batches b ON b.id = c.batch_id
+  ${PRIOR_REJECTION_JOIN}
 `;
 
 function mapDispatch(r) {
@@ -177,6 +227,24 @@ function mapDispatch(r) {
     receivedAt: r.received_at,
     approvedAt: r.approved_at,
     rejectedAt: r.rejected_at,
+    // Why CSD rejected it, in their own words -- required at the moment of
+    // rejecting and written for no other stage, so a value here is always the
+    // reason for the rejection beside it. Null on anything not rejected, and on
+    // rejections recorded before the reason was asked for.
+    rejectRemarks: r.reject_remarks ?? null,
+    /*
+     * The last time CSD rejected this GRN before this handover -- null where
+     * they never have. A reopened GRN comes back as a fresh dispatch with none
+     * of its own history on it, so without this nothing here would say it had
+     * been round once already. See PRIOR_REJECTION_JOIN.
+     */
+    priorRejection: r.prior_rejected_at
+      ? {
+          remarks: r.prior_reject_remarks ?? null,
+          rejectedAt: r.prior_rejected_at,
+          reopenedAt: r.prior_reopened_at,
+        }
+      : null,
     movedToAccountsAt: r.moved_to_accounts_at,
     stageBy: r.stage_by_name || r.stage_by_username || null,
     // Accounts' own progress once CSD has handed a GRN back -- see
@@ -294,28 +362,57 @@ csdRouter.get(
       return res.status(400).json({ error: `Unknown stage "${req.query.stage}".` });
     }
 
+    // One cheque's handovers, all of them, wherever they fall in the queue.
+    // The Action column asks for this before it moves anything, so that a
+    // stage move moves the whole cheque rather than the one row it was chosen
+    // on -- see chequeGroup in Csd.jsx. Branch scope still applies alongside
+    // it, so it can never reach a handover the account may not see.
+    const chequeNo = String(req.query.chequeNo || '').trim();
+
     // Search only -- the scope the cards count over.
     const scopeParams = [];
     const scopeWhere = whereFrom([
       searchFilter(req.query.q, scopeParams),
+      chequeFilter(chequeNo, scopeParams),
       BRANCH_SCOPE,
       ...branchClauses(req, scopeParams),
     ]);
 
+    /*
+     * `cheques` is how many cheques each stage's handovers are spread across,
+     * and it is the figure the cards lead with -- a cheque is what was
+     * physically handed to CSD and what they acknowledge and rule on, so how
+     * many cheques are sitting at a stage is the question; how many GRNs they
+     * cover is the supporting line under it. Same arrangement as the Accounts
+     * view's own CSD cards, see the csd query in routes/results.js.
+     *
+     * COUNT(DISTINCT) over the cheque number, with the non-empty clause said
+     * on purpose rather than left to DISTINCT skipping nulls: a handover can
+     * reach the queue with no cheque number on its snapshot, and it should not
+     * count as a cheque.
+     *
+     * Unlike the GRN counts, these do not partition anything: a cheque whose
+     * bills sit at two stages at once is counted at both. Do not add them up.
+     */
     const { rows: byStage } = await query(
-      `SELECT c.stage, COUNT(*)::int AS count, COALESCE(SUM(c.payable_amount), 0) AS amount
+      `SELECT c.stage,
+              COUNT(*)::int AS count,
+              COUNT(DISTINCT c.cheque_no) FILTER (WHERE COALESCE(c.cheque_no, '') <> '')::int AS cheques,
+              COALESCE(SUM(c.payable_amount), 0) AS amount
        FROM csd_dispatches c ${scopeWhere}
        GROUP BY c.stage`,
       scopeParams,
     );
 
-    const stages = Object.fromEntries(STAGES.map((s) => [s, { count: 0, amount: 0 }]));
+    const stages = Object.fromEntries(STAGES.map((s) => [s, { count: 0, cheques: 0, amount: 0 }]));
     let allCount = 0;
     let allAmount = 0;
     for (const r of byStage) {
       // A stage retired from STAGES but still on old rows would otherwise land
       // an unexpected key on the response; it is counted in the total either way.
-      if (stages[r.stage]) stages[r.stage] = { count: r.count, amount: Number(r.amount) };
+      if (stages[r.stage]) {
+        stages[r.stage] = { count: r.count, cheques: r.cheques, amount: Number(r.amount) };
+      }
       allCount += r.count;
       allAmount += Number(r.amount);
     }
@@ -325,6 +422,7 @@ csdRouter.get(
     const where = whereFrom([
       searchFilter(req.query.q, params),
       stageFilter(stage, params),
+      chequeFilter(chequeNo, params),
       BRANCH_SCOPE,
       ...branchClauses(req, params),
     ]);
@@ -461,9 +559,30 @@ csdRouter.post(
 );
 
 /**
+ * The stages that cannot be recorded without a reason, and what to call the
+ * reason when one is missing.
+ *
+ * Only REJECTED. An approval needs no explaining -- the bill was in order --
+ * but a rejection is an instruction to somebody else to do something, and a
+ * rejection with no reason on it is a GRN that comes back to Accounts with
+ * nothing to act on. So the reason is part of the verdict rather than a note
+ * somebody may or may not have added afterwards.
+ *
+ * Enforced here rather than only in the dialog that collects it: the dialog is
+ * a courtesy, this is the rule.
+ */
+const STAGE_REMARKS_REQUIRED = { REJECTED: 'rejecting' };
+
+/** The longest reason worth storing; past this it is a document, not a remark. */
+const MAX_REMARKS = 1000;
+
+/**
  * PATCH /api/csd/:id/stage
  *
- * Body: { stage }. Only a stage the row may move to next -- see NEXT_STAGES.
+ * Body: { stage, remarks }. Only a stage the row may move to next -- see
+ * NEXT_STAGES. `remarks` is required for REJECTED and ignored for every other
+ * stage, which is what keeps a filled reject_remarks always the reason for the
+ * rejection beside it.
  *
  * Who moved it and when are recorded alongside, so a row that has been through
  * CSD says so on its face rather than only in an audit table that does not exist.
@@ -488,6 +607,22 @@ csdRouter.patch(
       });
     }
 
+    // The reason, where the stage calls for one. Trimmed, because a box holding
+    // three spaces is an empty box, and checked before anything is written so a
+    // rejection can never land without it.
+    const needsRemarks = STAGE_REMARKS_REQUIRED[stage];
+    const remarks = String(req.body?.remarks ?? '').trim();
+    if (needsRemarks && !remarks) {
+      return res.status(400).json({
+        error: `A reason is required when ${needsRemarks} a GRN.`,
+      });
+    }
+    if (remarks.length > MAX_REMARKS) {
+      return res.status(400).json({
+        error: `That reason is too long — ${MAX_REMARKS} characters at most.`,
+      });
+    }
+
     // Which stages this one may be reached from -- the reverse of NEXT_STAGES.
     const from = STAGES.filter((s) => NEXT_STAGES[s].includes(stage));
 
@@ -498,14 +633,22 @@ csdRouter.patch(
     // acknowledgement fresh -- QUEUED the moment it lands, same as this
     // dispatch itself started at QUEUED on the CSD side.
     const startsAccountsStage = stage === 'MOVED_TO_ACCOUNTS' ? ", accounts_stage = 'QUEUED'" : '';
+    // Written only by the stage that requires it, so the column never holds a
+    // remark belonging to some other move -- and a plain assignment rather than
+    // COALESCE, unlike the stamps above: re-rejecting is not a thing the ladder
+    // allows, so the only write this column ever sees is the first one.
+    const writesRemarks = needsRemarks ? ', reject_remarks = $5' : '';
+    const params = [stage, req.user.id, id, from];
+    if (needsRemarks) params.push(remarks);
     const { rows } = await query(
       `UPDATE csd_dispatches
        SET stage = $1, stage_at = NOW(), stage_by = $2
            ${stamp ? `, ${stamp} = COALESCE(${stamp}, NOW())` : ''}
            ${startsAccountsStage}
+           ${writesRemarks}
        WHERE id = $3 AND stage = ANY($4)
        RETURNING id`,
-      [stage, req.user.id, id, from],
+      params,
     );
 
     if (rows.length > 0) {
@@ -737,6 +880,44 @@ csdRouter.delete(
       return res.status(409).json({
         error: `GRN ${dprNo} moved on at CSD while you were taking it back. Reload and try again.`,
       });
+    }
+
+    return res.status(204).end();
+  }),
+);
+
+/**
+ * DELETE /api/csd/:id/record - remove a handover whatever stage it reached.
+ *
+ * The companion to the take-back above, and deliberately a different route
+ * rather than a flag on it, because it is a different act. Taking a GRN back
+ * is a move in the process: CSD have not ruled, nothing of theirs is undone,
+ * and anyone on the screen may do it. This deletes the record of a handover
+ * CSD HAVE ruled on -- an approval, a rejection, a hand-back to Accounts --
+ * which is a correction to the data rather than a step in the work, so it is
+ * an administrator's, the same as deleting an upload.
+ *
+ * No stage check and no re-check in the DELETE: the take-back has both because
+ * it must not race CSD's verdict, and here the verdict is the thing being
+ * thrown away. Whatever the row says when the statement lands, it goes.
+ *
+ * The Send picker on the results tab reads this table for whether a GRN was
+ * handed over, so the GRN returns to Accounts as one that never went -- the
+ * same consequence the take-back has, which is the point: there was no way to
+ * reach it for a ruled-on row before this.
+ */
+csdRouter.delete(
+  '/:id/record',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Unknown row.' });
+    }
+
+    const { rowCount } = await query('DELETE FROM csd_dispatches WHERE id = $1', [id]);
+    if (rowCount === 0) {
+      return res.status(404).json({ error: 'That GRN is no longer in the CSD queue.' });
     }
 
     return res.status(204).end();

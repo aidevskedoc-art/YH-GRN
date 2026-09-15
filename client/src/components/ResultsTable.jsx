@@ -162,6 +162,84 @@ function MatchState({ status }) {
   );
 }
 
+/** How much of a remark shows before the rest goes behind Read more. */
+const REMARK_PREVIEW_CHARS = 20;
+
+/**
+ * A remark, cut short with the rest one click away.
+ *
+ * The reason CSD rejected a bill is a sentence somebody wrote for somebody
+ * else to act on, so it cannot be reduced to a tooltip -- but at full length on
+ * every rejected row it pushes the rows apart and makes the column hard to
+ * read down. So twenty characters show, and the rest opens on request.
+ *
+ * A flat character count, not a line clamp measured against the rendered box.
+ * Twenty characters is the rule as asked for: it is the same preview on every
+ * row whatever the column happens to be doing, and whether the button appears
+ * is decided by the text itself rather than by what the browser made of it.
+ *
+ * Its own component because the open/closed state is per remark: opening one
+ * must not open the rest of the column. A remark inside the limit gets no
+ * button -- there is nothing behind it to read.
+ */
+export function Remark({ text }) {
+  const [open, setOpen] = useState(false);
+  const long = text.length > REMARK_PREVIEW_CHARS;
+
+  return (
+    <div className="table__sub table__wrap">
+      {/* trimEnd, so the ellipsis never follows a space. */}
+      {open || !long ? text : `${text.slice(0, REMARK_PREVIEW_CHARS).trimEnd()}…`}
+      {long && (
+        <>
+          {' '}
+          <button
+            type="button"
+            className="table__more"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+          >
+            {open ? 'Read less' : 'Read more'}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** dd-MM-yyyy from a timestamptz, in the browser's own zone. */
+function formatStamp(value) {
+  const at = new Date(value);
+  return Number.isFinite(at.getTime()) ? at.toLocaleDateString('en-GB') : '';
+}
+
+/**
+ * "CSD rejected this before, and here is why" -- the line under a GRN that has
+ * been round once already.
+ *
+ * A reopened GRN reads as unsent, and a re-sent one as an ordinary handover:
+ * in neither case does anything else on the row say it has a history. That
+ * history is exactly what somebody about to send it, or about to rule on it,
+ * wants to know.
+ *
+ * Suppressed by the caller while the GRN is rejected RIGHT NOW -- the current
+ * reason is already on the row, and two reasons stacked under one pill is a
+ * cell nobody reads. Shown with no reason at all where the rejection predates
+ * the day reasons were asked for: that it was turned down before is worth
+ * saying on its own.
+ */
+export function PriorRejection({ prior }) {
+  return (
+    <div className="table__sub table__prior">
+      <span className="table__prior-tag">Rejected before</span>{' '}
+      {formatStamp(prior.rejectedAt)}
+      {/* Remark is a block of its own, so the reason sits on the line under
+          the tag rather than being run on after it with a dash. */}
+      {prior.remarks && <Remark text={prior.remarks} />}
+    </div>
+  );
+}
+
 /**
  * A row's status: whether the cheque cleared, and where it has been sent.
  *
@@ -178,7 +256,9 @@ function MatchState({ status }) {
  * landing -- the row on screen is still the one the server sent before it knew
  * -- so it falls back to QUEUED, which is where a send has just put it.
  */
-function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, forwardedName, forwardedMobile, forwardedDate, forwardedCourierName, forwardedDocketNo, forwardedRemarks, filed, clearedOn }) {
+function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, forwardedName, forwardedMobile, forwardedDate, forwardedCourierName, forwardedDocketNo, forwardedRemarks, rejectRemarks, priorRejection, filed, clearedOn }) {
+  // Only where there is no current one -- see PriorRejection.
+  const prior = !rejectRemarks && priorRejection ? priorRejection : null;
   // Records has no stages, so there is one thing to say about it and this is
   // it. A GRN cannot be at both destinations -- the dropdown that sends it goes
   // away once it has gone -- so the two never have to be shown together.
@@ -213,15 +293,35 @@ function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, fo
           Cheque cleared
         </span>
         {destination && <div className="table__sub">{destination.label}</div>}
+        {prior && <PriorRejection prior={prior} />}
       </>
     );
   }
 
-  if (!destination) return <span className="pill pill--unsent">Not sent</span>;
+  if (!destination) {
+    return (
+      <>
+        <span className="pill pill--unsent">Not sent</span>
+        {/* The whole point of keeping the history: a GRN reopened by a new
+            upload reads as unsent, and this is the only thing on the row that
+            says it has been round before. */}
+        {prior && <PriorRejection prior={prior} />}
+      </>
+    );
+  }
   return (
-    <span className={`pill pill--${destination.tone}`} title={forwardHint}>
-      {destination.label}
-    </span>
+    <>
+      <span className={`pill pill--${destination.tone}`} title={forwardHint || rejectRemarks || undefined}>
+        {destination.label}
+      </span>
+      {/* Why CSD rejected it. The reason is the whole point of a rejection
+          from this side -- it is what Accounts have to act on -- so it reads
+          in the cell rather than only on hover, cut to a couple of lines with
+          the rest behind Read more. Only a rejected GRN carries one; see
+          reject_remarks in schema.sql. */}
+      {rejectRemarks && <Remark text={rejectRemarks} />}
+      {prior && <PriorRejection prior={prior} />}
+    </>
   );
 }
 
@@ -272,7 +372,18 @@ function canTakeBack(row, canCsd) {
   );
 }
 
-function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, onSend, onTakeBack }) {
+/**
+ * `grouped` is whether the chosen action will carry the rest of the row's
+ * cheque with it (see chequeGroup). It changes no behaviour here; it is only
+ * so the control can say what it is about to do, since a dropdown sitting on
+ * one row that quietly acts on fifteen of them is the kind of surprise this
+ * column cannot afford.
+ *
+ * Whether, not how many. How many is only known once the server has been
+ * asked, and asking on every row of every render to fill in a tooltip would
+ * be a request per row for a number nobody has looked at yet.
+ */
+function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, grouped = false, onSend, onTakeBack }) {
   // Sent to CSD and still recallable -- the GRN went by mistake and CSD have
   // not acted on it yet.
   //
@@ -290,7 +401,11 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, onSend, onTak
         disabled={busy}
         onChange={(e) => e.target.value && onTakeBack(row)}
         aria-label={`GRN ${row.dprNo} is in the CSD queue - take it back`}
-        title={`GRN ${row.dprNo} is in the CSD queue. Take it back while CSD have not acted on it.`}
+        title={
+          grouped
+            ? `GRN ${row.dprNo} is in the CSD queue. Taking it back takes every GRN paid by cheque ${row.chequeNo} back with it.`
+            : `GRN ${row.dprNo} is in the CSD queue. Take it back while CSD have not acted on it.`
+        }
       >
         <option value="">Sent</option>
         <option value="TAKE_BACK">Take back</option>
@@ -332,50 +447,59 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, onSend, onTak
     );
   }
 
-  /* Nothing has been drawn up for this bill yet -- see chequePrepared -- so
-     neither destination is open to it. The whole picker is disabled rather
-     than the CSD option alone: a bill with no cheque has nothing to hand to
-     CSD and nothing to file with Records either, and a dropdown that opens on
-     a single live option invites the one send that is still wrong.
-
-     Disabled where it stands rather than replaced by a dash, so the cell keeps
-     the shape it has on every other row and reads as an action not yet
-     available instead of one this row never has. The resting text says which,
-     and the title spells it out -- a browser will not always surface a title
-     on a disabled control, so the reason has to be legible without it. */
-  if (!chequeReady) {
-    return (
-      <select
-        className="stage-select send-select"
-        value=""
-        disabled
-        aria-label={`GRN ${row.dprNo} cannot be sent yet - no cheque has been prepared for it`}
-        title="No cheque prepared for this bill yet - there is nothing to send"
-      >
-        <option value="">No cheque yet</option>
-      </select>
-    );
-  }
+  /*
+   * The two destinations are not gated alike, and the difference is the cheque.
+   *
+   * CSD are handed a cheque to take round, so a bill with none drawn up yet has
+   * nothing to give them -- that option stays shut until the ageing report
+   * fills one of the three cheque columns in. Records is a filing cabinet: a
+   * bill reached accounts, accounts are done with it, and it goes on file
+   * whether or not anybody ever wrote a cheque for it. Plenty never will --
+   * a bill settled some other way, or one closed off -- and those are exactly
+   * the rows that were stuck with no action at all while the whole picker was
+   * disabled for want of a cheque.
+   *
+   * So the picker opens on every row that has reached accounts, and says per
+   * option what is and is not available. `groupNote` is dropped from a
+   * no-cheque row's wording because there is no group: chequePrepared is false
+   * only when all three cheque columns are empty, the cheque number among
+   * them, so chequeGroup has nothing to gather it by and files the one row.
+   */
+  const groupNote =
+    grouped && chequeReady
+      ? ` — this sends every GRN paid by cheque ${row.chequeNo}, not just this one`
+      : '';
+  const where = chequeReady ? 'to CSD or to Records' : 'to Records';
 
   return (
     <select
       className="stage-select send-select"
       value=""
       onChange={(e) => e.target.value && onSend(row, e.target.value)}
-      aria-label={`Send GRN ${row.dprNo} to CSD or to Records`}
+      aria-label={`Send GRN ${row.dprNo} ${where}${groupNote}`}
+      title={`Send GRN ${row.dprNo} ${where}${groupNote}`}
     >
       <option value="">Send to…</option>
-      {/* An account that was not given the CS Department screen cannot hand a
-          GRN to it -- the POST is refused by requireScreen('csd'). The option
-          stays, disabled, rather than being dropped: the row still reads as one
-          that COULD go to CSD, and says plainly why this account cannot send
-          it. Records is gated on the results screen, which anyone looking at
-          this table already has.
+      {/* Two reasons this one can be shut, and it says which.
+ 
+          No cheque prepared: there is nothing to hand over yet. It is the row
+          that is not ready, and the ageing report's next upload may well make
+          it so.
 
-          The other reason a GRN cannot go to CSD -- no cheque prepared -- is
-          handled above, where it stops both destinations rather than this one. */}
-      <option value={SEND_CSD} disabled={!canCsd}>
-        {canCsd ? 'Send to CSD' : 'Send to CSD — no access'}
+          No access: an account that was not given the CS Department screen
+          cannot hand a GRN to it -- the POST is refused by
+          requireScreen('csd'). It is the account that cannot, not the row.
+
+          Either way the option stays, disabled, rather than being dropped: the
+          row still reads as one that COULD go to CSD, and says plainly why it
+          is not going there now. Records needs neither -- it is gated on the
+          results screen, which anyone looking at this table already has. */}
+      <option value={SEND_CSD} disabled={!canCsd || !chequeReady}>
+        {!canCsd
+          ? 'Send to CSD — no access'
+          : !chequeReady
+            ? 'Send to CSD — no cheque yet'
+            : 'Send to CSD'}
       </option>
       <option value={SEND_RECORDS}>Send to Records</option>
     </select>
@@ -400,8 +524,12 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, onSend, onTak
  * means anything either. Bank alone acts at once, having no such record to
  * collect.
  */
-function AccountsStagePicker({ row, busy, onReceive, onForwardSimple, onOpenForwardForm }) {
+function AccountsStagePicker({ row, busy, grouped = false, onReceive, onForwardSimple, onOpenForwardForm }) {
   const accountsStage = row.csdAccountsStage || 'QUEUED';
+  // Same job as SendPicker's own -- say what the move actually moves.
+  const groupNote = grouped
+    ? ` — this moves every GRN paid by cheque ${row.chequeNo}, not just this one`
+    : '';
 
   if (accountsStage === 'RECEIVED' && row.csdForwardedTo) {
     const label = forwardedLabel(row.csdForwardedTo, row.csdForwardedRoute);
@@ -428,7 +556,8 @@ function AccountsStagePicker({ row, busy, onReceive, onForwardSimple, onOpenForw
           if (value === 'VENDOR' || value === 'COURIER') onOpenForwardForm(row, value);
           else if (value === 'BANK') onForwardSimple(row, value);
         }}
-        aria-label={`Send GRN ${row.dprNo} on to its next destination`}
+        aria-label={`Send GRN ${row.dprNo} on to its next destination${groupNote}`}
+        title={`Send GRN ${row.dprNo} on to its next destination${groupNote}`}
       >
         <option value="RECEIVED">Received</option>
         <option value="BANK">Send to Bank</option>
@@ -448,7 +577,8 @@ function AccountsStagePicker({ row, busy, onReceive, onForwardSimple, onOpenForw
       value="QUEUED"
       disabled={busy}
       onChange={(e) => e.target.value === 'RECEIVED' && onReceive(row)}
-      aria-label={`Acknowledge GRN ${row.dprNo} as received by Accounts`}
+      aria-label={`Acknowledge GRN ${row.dprNo} as received by Accounts${groupNote}`}
+      title={`Acknowledge GRN ${row.dprNo} as received by Accounts${groupNote}`}
     >
       <option value="QUEUED">Queued</option>
       <option value="RECEIVED">Received</option>
@@ -696,13 +826,18 @@ export default function ResultsTable({
   const isPending = status === 'PENDING';
   const showGrnSide = isPending || isAll;
   const showAgeing = !isPending;
-  // Which GRN is in flight, and which have landed since this table was drawn.
+  // Which GRNs are in flight, and which have landed since this table was drawn.
+  //
+  // A set rather than one GRN number: every action in this column now acts on
+  // the whole cheque group the row belongs to (see chequeGroup below), so the
+  // pickers on all of those rows have to read as busy at once rather than only
+  // the one that was used.
   //
   // Whether a GRN is queued is the server's answer -- it arrives on the row as
   // csdSent -- so `justSent` is only there to bridge the gap between the POST
   // resolving and the reload finishing, which would otherwise show the button
   // springing back to "Send to CSD" for a moment.
-  const [busy, setBusy] = useState(null);
+  const [busy, setBusy] = useState(() => new Set());
   const [justSent, setJustSent] = useState(() => new Set());
   // Taking a GRN back off the CSD queue is the one destructive thing this
   // table does, so it asks first -- the same dialog the CSD screen's own
@@ -739,36 +874,119 @@ export default function ResultsTable({
   const isFiled = (row) => row.recordsSent || justFiled.has(row.dprNo);
 
   /**
-   * Whether a row may show the bulk-select checkbox at all, across the three
-   * things "Select multiple" can now batch: sending several to CSD, receiving
-   * several CSD has handed back, and forwarding several Accounts has already
-   * received on to Bank, Vendor or Courier. Only one of the three ever applies
-   * to a given row -- they are consecutive steps in its own journey -- so the
-   * three checks below are mutually exclusive in practice even though nothing
-   * here enforces that.
+   * Where a row has got to in its own journey, as the three questions this
+   * table asks of it: could it still be sent anywhere, is it a hand-back
+   * Accounts has not acknowledged yet, or is it one Accounts has received and
+   * not forwarded on. Only one is ever true at a time -- they are consecutive
+   * steps -- even though nothing here enforces that.
    *
-   * Grouping ticked rows by cheque number, which of the three actions the
-   * ticked rows are offered, and the actions themselves are Results.jsx's own
-   * doing -- see its own copies of these three checks -- this only decides
-   * whether the box is there to tick at all.
+   * They do two jobs now. They decide whether a row may show the bulk-select
+   * checkbox at all (see canBulkSelect, and Results.jsx's own copies of the
+   * same three checks, which decide what ticking one is then allowed to do);
+   * and they are what chequeGroup below reads to work out which same-cheque
+   * rows a per-row picker should carry with it.
+   *
+   * `canSend` is kept apart from `canBulkCsd` because `can('csd')` is a fact
+   * about the account, not about the row: Send to Records is open to anyone
+   * looking at this table, and which rows travel together is decided by what
+   * the rows are, not by which of the two destinations was picked.
+   *
+   * There are two of the first question, because the two destinations do not
+   * ask the same thing of a row. `canFile` is the part both agree on -- the row
+   * reached accounts, CSD have not had it, and it has not already gone
+   * somewhere -- and `canSend` is that plus a cheque, which only CSD need. See
+   * the note in SendPicker for why Records does not.
    */
-  const canBulkCsd = (row) =>
-    can('csd') &&
+  const canFile = (row) =>
     row.status !== 'PENDING' &&
-    // No cheque drawn up yet, so there is nothing to hand over -- the same bar
-    // the Send picker puts on the single-row version of this action.
-    chequePrepared(row) === true &&
     row.csdStage !== 'MOVED_TO_ACCOUNTS' &&
     !isSent(row) &&
     !isFiled(row);
+  const canSend = (row) =>
+    canFile(row) &&
+    // No cheque drawn up yet, so there is nothing to hand over -- the same bar
+    // the Send picker puts on its CSD option.
+    chequePrepared(row) === true;
+  const canBulkCsd = (row) => can('csd') && canSend(row);
   const canBulkReceive = (row) =>
     row.csdStage === 'MOVED_TO_ACCOUNTS' && (row.csdAccountsStage || 'QUEUED') === 'QUEUED';
   const canBulkForward = (row) =>
     row.csdStage === 'MOVED_TO_ACCOUNTS' && row.csdAccountsStage === 'RECEIVED' && !row.csdForwardedTo;
   const canBulkSelect = (row) => canBulkCsd(row) || canBulkReceive(row) || canBulkForward(row);
 
+  /** A cheque this big would be a data problem, not a payment run. */
+  const GROUP_PAGE_SIZE = 200;
+  const GROUP_MAX_PAGES = 10;
+
   /**
-   * Send one GRN to its destination.
+   * The rows an action chosen on one row actually applies to: that row, plus
+   * every other GRN the same cheque pays that is at the same point in its own
+   * journey.
+   *
+   * A cheque pays a group of bills and moves as one thing -- it is handed to
+   * CSD once, comes back once, and goes on to the bank or the vendor once --
+   * so acting on one of its bills and leaving the rest behind was never the
+   * intent.
+   *
+   * Asked of the SERVER rather than filtered out of `rows`, which is the one
+   * thing this could not be done locally. The table is ordered by the GRN
+   * report's serial number, so a cheque's bills are scattered the whole length
+   * of it -- one real cheque here pays fifteen GRNs spread from row 155 to row
+   * 2,382 of 6,621 -- and at any page size all but one of them are off screen.
+   * Filtering the page found a group of one and sent a group of one, which is
+   * exactly what it looked like from the outside.
+   *
+   * The fetch carries no other filter, so it finds the cheque's bills wherever
+   * the table happens to be narrowed to at the time. Branch scope still
+   * applies -- the server puts it on every query regardless of what is asked
+   * for -- so this can never reach a row the account may not see.
+   *
+   * `eligible` is what keeps the group honest: a same-cheque bill that has
+   * already been sent, or that CSD has already ruled on, is not dragged into
+   * an action that would be refused for it. It is the same check the
+   * bulk-select checkbox uses, so a picker and a tick build the same group.
+   *
+   * A row with no cheque number is its own group of one -- there is nothing to
+   * group it by, and gathering every blank together would be a coincidence of
+   * missing data rather than a cheque.
+   */
+  async function chequeGroup(row, eligible) {
+    if (!row.chequeNo) return [row];
+
+    const found = [];
+    for (let page = 1; page <= GROUP_MAX_PAGES; page += 1) {
+      const data = await api.results(batchId, {
+        status: ALL,
+        chequeNo: row.chequeNo,
+        page,
+        pageSize: GROUP_PAGE_SIZE,
+      });
+      found.push(...data.rows);
+      if (page >= data.totalPages) break;
+    }
+
+    const group = found.filter(eligible);
+    // The row the action was chosen on always belongs to its own group, even
+    // if the fetch or the predicate disagrees -- it is what the person
+    // pressed, and it is the one row whose action must not silently do
+    // nothing.
+    return group.some((r) => r.dprNo === row.dprNo) ? group : [row, ...group];
+  }
+
+  /** Mark a group in flight, and hand back its GRN numbers. */
+  function beginBusy(group) {
+    const numbers = group.map((r) => r.dprNo);
+    setBusy(new Set(numbers));
+    return numbers;
+  }
+
+  /**
+   * Send a GRN to its destination -- and with it every other GRN the same
+   * cheque pays, wherever in the table it falls, since the cheque is what is
+   * actually being handed over.
+   *
+   * Each still goes over as its own POST; the server has no bulk endpoint.
+   * Firing them together and reloading once is what makes it one action.
    *
    * The whole row goes to the server either way, which is what lets the two
    * calls read alike here. CSD keeps its own snapshot of the fields its queue
@@ -777,24 +995,34 @@ export default function ResultsTable({
    * number, having no screen to read anything back on.
    */
   async function send(row, destination) {
-    setBusy(row.dprNo);
+    // Busy on the one row first, so the control it was chosen on stops
+    // responding while the group is being worked out, then on the whole group
+    // once it is known.
+    beginBusy([row]);
     setError('');
-    const payload = { ...row, batchId: typeof batchId === 'number' ? batchId : null };
     try {
-      if (destination === SEND_RECORDS) {
-        await api.sendToRecords(payload);
-        setJustFiled((prev) => new Set(prev).add(row.dprNo));
-      } else {
-        await api.sendToCsd(payload);
-        setJustSent((prev) => new Set(prev).add(row.dprNo));
-      }
-      // Let the page reload, so the row carries the server's own answer from
+      // Which rows travel with it depends on where it is going: a cheque is
+      // handed to CSD as one thing, and filing is the same action over the same
+      // group. The predicates differ only on the cheque, and only ever for a
+      // row that has none -- which is a group of one anyway, having no cheque
+      // number to be grouped by.
+      const group = await chequeGroup(row, destination === SEND_RECORDS ? canFile : canSend);
+      const numbers = beginBusy(group);
+      await Promise.all(
+        group.map((r) => {
+          const payload = { ...r, batchId: typeof batchId === 'number' ? batchId : null };
+          return destination === SEND_RECORDS ? api.sendToRecords(payload) : api.sendToCsd(payload);
+        }),
+      );
+      const land = destination === SEND_RECORDS ? setJustFiled : setJustSent;
+      land((prev) => new Set([...prev, ...numbers]));
+      // Let the page reload, so the rows carry the server's own answer from
       // here on and the CSD screen's count is not stale behind this one.
       onSent?.();
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(null);
+      setBusy(new Set());
     }
   }
 
@@ -814,29 +1042,49 @@ export default function ResultsTable({
    * approving it and this page reloading, which is what the error is for.
    */
   async function takeBack(row) {
+    // The whole cheque went over together, so the whole cheque comes back
+    // together -- undoing a grouped send one row at a time would be the one
+    // gesture on this column that still had to be repeated.
+    beginBusy([row]);
+    setError('');
+
+    let group;
+    try {
+      group = await chequeGroup(row, (r) => canTakeBack(r, can('csd')));
+    } catch (err) {
+      setError(err.message);
+      setBusy(new Set());
+      return;
+    }
+
+    const many = group.length > 1;
     const ok = await confirm({
-      title: 'Take this GRN back?',
-      message: `GRN ${row.dprNo} will come off the CSD queue and go back to Accounts as one that has not been sent. It can be sent again afterwards.`,
+      title: many ? `Take these ${group.length} GRNs back?` : 'Take this GRN back?',
+      message: many
+        ? `Cheque ${row.chequeNo} pays ${group.length} GRNs that are on the CSD queue. All of them will come off it and go back to Accounts as ones that have not been sent. They can be sent again afterwards.`
+        : `GRN ${row.dprNo} will come off the CSD queue and go back to Accounts as one that has not been sent. It can be sent again afterwards.`,
       confirmLabel: 'Take back',
     });
-    if (!ok) return;
+    if (!ok) {
+      setBusy(new Set());
+      return;
+    }
 
-    setBusy(row.dprNo);
-    setError('');
+    const numbers = beginBusy(group);
     try {
-      await api.removeFromCsd(row.csdDispatchId);
-      // The optimistic flag from a send made earlier in this page's life would
-      // otherwise go on claiming the row is sent after the reload disagrees.
+      await Promise.all(group.map((r) => api.removeFromCsd(r.csdDispatchId)));
+      // The optimistic flags from a send made earlier in this page's life would
+      // otherwise go on claiming the rows are sent after the reload disagrees.
       setJustSent((prev) => {
         const next = new Set(prev);
-        next.delete(row.dprNo);
+        for (const dprNo of numbers) next.delete(dprNo);
         return next;
       });
       onSent?.();
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(null);
+      setBusy(new Set());
     }
   }
 
@@ -846,29 +1094,33 @@ export default function ResultsTable({
    * addresses, and it is the same id whichever tab this table is showing.
    */
   async function receiveAccounts(row) {
-    setBusy(row.dprNo);
+    beginBusy([row]);
     setError('');
     try {
-      await api.receiveAccountsReturn(row.csdDispatchId);
+      const group = await chequeGroup(row, canBulkReceive);
+      beginBusy(group);
+      await Promise.all(group.map((r) => api.receiveAccountsReturn(r.csdDispatchId)));
       onSent?.();
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(null);
+      setBusy(new Set());
     }
   }
 
   /** Bank: nothing further to say, so this acts the moment it is picked. */
   async function forwardSimple(row, to) {
-    setBusy(row.dprNo);
+    beginBusy([row]);
     setError('');
     try {
-      await api.forwardAccountsReturn(row.csdDispatchId, { to });
+      const group = await chequeGroup(row, canBulkForward);
+      beginBusy(group);
+      await Promise.all(group.map((r) => api.forwardAccountsReturn(r.csdDispatchId, { to })));
       onSent?.();
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(null);
+      setBusy(new Set());
     }
   }
 
@@ -884,24 +1136,32 @@ export default function ResultsTable({
    * server would reject as neither VENDOR nor PURCHASE_DEPT.
    */
   async function submitForwardForm({ route, name, mobile, date, courierName, docketNo, remarks }) {
-    const row = forwardFormRow;
     const to = forwardFormTo === 'VENDOR' && route === 'OTHERS' ? 'OTHERS' : forwardFormTo;
-    setBusy(row.dprNo);
+    // One form, filled in once, copied onto every dispatch the same cheque
+    // pays -- the bills went out of the door in one envelope, so they were
+    // handed to one person on one day.
+    beginBusy([forwardFormRow]);
     setForwardFormError('');
     try {
-      await api.forwardAccountsReturn(row.csdDispatchId, {
-        to,
-        ...(to === 'VENDOR' ? { route } : {}),
-        ...(to === 'OTHERS' ? { remarks } : {}),
-        ...(to === 'COURIER' ? { courierName, docketNo, date } : {}),
-        ...(to === 'VENDOR' || to === 'OTHERS' ? { name, mobile, date } : {}),
-      });
+      const group = await chequeGroup(forwardFormRow, canBulkForward);
+      beginBusy(group);
+      await Promise.all(
+        group.map((r) =>
+          api.forwardAccountsReturn(r.csdDispatchId, {
+            to,
+            ...(to === 'VENDOR' ? { route } : {}),
+            ...(to === 'OTHERS' ? { remarks } : {}),
+            ...(to === 'COURIER' ? { courierName, docketNo, date } : {}),
+            ...(to === 'VENDOR' || to === 'OTHERS' ? { name, mobile, date } : {}),
+          }),
+        ),
+      );
       setForwardFormRow(null);
       onSent?.();
     } catch (err) {
       setForwardFormError(err.message);
     } finally {
-      setBusy(null);
+      setBusy(new Set());
     }
   }
 
@@ -1070,8 +1330,13 @@ export default function ResultsTable({
                 <td className="table__mono">
                   {/* Blank when the row's branch has no account recorded, or
                       no configured branch claims it -- there is nothing to
-                      show, and a dash says so as it does everywhere else. */}
-                  {row.accountNo || <span className="table__miss">&mdash;</span>}
+                      show, and a dash says so as it does everywhere else.
+                      Also blank while no cheque has been drawn up: the
+                      account is the one that cheque is drawn on, so with no
+                      cheque there is no account to name yet. */}
+                  {(chequePrepared(row) !== false && row.accountNo) || (
+                    <span className="table__miss">&mdash;</span>
+                  )}
                 </td>
               )}
               {/* A pending GRN has no ageing entry, so there is nothing to
@@ -1088,7 +1353,8 @@ export default function ResultsTable({
                   ) : row.csdStage === 'MOVED_TO_ACCOUNTS' ? (
                     <AccountsStagePicker
                       row={row}
-                      busy={busy === row.dprNo}
+                      busy={busy.has(row.dprNo)}
+                      grouped={Boolean(row.chequeNo)}
                       onReceive={receiveAccounts}
                       onForwardSimple={forwardSimple}
                       onOpenForwardForm={(r, to) => {
@@ -1102,9 +1368,10 @@ export default function ResultsTable({
                       row={row}
                       sent={isSent(row)}
                       filed={isFiled(row)}
-                      busy={busy === row.dprNo}
+                      busy={busy.has(row.dprNo)}
                       canCsd={can('csd')}
                       chequeReady={chequePrepared(row) === true}
+                      grouped={Boolean(row.chequeNo)}
                       onSend={send}
                       onTakeBack={takeBack}
                     />
@@ -1128,6 +1395,8 @@ export default function ResultsTable({
                       forwardedCourierName={row.csdForwardedCourierName}
                       forwardedDocketNo={row.csdForwardedDocketNo}
                       forwardedRemarks={row.csdForwardedRemarks}
+                      rejectRemarks={row.csdRejectRemarks}
+                      priorRejection={row.priorRejection}
                       filed={isFiled(row)}
                       clearedOn={row.chequeClearedOn}
                     />
@@ -1142,9 +1411,18 @@ export default function ResultsTable({
       {confirmDialog}
       {forwardFormRow && (
         <ForwardDetailsDialog
-          subject={`GRN ${forwardFormRow.dprNo}`}
+          /* Named for the whole cheque the submit will act on, not for the row
+             the picker was used on -- a dialog headed "Send GRN 1234 to
+             Vendor" that then forwards fifteen of them would be lying about
+             what pressing Send does. No count: the group is only counted once
+             the server has been asked, which is after this is submitted. */
+          subject={
+            forwardFormRow.chequeNo
+              ? `every GRN on cheque ${forwardFormRow.chequeNo}`
+              : `GRN ${forwardFormRow.dprNo}`
+          }
           to={forwardFormTo}
-          busy={busy === forwardFormRow.dprNo}
+          busy={busy.has(forwardFormRow.dprNo)}
           error={forwardFormError}
           onSubmit={submitForwardForm}
           onClose={() => setForwardFormRow(null)}

@@ -1,9 +1,29 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
-import { exportResults } from '../services/exporter.js';
-import { chequePrepared } from '../services/cheque.js';
+import { exportSection } from '../services/exporter.js';
+import {
+  ACCOUNTS_ROW,
+  ACCOUNTS_TAB,
+  ALL_GRNS,
+  BPAD,
+  CHEQUE_CARDS,
+  CSD_CARDS,
+  MISSING,
+  NOT_IN_BPAD,
+  TURNAROUND,
+  TURNAROUND_SCOPE,
+  TURNAROUND_TAB,
+  VALID,
+  bulkCategory as bulkCategoryOf,
+  bulkCsdEligible,
+  bulkForwardEligible,
+  bulkReceiveEligible,
+  deptLabel,
+  progressFilterOptions,
+  sectionSheets,
+} from '../services/resultsViews.js';
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
 import BpadView from '../components/BpadView.jsx';
@@ -14,59 +34,25 @@ import { IconX } from '../components/icons.jsx';
 /** How long the search box waits for the typing to stop before it asks. */
 const SEARCH_DELAY_MS = 300;
 
-/**
+/*
  * Pending first: it is the answer the report is run to get.
  *
- * Valid GRNS is both matched statuses at once. A GRN found in the ageing report
- * has reached accounts even when the bill number differs, so those rows are
- * counted as valid rather than held in a separate "needs review" bucket; the
- * difference is still stored per row (`discrepancyNotes`), for anyone who
- * reads it off the API directly, though neither the screen nor the export
- * shows it any more.
+ * VALID and TURNAROUND are imported rather than declared: the Accounts Depot
+ * screen shows those same two views and has to name them the same way -- see
+ * services/resultsViews.js. The two below are this screen's alone.
+ */
+/*
+ * BPAD, ALL_GRNS, MISSING, NOT_IN_BPAD and deptLabel are imported rather than
+ * declared here: the export builds a sheet per card (see sectionSheets in
+ * services/resultsViews.js) and so has to name the same views, the same
+ * register filter and the same "the register cannot place this" bucket that
+ * the cards on this page do. One spelling, in the file both read.
  *
- * Turnaround is the one entry with `card: false`: it is not a bucket at all.
- * Every other entry names a population with a count and a value, which is what
- * a stat card shows; Turnaround measures elapsed time over one of those
- * populations, so it belongs in the view dropdown but not in the row of cards.
+ * BPAD has a card, being a population with a count and a value, but reads a
+ * different table from the three reconciliation views -- so it fetches its own
+ * rows (see BpadView) rather than going through /results, and the toolbar's
+ * filters below have nothing to ask it.
  */
-const TURNAROUND = 'TURNAROUND';
-/**
- * The BPAD register's own view. It has a card, being a population with a count
- * and a value, but reads a different table from the three reconciliation views
- * -- so it fetches its own rows (see BpadView) rather than going through
- * /results, and the toolbar's filters below have nothing to ask it.
- */
-const BPAD = 'BPAD';
-const VALID = 'VALID';
-/**
- * Every GRN in scope, pending and valid together -- the upload as it arrived,
- * before the reconciliation splits it in two. The server knows the name and
- * treats it as no filter at all.
- */
-const ALL_GRNS = 'ALL';
-
-/**
- * The BPAD tab narrowed to the GRNs the register had no entry for -- what the
- * Not in BPAD card asks for. The server knows the word (see
- * bpadRegisterFilter in routes/results.js); '' is every row.
- */
-const MISSING = 'missing';
-
-/**
- * The bucket the Pending breakdown puts the GRNs it cannot place in -- the
- * register has no entry for them at all, or it has one with Pending With
- * Dept. left blank. Both mean the same to whoever is reading the card, so
- * they are one bucket.
- *
- * Spelled exactly as the server spells it (NOT_IN_BPAD in routes/results.js),
- * because the card hands it straight back as the filter value.
- */
-const NOT_IN_BPAD = '__not_in_bpad__';
-
-/** What that bucket is called on screen; every other desk is its own name. */
-function deptLabel(dept) {
-  return dept === NOT_IN_BPAD ? 'Not in BPAD' : dept;
-}
 
 const TABS = [
   // First, because it is the whole population the two entries after it divide
@@ -81,7 +67,9 @@ const TABS = [
   // is showing and has room for one number at a time, so a count worth seeing
   // beside the others has to be a card to be seen at all.
   { status: 'PENDING', label: 'Pending GRNS', hint: 'Not yet in accounts' },
-  { status: VALID, label: 'Accounts', hint: 'Found in the ageing report' },
+  // Imported, not spelled out here: the Accounts Depot screen offers the same
+  // two views and must label them identically.
+  ACCOUNTS_TAB,
   // After Accounts, because it is the same question asked of a different
   // register: the ageing report says a GRN reached accounts, and BPAD says
   // which desk it is sitting on and how long it has been there.
@@ -94,7 +82,7 @@ const TABS = [
   // banner. The card asks "how many records are in BPAD", so it answers with
   // the records that are in BPAD.
   { status: BPAD, label: 'BPAD', hint: 'Entries in the register', countKey: 'bpadRegister' },
-  { status: TURNAROUND, label: 'GRN age from PR to Bank', hint: 'Days at each step', card: false },
+  TURNAROUND_TAB,
 ];
 
 const CARD_TABS = TABS.filter((t) => t.card !== false);
@@ -130,131 +118,20 @@ const MATCH_FILTERS = [
   { value: VALID, label: 'Moved to accounts' },
 ];
 
-/**
- * The filter dropdown beside the search box: the Status column's own values.
- *
- * Every one of these is something that column says, spelled the way the pill
- * in it spells it -- so picking one asks for the rows showing it rather than
- * for an adjacent idea a reader has to translate. The server owns the meaning
- * of each key (see PROGRESS in routes/results.js); this is the wording and the
- * order they are offered in.
- *
- * The order follows a GRN's life rather than the alphabet: not sent, then out
- * to one of the two destinations, then through CSD's three answers, then paid.
- *
- * They deliberately overlap, because the column does. A GRN whose cheque
- * cleared while it sat at CSD shows both, and is found under both.
+/*
+ * The Status column's own filter values, their wording and their order, live
+ * in services/resultsViews.js: the Accounts Depot offers the same dropdown
+ * over the same rows, and two copies of this list would be two vocabularies
+ * for one column. progressFilterOptions builds the options from the summary.
  */
-const PROGRESS_LABELS = {
-  // NOT_SENT: 'Not sent',
-  QUEUED: 'Sent to CSD',
-  RECEIVED: 'CSD received',
-  APPROVED: 'CSD approved',
-  REJECTED: 'CSD rejected',
-  // Accounts' own hand-back ladder, once CSD reaches MOVED_TO_ACCOUNTS -- see
-  // ACCOUNTS_RETURN_STATES in ResultsTable.jsx for the same two labels.
-  RETURNED_BY_CSD: 'Handover by CSD',
-  ACCOUNTS_RECEIVED: 'Accounts received',
-  // Where Accounts forwards a received GRN on to -- see forwardedLabel in
-  // ResultsTable.jsx for the same four labels.
-  BANK: 'Sent to Bank',
-  VENDOR: 'Sent to Vendor',
-  PURCHASE_DEPT: 'Sent to Purchase Dept',
-  OTHERS: 'Sent to Others',
-  RECORDS: 'Sent to Records',
-  // Ahead of Cheque cleared, which is the next thing that happens to a cheque
-  // once it exists. Read off the ageing report's own cheque columns rather
-  // than recorded here -- see CHEQUE_PREPARED in routes/results.js.
-  CHEQUE_PREPARED: 'Cheque prepared',
-  CHEQUE_NOT_PREPARED: 'Cheque not prepared',
-  CLEARED: 'Cheque cleared',
-};
 
-/** This list's own order -- a GRN's life rather than the alphabet -- for the
- * keys it knows the wording for. Anything summary.progress carries that is
- * not named here still gets offered (see `progressFilters` below); it just
- * falls in after these, in whatever order the server sent it. */
-const PROGRESS_ORDER = Object.keys(PROGRESS_LABELS);
-
-/**
- * A status key this list has no wording for yet -- a new value the server
- * started sending -- spelled out on the fly ("IN_TRANSIT" -> "In transit")
- * rather than left off the dropdown until someone edits this file to name it.
+/*
+ * The CSD stage cards and the cheque pair that close the Accounts row are in
+ * services/resultsViews.js, for the reason the progress labels are: the
+ * Accounts Depot shows the same row of cards, counting the same GRNs.
  */
-function fallbackProgressLabel(key) {
-  const words = key.toLowerCase().replace(/_/g, ' ');
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
 
-const CSD_CARDS = [
-  { stage: 'QUEUED', label: 'CSD Pending', hint: 'Sent, awaiting CSD', tone: 'queued' },
-  { stage: 'RECEIVED', label: 'CSD Received', hint: 'CSD have it', tone: 'received' },
-  { stage: 'APPROVED', label: 'CSD Approved', hint: 'Cleared by CSD', tone: 'approved' },
-  { stage: 'REJECTED', label: 'CSD Rejected', hint: 'Sent back', tone: 'rejected' },
-];
-
-/**
- * Whether a cheque has been drawn up, as two cards at the end of the Accounts
- * row.
- *
- * Behind the CSD four because that is the order it happens in: a bill goes
- * through the handover, then a cheque gets cut for it. The two halves are
- * exhaustive over that row -- every Accounts GRN is in exactly one -- so they
- * sum to the Accounts card, which the CSD four do not.
- *
- * They read a `progress` key rather than a CSD stage, so `kind: 'progress'`
- * where the CSD cards are `kind: 'csd'`. Both set the same filter, which is
- * what keeps every card on this row mutually exclusive.
- *
- * Neutral, where the CSD four run warn / info / ok / danger. There is no fifth
- * and sixth colour left in that ladder, and borrowing two of it would put the
- * same amber on "awaiting CSD" and "no cheque yet" -- two unrelated answers
- * side by side. Plain cards read as the different question they are, the same
- * way the desk cards do on the pending row.
- */
-const CHEQUE_CARDS = [
-  {
-    progress: 'CHEQUE_PREPARED',
-    label: 'Cheque Prepared',
-    /*
-     * Cheques big, GRNs small -- the one card on this row whose headline is
-     * not the number of rows below it.
-     *
-     * One cheque pays a group of GRNs, so the two figures are a long way
-     * apart: 349 cheques cover 1,370 bills, and the biggest single cheque
-     * covers twenty-five of them. How many cheques were actually written is
-     * the answer being looked for here; how many bills they settle is the
-     * supporting detail, and it reads on the line below.
-     *
-     * Both stay on the card, which matters because pressing it still filters
-     * the table to the GRNs -- 1,370 rows, the smaller of the two numbers
-     * printed on it. Worth knowing: every other card on this row leads with
-     * the count pressing it returns.
-     *
-     * Functions rather than strings, since both need the summary. The card
-     * beside this one stays plain: there is no second figure to give for the
-     * GRNs nobody has written a cheque for.
-     */
-    value: (summary) => summary?.chequesPrepared ?? 0,
-    hint: (summary) => {
-      const grns = summary?.progress?.CHEQUE_PREPARED?.count ?? 0;
-      return `For ${grns.toLocaleString('en-IN')} GRN${grns === 1 ? '' : 's'}`;
-    },
-  },
-  {
-    progress: 'CHEQUE_NOT_PREPARED',
-    label: 'Cheque Not Prepared',
-    hint: 'None of the three yet',
-  },
-];
-
-/**
- * The bucket the turnaround report measures. Every GRN with an ageing row has
- * the stage dates, and that is exactly the Valid GRNs bucket -- so on the
- * Turnaround tab that card is marked active, answering "what is this counting?"
- * rather than going dead because no bucket is selected.
- */
-const TURNAROUND_SCOPE = VALID;
+/* The bucket the turnaround report measures -- see TURNAROUND_SCOPE there. */
 
 /**
  * The four counts, in the order the row shows them -- which is not the order
@@ -287,12 +164,12 @@ const BUCKET_CARDS = [ALL_GRNS, BPAD, VALID, 'PENDING'];
  * of nine that had to be read in two halves: four counting different
  * populations, then the rest about one of them.
  *
- * So neither shows the four any more. Pending keeps its own count, which its
- * desks divide and sum back to; Accounts keeps none, its row being entirely
- * about where its GRNs have got to. Every dropped figure is a dropdown away
- * and unchanged there -- the view selector carries every count beside its
- * option -- so nothing became unreachable, and each row now describes one
- * population from end to end.
+ * So neither shows the four any more. Each keeps its own count and the cards
+ * that divide it: Pending its five desks, Accounts the cheque pair and the
+ * four CSD stages. Every dropped figure is a dropdown away and unchanged there
+ * -- the view selector carries every count beside its option -- so nothing
+ * became unreachable, and each row now describes one population from end to
+ * end.
  *
  * Total GRNS and Turnaround keep all four, having nothing of their own to add:
  * Total GRNS is the whole population and the other counts are how it splits,
@@ -300,17 +177,17 @@ const BUCKET_CARDS = [ALL_GRNS, BPAD, VALID, 'PENDING'];
  *
  * The two rows are not the same shape behind the count, and deliberately not.
  * Pending's five desks ARE its breakdown: they divide the figure beside them
- * and sum back to it exactly, NOT_IN_BPAD included. The CSD four are not.
- * They go with Accounts because that is where a sent GRN comes from -- only a
- * matched row can be sent, and a pending one has a dash where the Send picker
- * would be -- but the summary counts them by the existence of a dispatch, with
- * no reconciliation-status clause at all, and drops the MOVED_TO_ACCOUNTS
- * stage entirely (see the csd query in routes/results.js). They neither sum to
- * Accounts nor sit inside it, which is the other reason that count is not at
- * the head of them: a figure standing over cards that do not add up to it
- * invites the arithmetic anyway. The cheque pair after them does add up --
- * every Accounts GRN is in exactly one of the two halves -- which is why those
- * close the row rather than opening it.
+ * and sum back to it exactly, NOT_IN_BPAD included. On Accounts only the
+ * cheque pair does that, which is why it comes first -- see ACCOUNTS_ROW in
+ * services/resultsViews.js for that order. The CSD four do not: they go with
+ * Accounts because that is where a sent GRN comes from -- only a matched row
+ * can be sent, and a pending one has a dash where the Send picker would be --
+ * but the summary counts them by the existence of a dispatch, with no
+ * reconciliation-status clause at all, and drops the MOVED_TO_ACCOUNTS stage
+ * entirely (see the csd query in routes/results.js). They neither sum to
+ * Accounts nor sit inside it, so they are read as four separate questions
+ * about the same rows rather than as a breakdown of the count at the head of
+ * them.
  *
  * BPAD keeps none of the four. It is the one view not about the
  * reconciliation at all -- it reads the register's own table, and how many
@@ -330,14 +207,10 @@ const CARDS_FOR = {
   // Its own count only -- the desk breakdown appended at render time is the
   // rest of this row. See the note above.
   PENDING: ['PENDING'],
-  // The CSD stages, then the two cheque cards -- in the order the work goes.
-  // No Accounts count at the head of them: the figure is on the View dropdown
-  // beside this view's own option, and the row is about where its GRNs have
-  // got to rather than how many there are.
-  [VALID]: [
-    ...CSD_CARDS.map((card) => card.stage),
-    ...CHEQUE_CARDS.map((card) => card.progress),
-  ],
+  // Its own count, then the cheque pair that divides it, then the four CSD
+  // stages -- imported, because the Accounts Depot shows this same row and the
+  // two must not drift into different orders. See ACCOUNTS_ROW.
+  [VALID]: ACCOUNTS_ROW,
   [BPAD]: [],
   [TURNAROUND]: BUCKET_CARDS,
 };
@@ -368,6 +241,26 @@ const ALL = 'all';
 export default function Results() {
   const { can } = useAuth();
   const navigate = useNavigate();
+  // `routerLocation`, not `location` -- that name is already this page's branch
+  // filter, a few lines down.
+  const routerLocation = useLocation();
+
+  /*
+   * How many GRNs the upload just made took back off the CSD queue by naming a
+   * bill CSD had rejected -- see reopenRejectedFor in services/ingest.js. Those
+   * rows read as unsent again and have to be sent afresh, which is not
+   * something to let somebody discover by accident.
+   *
+   * Kept in state rather than read straight off the router, so that dismissing
+   * it sticks, and cleared out of the history entry immediately so a reload or
+   * a Back does not announce an upload that happened an hour ago.
+   */
+  const [reopened, setReopened] = useState(routerLocation.state?.reopenedRejections ?? 0);
+  useEffect(() => {
+    if (routerLocation.state?.reopenedRejections) {
+      navigate(routerLocation.pathname, { replace: true, state: null });
+    }
+  }, [routerLocation.pathname, routerLocation.state, navigate]);
 
   // Every upload, always. There is no picker any more: the page reports on
   // everything on file, counting a GRN number that repeats across uploads
@@ -508,42 +401,16 @@ export default function Results() {
     setMultiMode(false);
   }, [batchId, rowStatus, page, pageSize, q, progress, location, pendingDept]);
 
-  /**
-   * The three things "Select multiple" can now batch, mirroring the row's own
-   * journey: sending several to CSD, acknowledging several CSD has handed
-   * back to Accounts, and forwarding several Accounts has already received on
-   * to Bank, Vendor or Courier. A row only ever qualifies for one of the
-   * three at a time -- they are consecutive steps -- so a selection is only
-   * ever actioned once every ticked row agrees on which one applies; see
-   * `allSelectedCsd`/`allSelectedReceive`/`allSelectedForward` below.
-   *
-   * Kept in step by hand with ResultsTable's own copies of these three
-   * checks, which decide only whether a row's checkbox is there to tick at
-   * all -- these decide what ticking it, and the rows it drags in by cheque
-   * number, are allowed to do.
+  /*
+   * The three things "Select multiple" can batch, mirroring the row's own
+   * journey -- see the predicates in services/resultsViews.js, which the
+   * Accounts Depot applies to the same rows. Only the CSD one asks anything of
+   * this account, so only it takes the grant.
    */
-  const canBulkCsd = (row) =>
-    can('csd') &&
-    row.status !== 'PENDING' &&
-    // Nothing to hand over until a cheque has been drawn up -- the same bar
-    // the Send picker puts on the single-row action, and ResultsTable's own
-    // copy of this check on whether the box is there to tick.
-    chequePrepared(row) === true &&
-    row.csdStage !== 'MOVED_TO_ACCOUNTS' &&
-    !row.csdSent &&
-    !row.recordsSent;
-  const canBulkReceive = (row) =>
-    row.csdStage === 'MOVED_TO_ACCOUNTS' && (row.csdAccountsStage || 'QUEUED') === 'QUEUED';
-  const canBulkForward = (row) =>
-    row.csdStage === 'MOVED_TO_ACCOUNTS' && row.csdAccountsStage === 'RECEIVED' && !row.csdForwardedTo;
-
-  /** Which of the three above a row currently qualifies for, or null for none. */
-  function bulkCategory(row) {
-    if (canBulkCsd(row)) return 'CSD';
-    if (canBulkReceive(row)) return 'RECEIVE';
-    if (canBulkForward(row)) return 'FORWARD';
-    return null;
-  }
+  const canBulkCsd = (row) => bulkCsdEligible(row, can('csd'));
+  const canBulkReceive = bulkReceiveEligible;
+  const canBulkForward = bulkForwardEligible;
+  const bulkCategory = (row) => bulkCategoryOf(row, can('csd'));
 
   /**
    * Ticking one row also ticks every other row on the page still eligible for
@@ -760,20 +627,6 @@ export default function Results() {
     }
   }
 
-  async function handleExport() {
-    setExporting(true);
-    setError('');
-    try {
-      // One workbook, every tab -- see the note on exportResults for why the
-      // progress dropdown and the Total GRNS match filter do not narrow it.
-      await exportResults(batchId, TABS, { q, location, spans });
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setExporting(false);
-    }
-  }
-
   if (batches.length === 0 && !loading) {
     return (
       <div className="empty empty--page">
@@ -786,23 +639,9 @@ export default function Results() {
     );
   }
 
-  // The progress dropdown's own options: every key the server's summary
-  // carries (see PROGRESS in routes/results.js), not a fixed list copied out
-  // of it -- so a key added there shows up here the next time the summary
-  // loads, with no matching edit needed in this file. Ordered by
-  // PROGRESS_ORDER where this list knows the wording, and by arrival after
-  // that for anything it doesn't.
-  const progressFilters = Object.keys(summary?.progress ?? {})
-    .filter((key) => key !== 'NOT_SENT')
-    .sort((a, b) => {
-      const ia = PROGRESS_ORDER.indexOf(a);
-      const ib = PROGRESS_ORDER.indexOf(b);
-      if (ia === -1 && ib === -1) return 0;
-      if (ia === -1) return 1;
-      if (ib === -1) return -1;
-      return ia - ib;
-    })
-    .map((key) => ({ value: key, label: PROGRESS_LABELS[key] || fallbackProgressLabel(key) }));
+  // The progress dropdown's own options, built from the summary the page just
+  // loaded rather than from a fixed list -- see progressFilterOptions.
+  const progressFilters = progressFilterOptions(summary);
 
   // The cards this view shows, in the order CARDS_FOR names them.
   //
@@ -853,6 +692,56 @@ export default function Results() {
   const activeBucket = status === TURNAROUND ? TURNAROUND_SCOPE : rowStatus;
 
   /**
+   * The section showing, as its own entry in TABS -- the first sheet of the
+   * export, and the population the cards below divide.
+   *
+   * Keyed on `rowStatus` for the reason the cards are: Total GRNS narrowed to
+   * one of its halves is showing that half's rows under that half's cards, so
+   * the file taken off it should be that half and its breakdown rather than
+   * the whole population under someone else's cards.
+   */
+  const section = TABS.find((tab) => tab.status === rowStatus) ?? TABS[0];
+
+  /**
+   * What Export Excel will hand back: the section's own sheet, then a sheet
+   * per card below it -- read off the very cards rendered further down, so the
+   * file and the row cannot name different things. One sheet on the ageing
+   * view, whose cards divide nothing; see sectionSheets.
+   *
+   * Worked out here rather than inside the handler because the button's
+   * tooltip promises a sheet per card and has to stop promising it where there
+   * is only the one.
+   */
+  const exportSheets = sectionSheets(section, cards);
+
+  /**
+   * The sheets above, as one workbook.
+   *
+   * It used to be one fixed workbook of every view, whichever view you pressed
+   * it from. That answered a question nobody had asked -- a reader on Total
+   * GRNS was not after the CSD stages -- and it had no sheet at all for the
+   * figures the cards actually carry: the desks, the stages, the cheque pair.
+   * Those are the numbers people are reading off this page, and now each one
+   * has its rows in the file.
+   *
+   * Only the page's scope travels -- the search box and the branch. The
+   * dropdown filters stay out, as before: each sheet already carries its own
+   * card's narrowing, and letting a dropdown cut the rows first would hand
+   * back sheets that no longer divide the section they claim to.
+   */
+  async function handleExport() {
+    setExporting(true);
+    setError('');
+    try {
+      await exportSection(batchId, exportSheets, { q, location, spans });
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  /**
    * The filter a count card heads, when it stands at the front of a row that
    * divides it -- or null on a card that is only a count.
    *
@@ -873,10 +762,12 @@ export default function Results() {
     if (rowStatus === 'PENDING') {
       return { on: Boolean(pendingDept), noun: 'pending GRN', clear: () => selectPendingDept('') };
     }
-    // Accounts had a branch here while its own count led that row. The count
-    // is gone from it, so no bucket card renders there to head it, and every
-    // card on that row is a filter that toggles itself off. Pending is the one
-    // row left with a head.
+    if (rowStatus === VALID) {
+      // The cheque pair and the four CSD stages all set `progress`, so that one
+      // value is what narrows this row and clearing it is what "all of them"
+      // means here.
+      return { on: Boolean(progress), noun: 'GRN in accounts', clear: () => selectProgress('') };
+    }
     return null;
   };
 
@@ -965,16 +856,42 @@ export default function Results() {
 
           <LocationFilter value={location} onChange={selectLocation} />
 
-          {/* One workbook, every tab -- see the note on exportResults for why
-              the progress dropdown and the Total GRNS match filter do not
-              narrow it. It acts on the whole scope rather than on the rows one
-              tab's filters narrow, so it sits up here rather than down with
-              the table. */}
-          <button className="ghost" type="button" onClick={handleExport} disabled={exporting}>
+          {/* The section showing, as one workbook: its own sheet, then a
+              sheet per card on the row below -- see handleExport. It sits
+              beside the View dropdown because that dropdown is what it
+              follows: which view you are on decides which sheets you get.
+              The filters down by the table still do not narrow it -- each
+              sheet carries its own card's narrowing instead. */}
+          <button
+            className="ghost"
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            title={
+              exportSheets.length > 1
+                ? `Download ${section.label} as Excel — a sheet per card below`
+                : `Download ${section.label} as Excel`
+            }
+          >
             {exporting ? 'Preparing…' : 'Export Excel'}
           </button>
         </div>
       </div>
+
+      {reopened > 0 && (
+        <div className="alert alert--info alert--dismiss">
+          <span>
+            {reopened.toLocaleString('en-IN')} GRN{reopened === 1 ? '' : 's'} CSD had rejected{' '}
+            {reopened === 1 ? 'is' : 'are'} back in this upload, so {reopened === 1 ? 'it has' : 'they have'}{' '}
+            come off the CSD queue and {reopened === 1 ? 'reads' : 'read'} as unsent again. Send{' '}
+            {reopened === 1 ? 'it' : 'them'} to CSD afresh when ready — the reason{' '}
+            {reopened === 1 ? 'it was' : 'they were'} turned down before is still on file.
+          </span>
+          <button type="button" className="ghost icon-btn" onClick={() => setReopened(0)} aria-label="Dismiss">
+            <IconX size={14} />
+          </button>
+        </div>
+      )}
 
       {summary && cards.length > 0 && (
         <div className="cards">
@@ -1043,7 +960,7 @@ export default function Results() {
                     ? `Showing ${deptLabel(card.dept)} only — press again for every pending GRN`
                     : card.dept === NOT_IN_BPAD
                       ? 'Show only the pending GRNs the BPAD register cannot place'
-                      : `Show only the pending GRNs sitting with ${card.dept}`
+                      : `Show only the pending GRNs sitting with ${deptLabel(card.dept)}`
                 }
               >
                 <div className="stat__label">{deptLabel(card.dept)}</div>
@@ -1122,11 +1039,16 @@ export default function Results() {
                 }
               >
                 <div className="stat__label">{card.label}</div>
+                {/* The cheque count, not the GRN count -- see CSD_CARDS. */}
                 <div className="stat__value">
-                  {(summary.csd?.[card.stage]?.count ?? 0).toLocaleString('en-IN')}
+                  {(summary.csd?.[card.stage]?.cheques ?? 0).toLocaleString('en-IN')}
                 </div>
                 <div className="stat__amount">₹ {formatAmount(summary.csd?.[card.stage]?.amount ?? 0)}</div>
-                <div className="stat__hint">{card.hint}</div>
+                <div className="stat__hint">
+                  {`${(summary.csd?.[card.stage]?.count ?? 0).toLocaleString('en-IN')} GRN${
+                    (summary.csd?.[card.stage]?.count ?? 0) === 1 ? '' : 's'
+                  } ${card.note}`}
+                </div>
               </button>
             ) : (
               /* Pressing a count opens its view, the second way in beside the

@@ -16,7 +16,14 @@ import { branchFor } from '../config/screens.js';
 
 export const resultsRouter = express.Router();
 
-resultsRouter.use(requireAuth, requireScreen('results'));
+/*
+ * Either screen, not only `results`: the Accounts Depot is this screen with two
+ * of its five views -- Accounts and the PR-to-Bank ageing -- and reads the same
+ * rows from the same endpoints. What it leaves out is decided in the browser,
+ * by offering no other view, so there is nothing here to narrow and no second
+ * copy of these queries to keep in step. See config/screens.js.
+ */
+resultsRouter.use(requireAuth, requireScreen('results', 'accounts-depot'));
 
 const VALID_STATUSES = new Set(Object.values(STATUS));
 const MAX_PAGE_SIZE = 200;
@@ -354,6 +361,39 @@ function progressFilter(progress) {
   return sql ? `(${sql})` : null;
 }
 
+/**
+ * The last time CSD rejected this GRN before the handover it is on now -- the
+ * newest row of csd_rejection_history for it, or nulls where there is none.
+ *
+ * A GRN CSD rejects goes back, gets put right, and comes round again in a new
+ * upload, at which point the dispatch is removed and it reads as unsent (see
+ * reopenRejectedFor in services/ingest.js). What it does NOT read as is a GRN
+ * with a history, and that history is the one thing somebody about to send it
+ * again wants: it was turned down last time, and here is what for.
+ *
+ * LATERAL with LIMIT 1, so a GRN rejected and reopened several times
+ * contributes one row rather than one per rejection -- the table has no unique
+ * key on dpr_no_key and deliberately does not, since each rejection is its own
+ * record. ON TRUE keeps it a LEFT join: every result row comes back exactly
+ * once whether or not it has ever been rejected.
+ *
+ * Carried on the ROW select only, not in resultJoins below, so the summary and
+ * the count queries -- which never read it -- do not pay for it.
+ */
+const PRIOR_REJECTION_JOIN = `
+  LEFT JOIN LATERAL (
+    SELECT h.reject_remarks, h.rejected_at, h.superseded_at
+    FROM csd_rejection_history h
+    WHERE h.dpr_no_key = g.dpr_no_key
+    ORDER BY h.superseded_at DESC, h.id DESC
+    LIMIT 1
+  ) pr ON TRUE`;
+
+const PRIOR_REJECTION_COLUMNS = `
+         pr.reject_remarks AS prior_reject_remarks,
+         pr.rejected_at    AS prior_rejected_at,
+         pr.superseded_at  AS prior_reopened_at`;
+
 /** The projection shared by the table view and the exports. */
 const ROW_COLUMNS = `
   SELECT r.status,
@@ -383,6 +423,7 @@ const ROW_COLUMNS = `
          c.id                AS csd_dispatch_id,
          c.sent_at          AS csd_sent_at,
          c.stage            AS csd_stage,
+         c.reject_remarks   AS csd_reject_remarks,
          c.accounts_stage    AS csd_accounts_stage,
          c.forwarded_to      AS csd_forwarded_to,
          c.forwarded_route   AS csd_forwarded_route,
@@ -394,7 +435,8 @@ const ROW_COLUMNS = `
          c.forwarded_remarks      AS csd_forwarded_remarks,
          (rd.id IS NOT NULL) AS records_sent,
          rd.sent_at          AS records_sent_at,
-         ${CHEQUE_COLUMNS}
+         ${CHEQUE_COLUMNS},
+         ${PRIOR_REJECTION_COLUMNS}
 `;
 
 /**
@@ -415,7 +457,7 @@ const resultJoins = (scope) => `
   ${CHEQUE_MATCH}
 `;
 
-const rowSelect = (scope) => `${ROW_COLUMNS} ${resultJoins(scope)}`;
+const rowSelect = (scope) => `${ROW_COLUMNS} ${resultJoins(scope)} ${PRIOR_REJECTION_JOIN}`;
 
 function mapRow(r) {
   return {
@@ -479,6 +521,23 @@ function mapRow(r) {
     csdDispatchId: r.csd_dispatch_id ?? null,
     csdSentAt: r.csd_sent_at ?? null,
     csdStage: r.csd_stage ?? null,
+    // Why CSD rejected it, where they have. The reason is the whole point of a
+    // rejection from Accounts' side -- it is what they have to act on -- so it
+    // travels with the row rather than living only on the CSD screen.
+    csdRejectRemarks: r.csd_reject_remarks ?? null,
+    /*
+     * The last time CSD rejected this GRN before whatever it is doing now --
+     * null where they never have. A reopened GRN reads as unsent, so without
+     * this nothing on the row would say it had been round once already; see
+     * PRIOR_REJECTION_JOIN.
+     */
+    priorRejection: r.prior_rejected_at
+      ? {
+          remarks: r.prior_reject_remarks ?? null,
+          rejectedAt: r.prior_rejected_at,
+          reopenedAt: r.prior_reopened_at,
+        }
+      : null,
     // Accounts' own acknowledgement once CSD hands a GRN back -- see
     // accounts_stage in schema.sql. Null until csdStage reaches
     // MOVED_TO_ACCOUNTS.
@@ -686,6 +745,26 @@ async function pendingDepartments(req, scope) {
 }
 
 /**
+ * Every row paid by one cheque, or null when no cheque was asked for.
+ *
+ * An exact match, deliberately, where the search box's own `q` matches this
+ * same column loosely along with five others. This is not a search: it is what
+ * the Action column reads to find the rest of a cheque's bills before it acts
+ * on them, and a fuzzy answer there would hand a GRN to CSD because its bill
+ * number happened to contain the cheque's digits.
+ *
+ * It is asked for across every page at once (see the rows endpoint's own note
+ * on pageSize), because the bills one cheque pays are scattered through the
+ * table -- it is ordered by the GRN report's serial number, not by cheque --
+ * so the group is almost never on the page the action was chosen from.
+ */
+function chequeFilter(chequeNo, params) {
+  if (!chequeNo) return null;
+  params.push(chequeNo);
+  return `a.cheque_no = $${params.length}`;
+}
+
+/**
  * Narrow the rows to one of those desks, or null when nothing is chosen.
  *
  * Only ever asked for alongside status=PENDING -- it is the Pending cards that
@@ -755,6 +834,19 @@ resultsRouter.get(
      * Amounts come from g.total_amount, as the status cards do, rather than the
      * dispatch's payable amount -- two cards side by side measuring value two
      * different ways would not add up.
+     *
+     * `cheques` is how many cheques those GRNs are spread across, counted the
+     * same way summary.chequesPrepared below counts its own -- COUNT(DISTINCT)
+     * over the cheque number, with the non-empty clause said on purpose rather
+     * than left to DISTINCT skipping nulls. It is the figure the stage cards
+     * lead with: a cheque pays a group of bills and is handed to CSD as one
+     * thing, so how many cheques are sitting at a stage is the question, and
+     * how many GRNs they cover is the supporting line under it.
+     *
+     * Unlike the GRN counts, the four cheque figures do not partition anything:
+     * a cheque whose bills sit at two stages at once is counted at both, the
+     * same way the Status column shows a row under every value that applies to
+     * it. Do not add them up.
      */
     const csdParams = [];
     const csdWhere = whereFrom([
@@ -766,16 +858,27 @@ resultsRouter.get(
     ]);
 
     const { rows: csdRows } = await query(
-      `SELECT c.stage, COUNT(*)::int AS count, COALESCE(SUM(g.total_amount), 0) AS amount
+      `SELECT c.stage,
+              COUNT(*)::int AS count,
+              COUNT(DISTINCT a.cheque_no) FILTER (WHERE COALESCE(a.cheque_no, '') <> '')::int AS cheques,
+              COALESCE(SUM(g.total_amount), 0) AS amount
        ${resultJoins(scope)}
        ${csdWhere}
        GROUP BY c.stage`,
       csdParams,
     );
 
-    const csd = Object.fromEntries(CSD_STAGES.map((st) => [st, { count: 0, amount: 0 }]));
+    const csd = Object.fromEntries(
+      CSD_STAGES.map((st) => [st, { count: 0, cheques: 0, amount: 0 }]),
+    );
     for (const row of csdRows) {
-      if (csd[row.stage]) csd[row.stage] = { count: row.count, amount: Number(row.amount) };
+      if (csd[row.stage]) {
+        csd[row.stage] = {
+          count: row.count,
+          cheques: row.cheques,
+          amount: Number(row.amount),
+        };
+      }
     }
     summary.csd = csd;
 
@@ -905,6 +1008,14 @@ resultsRouter.get(
     const dept = String(req.query.dept || '');
     const deptJoin = dept ? PENDING_DEPT_JOIN : '';
 
+    // One cheque's bills, all of them, wherever they fall in the table. The
+    // Action column asks for this before it acts, so that sending a GRN to CSD
+    // sends the whole cheque rather than the one bill that happened to be on
+    // screen -- see chequeGroup in ResultsTable.jsx. Every other filter still
+    // applies on top of it, branch scope included, so it can never reach a row
+    // the account is not allowed to see.
+    const chequeNo = String(req.query.chequeNo || '').trim();
+
     const params = [];
     const where = whereFrom([
       batchFilter(scope, params),
@@ -912,6 +1023,7 @@ resultsRouter.get(
       searchFilter(req.query.q, params),
       progressFilter(progress),
       pendingDeptFilter(dept, params),
+      chequeFilter(chequeNo, params),
       BRANCH_SCOPE,
       ...branchClauses(req, params),
     ]);
@@ -939,11 +1051,17 @@ resultsRouter.get(
 );
 
 /**
- * GET /api/batches/:id/export?status=
+ * GET /api/batches/:id/export?status=&q=&progress=&location=&dept=&register=
  *
  * Every row for a status, unpaginated, as JSON. The Excel and CSV files are
  * assembled in the browser (client/src/services/exporter.js), so this endpoint
  * only has to answer with data -- no workbook is ever built or buffered here.
+ *
+ * It takes the narrowing filters the cards on each view set -- `progress` for
+ * the CSD stages and the cheque pair, `dept` for the Pending breakdown,
+ * `register` for Not in BPAD -- because a section's workbook carries a sheet
+ * per card and each sheet is that card's own rows. Filters left out narrow
+ * nothing, which is the whole of a section's own sheet.
  */
 resultsRouter.get(
   '/:id/export',
@@ -990,17 +1108,29 @@ resultsRouter.get(
       return res.status(400).json({ error: `Unknown status "${req.query.progress}".` });
     }
 
+    // Which BPAD desk the rows are narrowed to -- the same filter the rows
+    // endpoint takes, for the same reason: the Pending view's breakdown cards
+    // set it, and a workbook with a sheet per card has to be able to ask for
+    // one desk's rows the way the card asks for them. The join it reads from
+    // is carried only while it is asked for -- see PENDING_DEPT_JOIN.
+    const dept = String(req.query.dept || '');
+    const deptJoin = dept ? PENDING_DEPT_JOIN : '';
+
     const params = [];
     const where = whereFrom([
       batchFilter(scope, params),
       statusFilter(status, params),
       searchFilter(req.query.q, params),
       progressFilter(progress),
+      pendingDeptFilter(dept, params),
       BRANCH_SCOPE,
       ...branchClauses(req, params),
     ]);
 
-    const { rows } = await query(`${rowSelect(scope)} ${where} ${rowOrder(scope)}`, params);
+    const { rows } = await query(
+      `${rowSelect(scope)} ${deptJoin} ${where} ${rowOrder(scope)}`,
+      params,
+    );
 
     return res.json({
       batchId: scope.id,
@@ -1725,7 +1855,7 @@ resultsRouter.get(
 
 export const ageingRouter = express.Router();
 
-ageingRouter.use(requireAuth, requireScreen('results'));
+ageingRouter.use(requireAuth, requireScreen('results', 'accounts-depot'));
 
 /** The editable checkpoints: the name on the wire, and the column behind it. */
 const EDITABLE_DATES = {
@@ -1846,7 +1976,7 @@ ageingRouter.patch(
 
 export const recordsRouter = express.Router();
 
-recordsRouter.use(requireAuth, requireScreen('results'));
+recordsRouter.use(requireAuth, requireScreen('results', 'accounts-depot'));
 
 /** Only a GRN that reached accounts has anything to file. */
 const FILEABLE = new Set([STATUS.MATCHED, STATUS.MATCHED_WITH_DIFF]);
@@ -1886,7 +2016,25 @@ recordsRouter.post(
         .json({ error: 'Only GRNs found in the ageing report can go to Records.' });
     }
 
-    const batchId = Number.isInteger(Number(body.batchId)) ? Number(body.batchId) : null;
+    /*
+     * Which upload it came from, or null for none.
+     *
+     * `> 0` is the whole of it, and it is not decoration: the screens send
+     * `batchId: null` -- their scope is every upload, so there is no one batch
+     * to name -- and Number(null) is 0, which is an integer. Without the
+     * guard every send from those screens reached the INSERT with batch_id 0,
+     * which is no row in upload_batches, and the foreign key turned the whole
+     * thing into a 500. The column is nullable precisely so that "no
+     * particular upload" is sayable; 0 is not how to say it.
+     *
+     * Same expression as the CSD route's (see POST /csd in routes/csd.js),
+     * which takes the same body from the same table and had the guard from the
+     * start.
+     */
+    const batchId =
+      Number.isInteger(Number(body.batchId)) && Number(body.batchId) > 0
+        ? Number(body.batchId)
+        : null;
 
     const { rows } = await query(
       `INSERT INTO record_dispatches (dpr_no_key, dpr_no, batch_id, sent_by)
@@ -1988,7 +2136,7 @@ function isForwardCalendarDate(value) {
 
 export const accountsReturnsRouter = express.Router();
 
-accountsReturnsRouter.use(requireAuth, requireScreen('results'));
+accountsReturnsRouter.use(requireAuth, requireScreen('results', 'accounts-depot'));
 
 /**
  * PATCH /api/accounts-returns/:id/receive

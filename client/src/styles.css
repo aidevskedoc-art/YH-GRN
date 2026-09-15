@@ -2176,6 +2176,23 @@ select.stage-filter { width: auto; min-width: 150px; }
 }
 .csd--take-back:hover:not(:disabled) .csd__icon { transform: none; }
 
+/* The administrator's delete, on a handover CSD have ruled on. Tinted at rest
+   rather than only on hover, unlike .csd--take-back above: a take-back is a
+   move that can be made again, and this one cannot be undone. */
+.csd--delete {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.csd--delete:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+  transform: none;
+  box-shadow: none;
+}
+.csd--delete:hover:not(:disabled) .csd__icon { transform: none; }
+
 @media (prefers-reduced-motion: reduce) {
   .csd, .csd__icon { transition: none; }
   .csd:hover:not(:disabled), .csd:active:not(:disabled) { transform: none; }
@@ -2222,7 +2239,43 @@ select.stage-filter { width: auto; min-width: 150px; }
 /* Remarks is a sentence, and the table is nowrap by default. Only this one
    cell is allowed to break, and it is capped so a long note cannot stretch the
    column past the amounts either side of it. */
-.table__wrap { white-space: normal; max-width: 260px; margin-top: 3px; }
+/* overflow-wrap, or a long word never wraps at all: `white-space: normal`
+   only permits breaks at spaces, so a fifty-character remark typed without one
+   -- which is what a hurried note looks like -- renders as a single line that
+   pushes straight through the cap above and out over the columns beside it.
+   It also defeats the line clamp below, since one line is never taller than
+   one line, leaving text cut off sideways with no Read more offered for it. */
+.table__wrap { white-space: normal; max-width: 260px; margin-top: 3px; overflow-wrap: anywhere; }
+
+/* "CSD turned this down once already", under the Status pill. Set off from the
+   row's own state by a rule down its left rather than by colour: it is a fact
+   about the GRN's past, not a verdict on where it is now, and giving it the
+   rejected red would read as a rejection standing against the row. */
+.table__prior {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+}
+.table__prior-tag { color: var(--danger); font-weight: 600; }
+
+/* Read more / Read less, at the end of a shortened remark. A button, because
+   it acts on the page rather than going anywhere -- but it sits inside a
+   sentence, so it is drawn as the link it reads as rather than as a control
+   with a box of its own. Inline, so it follows the ellipsis in the run of the
+   text rather than dropping to a line of its own. */
+.table__more {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--brand);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.table__more:hover { color: var(--brand-700); }
+.table__more:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 2px; }
 
 /* --- pager */
 .pager { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; padding: 14px 2px; color: var(--muted); font-size: 13px; }
@@ -2266,6 +2319,13 @@ select.pager__size-input { width: auto; padding: 6px 8px 6px 10px; font-size: 13
   border: 1px solid var(--info-line);
 }
 .alert--info strong { color: var(--text); }
+
+/* An alert with a dismiss button on its right. The text takes the room and the
+   button keeps its own size, so a long notice wraps against the button rather
+   than pushing it off the end. */
+.alert--dismiss { display: flex; align-items: flex-start; gap: 12px; }
+.alert--dismiss > span { flex: 1; }
+.alert--dismiss > .icon-btn { flex: none; margin-top: -2px; }
 
 /* --- day counts in the table ---------------------------------------------- */
 
