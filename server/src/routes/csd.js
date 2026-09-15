@@ -14,10 +14,23 @@ import { asyncHandler } from '../middleware/error.js';
 import { normKey } from '../services/normalize.js';
 import { branchFor } from '../config/screens.js';
 import { branchScope, branchPick, branchAccountNo } from '../services/branchScope.js';
+import { logActivity } from '../services/activityLog.js';
 
 export const csdRouter = express.Router();
 
-csdRouter.use(requireAuth, requireScreen('csd'));
+csdRouter.use(requireAuth);
+
+/**
+ * Two audiences for this router, so the screen check is per route.
+ *
+ * The queue itself -- listing it, moving stages, correcting dates, deleting a
+ * record -- is CSD's own work and needs the CS Department screen. Handing a GRN
+ * over (and taking it back again) is Accounts' side of that handover: it is
+ * done from the Results and Accounts tables, so anyone who can work either of
+ * those may do it without being given CSD's queue as well.
+ */
+const CSD_QUEUE = requireScreen('csd');
+const CSD_HANDOVER = requireScreen('csd', 'results', 'accounts-department');
 
 const MAX_PAGE_SIZE = 200;
 
@@ -157,7 +170,8 @@ const PRIOR_REJECTION_JOIN = `
     LIMIT 1
   ) pr ON TRUE`;
 
-const DISPATCH_COLUMNS = `
+/** The dispatch select, with `extra` columns appended to its list (see chequeDispatches). */
+const dispatchSelect = (extra = '') => `
   SELECT c.id, c.dpr_no, c.division_code, c.dpr_date, c.bill_no, c.bill_date,
          c.vendor_code, c.vendor_name, c.location, c.ageing_grn_no,
          c.net_amt, c.adj_pur_return, c.adjusted_jv, c.tds_jv, c.payable_amount,
@@ -181,7 +195,7 @@ const DISPATCH_COLUMNS = `
          au.username  AS accounts_received_by_username,
          fu.full_name AS forwarded_by_name,
          fu.username  AS forwarded_by_username,
-         b.name       AS batch_name
+         b.name       AS batch_name${extra}
   FROM csd_dispatches c
   LEFT JOIN users u ON u.id = c.sent_by
   LEFT JOIN users su ON su.id = c.stage_by
@@ -190,6 +204,8 @@ const DISPATCH_COLUMNS = `
   LEFT JOIN upload_batches b ON b.id = c.batch_id
   ${PRIOR_REJECTION_JOIN}
 `;
+
+const DISPATCH_COLUMNS = dispatchSelect();
 
 function mapDispatch(r) {
   return {
@@ -339,8 +355,77 @@ function whereFrom(clauses) {
   return kept.length > 0 ? `WHERE ${kept.join(' AND ')}` : '';
 }
 
+/** The CS Department screen's Cheque view, as the `view` query parameter spells it. */
+const CHEQUE_VIEW = 'cheque';
+
 /**
- * GET /api/csd?page=&pageSize=&q=&stage=&all=
+ * The queue's Cheque view: one row per cheque instead of one per handover.
+ *
+ * Same arrangement as chequeRows in routes/results.js. The handovers one cheque
+ * number covers are folded into a single row, carrying the sum of their
+ * PayableAmount as `chequeAmount`; handovers with no cheque number are left
+ * off. Branch scope and the location decide which handovers make up a cheque
+ * and so what it adds up to; the search box and the stage only decide which
+ * cheques are listed -- a cheque shows when ANY of its handovers matches, and
+ * its amount is still the whole cheque.
+ *
+ * The rest of the row is one representative handover's: the newest matching
+ * one. The Action column already moves every handover the cheque pays (see
+ * chequeGroup in Csd.jsx), so which one stands in for it changes nothing.
+ *
+ * `amount` is what the listed cheques add up to, for the header.
+ */
+async function chequeDispatches(req, { stage, chequeNo, page, pageSize, all }) {
+  const params = [];
+  const baseWhere = whereFrom([
+    chequeFilter(chequeNo, params),
+    BRANCH_SCOPE,
+    ...branchClauses(req, params),
+    `COALESCE(c.cheque_no, '') <> ''`,
+  ]);
+  const hitClauses = [searchFilter(req.query.q, params), stageFilter(stage, params)].filter(Boolean);
+  // COALESCE because an ILIKE over a null column is null, not false.
+  const hit = `COALESCE((${hitClauses.length > 0 ? hitClauses.join(' AND ') : 'TRUE'}), FALSE)`;
+
+  const { rows: totals } = await query(
+    `SELECT COUNT(*)::int AS total, COALESCE(SUM(t.amount), 0) AS amount FROM (
+       SELECT c.cheque_no, SUM(c.payable_amount) AS amount
+       FROM csd_dispatches c ${baseWhere}
+       GROUP BY c.cheque_no
+       HAVING BOOL_OR(${hit})
+     ) t`,
+    params,
+  );
+
+  const { rows } = await query(
+    `SELECT z.* FROM (
+       SELECT q.*,
+              SUM(q.payable_amount) OVER (PARTITION BY q.cheque_no) AS cheque_amount,
+              (COUNT(*) OVER (PARTITION BY q.cheque_no))::int AS cheque_grn_count,
+              ROW_NUMBER() OVER (
+                PARTITION BY q.cheque_no ORDER BY q.cv_hit DESC, q.sent_at DESC, q.id DESC
+              ) AS cv_rn
+       FROM (${dispatchSelect(`, ${hit} AS cv_hit`)} ${baseWhere}) q
+     ) z
+     WHERE z.cv_rn = 1 AND z.cv_hit
+     ORDER BY z.sent_at DESC, z.id DESC
+     ${all ? '' : `LIMIT $${params.length + 1} OFFSET $${params.length + 2}`}`,
+    all ? params : [...params, pageSize, (page - 1) * pageSize],
+  );
+
+  return {
+    total: totals[0].total,
+    amount: Number(totals[0].amount),
+    rows: rows.map((r) => ({
+      ...mapDispatch(r),
+      chequeAmount: r.cheque_amount ?? null,
+      chequeGrnCount: r.cheque_grn_count ?? 0,
+    })),
+  };
+}
+
+/**
+ * GET /api/csd?page=&pageSize=&q=&stage=&all=&view=
  *
  * The queue, newest handover first, plus the five stage counts the cards read.
  *
@@ -356,6 +441,7 @@ function whereFrom(clauses) {
  */
 csdRouter.get(
   '/',
+  CSD_QUEUE,
   asyncHandler(async (req, res) => {
     const stage = String(req.query.stage || '').toUpperCase();
     if (stage && !STAGE_SET.has(stage)) {
@@ -417,6 +503,21 @@ csdRouter.get(
       allAmount += Number(r.amount);
     }
 
+    const wantsAll = String(req.query.all || '') === '1';
+
+    // The Cheque view: one row per cheque rather than per handover.
+    if (String(req.query.view || '').toLowerCase() === CHEQUE_VIEW) {
+      const page = Math.max(1, Number(req.query.page) || 1);
+      const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || 20));
+      const result = await chequeDispatches(req, { stage, chequeNo, page, pageSize, all: wantsAll });
+      return res.json({
+        ...result,
+        stages,
+        stage: stage || null,
+        ...(wantsAll ? {} : { page, pageSize, totalPages: Math.max(1, Math.ceil(result.total / pageSize)) }),
+      });
+    }
+
     // Search and stage -- the scope the rows and the pager run over.
     const params = [];
     const where = whereFrom([
@@ -430,7 +531,6 @@ csdRouter.get(
     const total = stage ? stages[stage].count : allCount;
     const amount = stage ? stages[stage].amount : allAmount;
 
-    const wantsAll = String(req.query.all || '') === '1';
     const order = 'ORDER BY c.sent_at DESC, c.id DESC';
 
     if (wantsAll) {
@@ -474,6 +574,7 @@ csdRouter.get(
  */
 csdRouter.post(
   '/',
+  CSD_HANDOVER,
   asyncHandler(async (req, res) => {
     const body = req.body || {};
 
@@ -554,7 +655,20 @@ csdRouter.post(
     );
 
     const { rows: full } = await query(`${DISPATCH_COLUMNS} WHERE c.id = $1`, [rows[0].id]);
-    return res.status(201).json({ dispatch: mapDispatch(full[0]) });
+    const dispatch = mapDispatch(full[0]);
+    logActivity(req, {
+      action: 'CSD_SEND',
+      target: dprNo,
+      summary: `Sent GRN ${dprNo} to CSD${dispatch.chequeNo ? ` (cheque ${dispatch.chequeNo})` : ''}`,
+      details: {
+        dispatchId: dispatch.id,
+        chequeNo: dispatch.chequeNo,
+        vendorName: dispatch.vendorName,
+        payableAmount: dispatch.payableAmount,
+        divisionCode: dispatch.divisionCode,
+      },
+    });
+    return res.status(201).json({ dispatch });
   }),
 );
 
@@ -594,6 +708,7 @@ const MAX_REMARKS = 1000;
  */
 csdRouter.patch(
   '/:id/stage',
+  CSD_QUEUE,
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
@@ -653,7 +768,24 @@ csdRouter.patch(
 
     if (rows.length > 0) {
       const { rows: full } = await query(`${DISPATCH_COLUMNS} WHERE c.id = $1`, [id]);
-      return res.json({ dispatch: mapDispatch(full[0]) });
+      const dispatch = mapDispatch(full[0]);
+      // The ladder allows each stage from exactly one other, so `from` names it.
+      const fromStage = from.length === 1 ? from[0] : from.join(' / ');
+      logActivity(req, {
+        action: 'CSD_STAGE',
+        target: dispatch.dprNo,
+        summary:
+          `Moved GRN ${dispatch.dprNo} from ${spellStage(fromStage)} to ${spellStage(stage)}` +
+          (dispatch.chequeNo ? ` (cheque ${dispatch.chequeNo})` : ''),
+        details: {
+          dispatchId: id,
+          chequeNo: dispatch.chequeNo,
+          from: fromStage,
+          to: stage,
+          ...(needsRemarks ? { remarks } : {}),
+        },
+      });
+      return res.json({ dispatch });
     }
 
     // Nothing moved. Either the row is gone, or it is not somewhere this stage
@@ -750,6 +882,7 @@ function isCalendarDate(value) {
  */
 csdRouter.patch(
   '/:id/dates',
+  CSD_QUEUE,
   requireAdmin,
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
@@ -758,7 +891,7 @@ csdRouter.patch(
     }
 
     const { rows: existing } = await query(
-      `SELECT sent_at, received_at, approved_at, rejected_at,
+      `SELECT dpr_no, sent_at, received_at, approved_at, rejected_at,
               moved_to_accounts_at, accounts_received_at, forwarded_at
        FROM csd_dispatches WHERE id = $1`,
       [id],
@@ -769,6 +902,8 @@ csdRouter.patch(
 
     const assignments = [];
     const params = [];
+    // Old and new day per corrected stamp, for the activity log.
+    const changes = {};
 
     for (const [field, column] of Object.entries(EDITABLE_CSD_DATES)) {
       if (!(field in req.body)) continue;
@@ -793,6 +928,7 @@ csdRouter.patch(
 
       params.push(value);
       assignments.push(`${column} = $${params.length}::date`);
+      changes[field] = { from: existing[0][column], to: value };
     }
 
     if (assignments.length === 0) {
@@ -806,6 +942,13 @@ csdRouter.patch(
     );
 
     const { rows: full } = await query(`${DISPATCH_COLUMNS} WHERE c.id = $1`, [id]);
+    const changed = Object.keys(changes).length;
+    logActivity(req, {
+      action: 'CSD_DATES',
+      target: existing[0].dpr_no,
+      summary: `Corrected ${changed} CSD date${changed === 1 ? '' : 's'} on GRN ${existing[0].dpr_no}`,
+      details: { dispatchId: id, changes },
+    });
     return res.json({ dispatch: mapDispatch(full[0]) });
   }),
 );
@@ -847,6 +990,7 @@ const NO_TAKE_BACK_REASON = {
  */
 csdRouter.delete(
   '/:id',
+  CSD_HANDOVER,
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
@@ -855,7 +999,7 @@ csdRouter.delete(
 
     // Read the stage before deleting, so the refusal can say which stage it is
     // refusing on rather than "no".
-    const { rows } = await query('SELECT dpr_no, stage FROM csd_dispatches WHERE id = $1', [id]);
+    const { rows } = await query('SELECT dpr_no, stage, cheque_no FROM csd_dispatches WHERE id = $1', [id]);
     if (rows.length === 0) {
       return res.status(404).json({ error: 'That GRN is no longer in the CSD queue.' });
     }
@@ -882,6 +1026,12 @@ csdRouter.delete(
       });
     }
 
+    logActivity(req, {
+      action: 'CSD_TAKE_BACK',
+      target: dprNo,
+      summary: `Took GRN ${dprNo} back off the CSD queue (was ${spellStage(stage)})`,
+      details: { dispatchId: id, chequeNo: rows[0].cheque_no, stage },
+    });
     return res.status(204).end();
   }),
 );
@@ -908,6 +1058,7 @@ csdRouter.delete(
  */
 csdRouter.delete(
   '/:id/record',
+  CSD_QUEUE,
   requireAdmin,
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
@@ -915,11 +1066,26 @@ csdRouter.delete(
       return res.status(400).json({ error: 'Unknown row.' });
     }
 
-    const { rowCount } = await query('DELETE FROM csd_dispatches WHERE id = $1', [id]);
-    if (rowCount === 0) {
+    const { rows } = await query(
+      'DELETE FROM csd_dispatches WHERE id = $1 RETURNING dpr_no, stage, cheque_no, reject_remarks',
+      [id],
+    );
+    if (rows.length === 0) {
       return res.status(404).json({ error: 'That GRN is no longer in the CSD queue.' });
     }
 
+    const gone = rows[0];
+    logActivity(req, {
+      action: 'CSD_DELETE',
+      target: gone.dpr_no,
+      summary: `Deleted the CSD record for GRN ${gone.dpr_no} (was ${spellStage(gone.stage)})`,
+      details: {
+        dispatchId: id,
+        chequeNo: gone.cheque_no,
+        stage: gone.stage,
+        ...(gone.reject_remarks ? { rejectRemarks: gone.reject_remarks } : {}),
+      },
+    });
     return res.status(204).end();
   }),
 );

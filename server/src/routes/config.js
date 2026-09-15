@@ -14,8 +14,12 @@ import express from 'express';
 import { query } from '../db/pool.js';
 import { requireAuth, requireScreen } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
+import { changedFields, logActivity } from '../services/activityLog.js';
 
 export const configRouter = express.Router();
+
+/** The branch fields the activity log records on create and compares on update. */
+const LOGGED_BRANCH_FIELDS = ['branchCode', 'location', 'accountNo', 'isSelected'];
 
 configRouter.use(requireAuth);
 
@@ -107,7 +111,17 @@ configRouter.post(
         ],
       );
       const { rows: full } = await query(`${BRANCH_COLUMNS} WHERE b.id = $1`, [rows[0].id]);
-      return res.status(201).json({ branch: mapBranch(full[0]) });
+      const branch = mapBranch(full[0]);
+      logActivity(req, {
+        action: 'BRANCH_CREATE',
+        target: branch.branchCode,
+        summary: `Added branch ${branch.branchCode} (${branch.location})`,
+        details: {
+          branchId: branch.id,
+          ...Object.fromEntries(LOGGED_BRANCH_FIELDS.map((f) => [f, branch[f] ?? null])),
+        },
+      });
+      return res.status(201).json({ branch });
     } catch (err) {
       // The unique index is on upper(branch_code) -- see db/schema.sql.
       if (err.code === '23505') {
@@ -137,6 +151,10 @@ configRouter.patch(
     if (!Number.isInteger(id)) {
       return res.status(400).json({ error: 'Unknown branch.' });
     }
+
+    // The branch as it stood, for the activity log's list of changes.
+    const { rows: beforeRows } = await query(`${BRANCH_COLUMNS} WHERE b.id = $1`, [id]);
+    const before = beforeRows[0] ? mapBranch(beforeRows[0]) : null;
 
     const assignments = [];
     const params = [];
@@ -190,7 +208,21 @@ configRouter.patch(
     if (updated === 0) return res.status(404).json({ error: 'That branch no longer exists.' });
 
     const { rows: full } = await query(`${BRANCH_COLUMNS} WHERE b.id = $1`, [id]);
-    return res.json({ branch: mapBranch(full[0]) });
+    const branch = mapBranch(full[0]);
+    const changes = changedFields(before, branch, LOGGED_BRANCH_FIELDS);
+    if (changes) {
+      // The tick box on its own reads as what it did, rather than a field list.
+      const onlyTick = Object.keys(changes).length === 1 && changes.isSelected;
+      logActivity(req, {
+        action: 'BRANCH_UPDATE',
+        target: branch.branchCode,
+        summary: onlyTick
+          ? `${branch.isSelected ? 'Ticked' : 'Unticked'} branch ${branch.branchCode} (${branch.location})`
+          : `Updated branch ${branch.branchCode}: ${Object.keys(changes).join(', ')}`,
+        details: { branchId: id, changes },
+      });
+    }
+    return res.json({ branch });
   }),
 );
 
@@ -209,8 +241,27 @@ configRouter.delete(
     if (!Number.isInteger(id)) {
       return res.status(400).json({ error: 'Unknown branch.' });
     }
-    const { rowCount } = await query('DELETE FROM branch_configs WHERE id = $1', [id]);
-    if (rowCount === 0) return res.status(404).json({ error: 'That branch no longer exists.' });
+    const { rows } = await query(
+      `DELETE FROM branch_configs b WHERE b.id = $1
+       RETURNING b.branch_code, b.location, b.account_no, b.is_selected, b.created_at,
+                 (SELECT COALESCE(u.full_name, u.username) FROM users u WHERE u.id = b.created_by) AS created_by`,
+      [id],
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'That branch no longer exists.' });
+    logActivity(req, {
+      action: 'BRANCH_DELETE',
+      target: rows[0].branch_code,
+      summary: `Deleted branch ${rows[0].branch_code} (${rows[0].location})`,
+      details: {
+        branchId: id,
+        branchCode: rows[0].branch_code,
+        location: rows[0].location,
+        accountNo: rows[0].account_no,
+        isSelected: rows[0].is_selected,
+        createdBy: rows[0].created_by,
+        createdAt: rows[0].created_at,
+      },
+    });
     return res.status(204).end();
   }),
 );

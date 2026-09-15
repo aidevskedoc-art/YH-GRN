@@ -14,19 +14,25 @@ export const SCREEN_ROUTES = {
   results: '/results',
   csd: '/csd',
   // The results screen's Accounts and PR-to-Bank views, and nothing else --
-  // see pages/AccountsDepot.jsx. Listed after `results` so an account holding
+  // see pages/AccountsDepartment.jsx. Listed after `results` so an account holding
   // both lands on the fuller screen, which is the superset of this one.
-  'accounts-depot': '/accounts-depot',
+  'accounts-department': '/accounts-department',
   config: '/config',
+  uploads: '/uploads',
+  logs: '/logs',
+  users: '/users',
 };
 
 /** Fallback labels, for the nav -- the users screen prefers the server's. */
 export const SCREEN_LABELS = {
-  upload: 'New reconciliation',
-  results: 'Reconciliation results',
-  csd: 'CS Departmemt',
-  'accounts-depot': 'Accounts Depot',
+  upload: 'New uploads',
+  results: 'Results',
+  'accounts-department': 'Accounts Department',
+  csd: 'CS Department',
   config: 'Configuration',
+  uploads: 'Uploaded files',
+  users: 'User management',
+  logs: 'Activity logs',
 };
 
 /**

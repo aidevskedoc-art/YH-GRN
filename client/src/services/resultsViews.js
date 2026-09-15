@@ -1,8 +1,8 @@
 /**
- * What the results screen and the Accounts Depot both have to agree on.
+ * What the results screen and the Accounts Department both have to agree on.
  *
  * Two screens now show the Accounts view and the PR-to-Bank ageing: the
- * results screen, where they are two of five views, and the Accounts Depot,
+ * results screen, where they are two of five views, and the Accounts Department,
  * where they are the only two. They read the same rows from the same endpoints
  * and they have to read them under the same wording -- a stage renamed on one
  * and not the other is the same GRN reported two ways -- so the declarations
@@ -114,6 +114,30 @@ export function deptLabel(dept) {
 /** The Accounts view, as the view dropdown and the export sheet name it. */
 export const ACCOUNTS_TAB = { status: VALID, label: 'Accounts', hint: 'Found in the ageing report' };
 
+/**
+ * The Accounts Department's two ways of reading its Accounts table.
+ *
+ * GRN view is a row per GRN, as the results screen shows it, without the
+ * cheque's own columns; its cards lead with GRN counts. Cheque view is a row
+ * per cheque -- the bills one cheque pays folded together, their PayableAmount
+ * summed into a Cheque Amount -- and its cards lead with cheque counts.
+ *
+ * The values are what the rows endpoint's `view` parameter takes.
+ */
+export const ACCOUNTS_GRN_VIEW = 'grn';
+export const ACCOUNTS_CHEQUE_VIEW = 'cheque';
+
+/**
+ * A card's two counts, arranged for the view: on Cheque view the cheque count
+ * is the headline and the GRNs it covers read on the line below; on GRN view
+ * the other way round. `sub` is that line's count and noun ("12 cheques"),
+ * for the caller to finish with its own wording.
+ */
+export function leadFigures({ grns = 0, cheques = 0 }, byCheque) {
+  const [value, n, noun] = byCheque ? [cheques, grns, 'GRN'] : [grns, cheques, 'cheque'];
+  return { value, sub: `${n.toLocaleString('en-IN')} ${noun}${n === 1 ? '' : 's'}` };
+}
+
 /** The ageing view, same. See TURNAROUND above for the `card: false`. */
 export const TURNAROUND_TAB = {
   status: TURNAROUND,
@@ -196,6 +220,49 @@ export const CHEQUE_CARDS = [
 ];
 
 /**
+ * The Accounts Queue: GRNs CSD has handed back that Accounts has not received
+ * yet -- the rows whose Action column still reads Queued. The next thing
+ * Accounts has to do, so it gets a card of its own, beside Cheque Not Prepared
+ * (see ACCOUNTS_ROW).
+ *
+ * A `progress` card like the cheque pair, reading RETURNED_BY_CSD (see PROGRESS
+ * in routes/results.js), so pressing it narrows the table the same way the
+ * Status filter's own option does. Cheques and GRNs swap with the view, as on
+ * Cheque Prepared.
+ */
+export const ACCOUNTS_QUEUE_CARD = {
+  progress: 'RETURNED_BY_CSD',
+  label: 'Accounts Queue',
+  tone: 'moved_to_accounts',
+  value: (summary) => summary?.accountsQueueCheques ?? 0,
+  hint: (summary) => {
+    const grns = summary?.progress?.RETURNED_BY_CSD?.count ?? 0;
+    return `${grns.toLocaleString('en-IN')} GRN${grns === 1 ? '' : 's'} awaiting Accounts`;
+  },
+};
+
+/**
+ * What a `progress` card (the cheque pair, the Accounts Queue) prints, for the
+ * view. A card with a cheque figure swaps it with the GRN count by view; one
+ * without reads the same on both.
+ */
+export function progressCardFigures(card, summary, byCheque) {
+  const grns = summary?.progress?.[card.progress]?.count ?? 0;
+  if (typeof card.value !== 'function') {
+    return { value: grns, hint: typeof card.hint === 'function' ? card.hint(summary) : card.hint };
+  }
+  if (byCheque) return { value: card.value(summary), hint: card.hint(summary) };
+  return { value: grns, hint: leadFigures({ grns, cheques: card.value(summary) }, false).sub };
+}
+
+/** What a CSD stage card on the Accounts row prints, for the view. */
+export function csdCardFigures(card, summary, byCheque) {
+  const bucket = summary?.csd?.[card.stage] ?? {};
+  const { value, sub } = leadFigures({ grns: bucket.count ?? 0, cheques: bucket.cheques ?? 0 }, byCheque);
+  return { value, hint: `${sub} ${card.note}` };
+}
+
+/**
  * The Accounts row, in the order it is shown -- on both screens, which is why
  * it is settled here rather than composed twice.
  *
@@ -216,12 +283,16 @@ export const CHEQUE_CARDS = [
  * over its desks.
  *
  * Entries are the ids CARD_BY_ID files each card under on either page -- a
- * reconciliation status for the count, a `progress` key for the cheque pair, a
- * CSD stage for the four.
+ * reconciliation status for the count, a `progress` key for the cheque pair
+ * and the Accounts Queue, a CSD stage for the four.
+ *
+ * The Accounts Queue sits right after the cheque pair, beside Cheque Not
+ * Prepared, ahead of the CSD four.
  */
 export const ACCOUNTS_ROW = [
   VALID,
   ...CHEQUE_CARDS.map((card) => card.progress),
+  ACCOUNTS_QUEUE_CARD.progress,
   ...CSD_CARDS.map((card) => card.stage),
 ];
 
@@ -247,7 +318,9 @@ export const PROGRESS_LABELS = {
   REJECTED: 'CSD rejected',
   // Accounts' own hand-back ladder, once CSD reaches MOVED_TO_ACCOUNTS -- see
   // ACCOUNTS_RETURN_STATES in ResultsTable.jsx for the same two labels.
-  RETURNED_BY_CSD: 'Handover by CSD',
+  // Named for the queue it is, with the Status pill's own wording beside it so
+  // the option and the rows it finds are recognisably the same thing.
+  RETURNED_BY_CSD: 'Accounts queue (Handover by CSD)',
   ACCOUNTS_RECEIVED: 'Accounts received',
   // Where Accounts forwards a received GRN on to -- see forwardedLabel in
   // ResultsTable.jsx for the same four labels.
@@ -317,6 +390,18 @@ export function progressFilterOptions(summary) {
  * `canCsd` is the caller's `can('csd')`: handing a GRN over needs that screen,
  * and these are predicates rather than hooks.
  */
+
+/**
+ * Whether this account may hand GRNs to CSD, and take them back again.
+ *
+ * Not the CS Department screen alone: handing over is Accounts' side of the
+ * handover, done from the Results and Accounts tables, so either of those
+ * screens is enough. CSD's own queue (stage moves and the rest) still needs the
+ * CSD screen. Mirrors CSD_HANDOVER in routes/csd.js. `can` is useAuth's.
+ */
+export function canHandToCsd(can) {
+  return can('csd') || can('results') || can('accounts-department');
+}
 
 export function bulkCsdEligible(row, canCsd) {
   return (

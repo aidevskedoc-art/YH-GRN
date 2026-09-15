@@ -785,3 +785,56 @@ CREATE TABLE IF NOT EXISTS branch_configs (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_branch_code ON branch_configs (upper(branch_code));
 CREATE INDEX IF NOT EXISTS idx_branch_selected ON branch_configs (is_selected);
+
+-- --------------------------------------------------------------------------
+-- activity_logs: who did what, and when -- the Activity logs screen.
+--
+-- One row per user action that changes something: an upload, a GRN sent to
+-- CSD or Records, a CSD stage move, a take-back, Accounts receiving or
+-- forwarding a GRN, a date correction, an account or branch edited. Written by
+-- services/activityLog.js after the action has succeeded, and never allowed to
+-- fail the action it describes.
+--
+-- The user's name is copied onto the row as well as referenced, so an entry
+-- still says who acted after that account has been renamed or deleted.
+--
+-- Kept for 90 days: purgeOldLogs deletes anything older, at startup and daily.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS activity_logs (
+  id          BIGSERIAL PRIMARY KEY,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  username    TEXT,
+  user_name   TEXT,
+  action      TEXT NOT NULL,
+  category    TEXT NOT NULL,
+  target      TEXT,
+  summary     TEXT NOT NULL,
+  details     JSONB,
+  ip          TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_activity_logs_created ON activity_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_category ON activity_logs (category, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_activity_logs_user ON activity_logs (user_id, created_at DESC);
+
+-- --------------------------------------------------------------------------
+-- The Accounts Depot screen was renamed Accounts Department, and its screen
+-- key with it: 'accounts-depot' -> 'accounts-department'. Accounts granted
+-- the old key keep their access. Idempotent: once converted, nothing matches.
+-- --------------------------------------------------------------------------
+UPDATE users
+   SET screens = array_replace(screens, 'accounts-depot', 'accounts-department')
+ WHERE 'accounts-depot' = ANY(screens);
+
+-- --------------------------------------------------------------------------
+-- Uploaded files became a screen grant of its own ('uploads'); it used to come
+-- with 'upload'. Anyone who had the upload screen keeps the files screen.
+-- One-off: it only runs while no account holds 'uploads' yet, so an
+-- administrator who later unticks it for someone is not overruled by the next
+-- migration.
+-- --------------------------------------------------------------------------
+UPDATE users
+   SET screens = array_append(screens, 'uploads')
+ WHERE 'upload' = ANY(screens)
+   AND NOT EXISTS (SELECT 1 FROM users u2 WHERE 'uploads' = ANY(u2.screens));

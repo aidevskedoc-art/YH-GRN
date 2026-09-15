@@ -76,7 +76,7 @@ export function requireAdmin(req, res, next) {
  * same list it edits.
  *
  * More than one key is allowed because a route can stand behind more than one
- * screen: the Accounts Depot is the results screen with two of its five views,
+ * screen: the Accounts Department is the results screen with two of its five views,
  * reading the same rows from the same endpoints, so those carry both keys (see
  * routes/results.js) rather than a second copy of every query. Holding either
  * is enough -- these are alternatives, not a set to satisfy all of.

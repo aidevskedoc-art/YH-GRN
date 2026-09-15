@@ -236,10 +236,25 @@ export const IconDepartment = (p) => (
 );
 
 /**
- * The Accounts Depot: a bank front, the destination the PR-to-Bank ageing is
+ * The Accounts Department: a bank front, the destination the PR-to-Bank ageing is
  * measured to. Distinct at 18px from IconDepartment's office block beside it in
  * the sidebar -- a pediment and columns rather than two flat-roofed boxes.
  */
+/** Take back: an arrow curling back on itself, for undoing a send. */
+export const IconUndo = (p) => (
+  <Icon {...p}>
+    <path d="M9 14 4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </Icon>
+);
+
+/** Activity logs: a pulse line, for the admin's monitoring screen. */
+export const IconActivity = (p) => (
+  <Icon {...p}>
+    <path d="M3 12h4l2.5-6 5 12 2.5-6h4" />
+  </Icon>
+);
+
 export const IconBank = (p) => (
   <Icon {...p}>
     <path d="M3 10h18" />

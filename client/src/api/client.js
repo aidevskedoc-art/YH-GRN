@@ -122,6 +122,24 @@ export const api = {
   /** Remove the account. What it uploaded or sent stays, with the name dropped. */
   deleteUser: (id) => request(`/users/${id}`, { method: 'DELETE' }),
 
+  /* --- Activity log -------------------------------------------------------
+     Administrator-only. Who did what and when, newest first, with the counts,
+     action catalogue and people the screen's cards and filters are built from.
+     `all` drops the pagination, for the export. */
+  listLogs: ({ page = 1, pageSize = 20, q, category, action, userId, from, to, deleted, all } = {}) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (q) params.set('q', q);
+    // Only tracked deletions: uploads and files, users, branches.
+    if (deleted) params.set('deleted', '1');
+    if (category) params.set('category', category);
+    if (action) params.set('action', action);
+    if (userId) params.set('userId', String(userId));
+    if (from) params.set('from', from);
+    if (to) params.set('to', to);
+    if (all) params.set('all', '1');
+    return request(`/logs?${params}`);
+  },
+
   listBatches: () => request('/batches'),
   deleteBatch: (id) => request(`/batches/${id}`, { method: 'DELETE' }),
 
@@ -155,7 +173,7 @@ export const api = {
    * the counts beside the filter options -- because it is a scope rather than a
    * question about a row.
    */
-  results: (id, { status, page = 1, pageSize = 50, q, progress, location, dept, chequeNo } = {}) => {
+  results: (id, { status, page = 1, pageSize = 50, q, progress, location, dept, chequeNo, view } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (status) params.set('status', status);
     if (q) params.set('q', q);
@@ -170,6 +188,9 @@ export const api = {
     // cheque and not just the bill on screen -- see chequeGroup in
     // ResultsTable.jsx.
     if (chequeNo) params.set('chequeNo', chequeNo);
+    // 'cheque' for the Accounts Department's Cheque view: one row per cheque, with
+    // its bills' PayableAmount summed into `chequeAmount`.
+    if (view) params.set('view', view);
     return request(`/batches/${id}/results?${params}`);
   },
 
@@ -224,7 +245,7 @@ export const api = {
    * Those counts follow `q` but not `stage` -- they are how a stage is picked.
    * `all` drops the pagination, for export.
    */
-  listCsd: ({ page = 1, pageSize = 20, q, stage, location, all, chequeNo } = {}) => {
+  listCsd: ({ page = 1, pageSize = 20, q, stage, location, all, chequeNo, view } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (stage) params.set('stage', stage);
@@ -236,6 +257,8 @@ export const api = {
     // Action column asks for this before it moves anything, so that a stage
     // move carries the whole cheque -- see chequeGroup in Csd.jsx.
     if (chequeNo) params.set('chequeNo', chequeNo);
+    // 'cheque' for the Cheque view: one row per cheque -- see chequeDispatches.
+    if (view) params.set('view', view);
     return request(`/csd?${params}`);
   },
 
@@ -335,9 +358,11 @@ export const api = {
    * the cheque pair), `dept` one BPAD desk, `register` the 'missing' rows.
    * Anything left out narrows nothing.
    */
-  exportRows: (id, status, { q, progress, location, dept, register } = {}) => {
+  exportRows: (id, status, { q, progress, location, dept, register, view } = {}) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
+    // 'cheque' for the Accounts view's Cheque view sheet -- see chequeRows.
+    if (view) params.set('view', view);
     if (q) params.set('q', q);
     if (progress) params.set('progress', progress);
     if (location) params.set('location', location);

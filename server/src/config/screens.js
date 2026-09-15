@@ -10,21 +10,20 @@
  * the client decides what to show from the same string the server decides what
  * to serve from, so a screen cannot be visible in the nav but closed at the API.
  */
+/*
+ * In the sidebar's order and under the sidebar's names, so the Screen access
+ * tick boxes on User management read as a list of the menu an account will see.
+ */
 export const SCREENS = [
   {
     key: 'upload',
-    label: 'New reconciliation',
-    hint: 'Upload the two monthly reports and run a reconciliation.',
+    label: 'New uploads',
+    hint: 'Upload the monthly reports and run a reconciliation.',
   },
   {
     key: 'results',
-    label: 'Reconciliation results',
+    label: 'Results',
     hint: 'Pending, Valid GRNs and the GRNS SPAN turnaround report.',
-  },
-  {
-    key: 'csd',
-    label: 'CS Department',
-    hint: 'The handover queue and its stages.',
   },
   {
     // The results screen narrowed to the two views Accounts works from: the
@@ -37,17 +36,42 @@ export const SCREENS = [
     //
     // It reads exactly what the results screen reads, so every route behind
     // that screen admits this key as well -- see requireScreen('results',
-    // 'accounts-depot') in routes/results.js. That is the reason it is not
+    // 'accounts-department') in routes/results.js. That is the reason it is not
     // simply granted alongside `results`: holding both would put the full
     // screen back in the navigation, which is what this one exists to avoid.
-    key: 'accounts-depot',
-    label: 'Accounts Depot',
+    key: 'accounts-department',
+    label: 'Accounts Department',
     hint: 'Accounts and the PR-to-Bank ageing, without the pending half.',
+  },
+  {
+    key: 'csd',
+    label: 'CS Department',
+    hint: 'The handover queue and its stages.',
   },
   {
     key: 'config',
     label: 'Configuration',
     hint: 'Branch codes, locations and bank accounts, and which branches are in scope.',
+  },
+  {
+    // What has been uploaded, file by file. Its own grant now rather than
+    // coming with `upload`; deleting an upload or a file stays administrator-only.
+    key: 'uploads',
+    label: 'Uploaded files',
+    hint: 'Every upload and its files. Deleting them stays with administrators.',
+  },
+  {
+    // Account management. A standard user given this can create and edit
+    // standard accounts, but cannot create, change or delete an administrator
+    // -- see the guards in routes/users.js.
+    key: 'users',
+    label: 'User management',
+    hint: 'Create and edit standard accounts. Administrator accounts stay with administrators.',
+  },
+  {
+    key: 'logs',
+    label: 'Activity logs',
+    hint: 'Who did what and when, including deletions. Read-only.',
   },
 ];
 

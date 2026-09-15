@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { api } from '../api/client.js';
-import { IconCheck, IconSend } from './icons.jsx';
+import { IconCheck, IconSend, IconUndo } from './icons.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import Sheet from './Sheet.jsx';
 import { chequePrepared } from '../services/cheque.js';
 import { useConfirm } from './ConfirmDialog.jsx';
+import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, canHandToCsd } from '../services/resultsViews.js';
 
 const currency = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -387,29 +388,30 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, grouped = fal
   // Sent to CSD and still recallable -- the GRN went by mistake and CSD have
   // not acted on it yet.
   //
-  // A picker rather than a button beside the badge, because that is the idiom
-  // this column already uses: it rests on where the row has got to and its
-  // options are the moves available from there, the same shape the unsent
-  // state and the Accounts hand-back picker both have. It also keeps the one
-  // destructive control on this screen behind a deliberate choose-then-confirm
-  // rather than a single click next to "Sent".
+  // A plain Take back button. It used to be a dropdown resting on "Sent" with
+  // Take back as its second option, which read as a label rather than a
+  // control and left people unsure what to do with it. The Status column
+  // beside this one already says it was sent, and pressing the button still
+  // asks for confirmation before anything is taken back (see takeBack).
   if (sent && canTakeBack(row, canCsd)) {
     return (
-      <select
-        className="stage-select send-select"
-        value=""
+      <button
+        type="button"
+        className="csd csd--take-back csd--recall"
         disabled={busy}
-        onChange={(e) => e.target.value && onTakeBack(row)}
-        aria-label={`GRN ${row.dprNo} is in the CSD queue - take it back`}
+        onClick={() => onTakeBack(row)}
+        aria-label={`Take GRN ${row.dprNo} back off the CSD queue`}
         title={
           grouped
             ? `GRN ${row.dprNo} is in the CSD queue. Taking it back takes every GRN paid by cheque ${row.chequeNo} back with it.`
             : `GRN ${row.dprNo} is in the CSD queue. Take it back while CSD have not acted on it.`
         }
       >
-        <option value="">Sent</option>
-        <option value="TAKE_BACK">Take back</option>
-      </select>
+        <span className="csd__icon">
+          <IconUndo size={14} />
+        </span>
+        {busy ? 'Taking back…' : 'Take back'}
+      </button>
     );
   }
 
@@ -486,9 +488,10 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, grouped = fal
           that is not ready, and the ageing report's next upload may well make
           it so.
 
-          No access: an account that was not given the CS Department screen
-          cannot hand a GRN to it -- the POST is refused by
-          requireScreen('csd'). It is the account that cannot, not the row.
+          No access: an account holding none of the CS Department, Results or
+          Accounts screens cannot hand a GRN over -- see canHandToCsd, and
+          CSD_HANDOVER in routes/csd.js. It is the account that cannot, not the
+          row.
 
           Either way the option stays, disabled, rather than being dropped: the
           row still reads as one that COULD go to CSD, and says plainly why it
@@ -802,6 +805,10 @@ export default function ResultsTable({
   multiMode,
   selected,
   onToggleRow,
+  // The Accounts Department's GRN / Cheque view (see ACCOUNTS_GRN_VIEW in
+  // services/resultsViews.js), or undefined for every column at once, which is
+  // how the results screen shows the Accounts view.
+  accountsView,
 }) {
   const { can } = useAuth();
 
@@ -826,6 +833,13 @@ export default function ResultsTable({
   const isPending = status === 'PENDING';
   const showGrnSide = isPending || isAll;
   const showAgeing = !isPending;
+  // Cheque view: a row per cheque, so the per-GRN columns -- GRN No and Date,
+  // Bill No and Date, Focus doc_no and the ageing amounts -- give way to the
+  // cheque's own summed Cheque Amount. GRN view is the other way round: the
+  // cheque's four columns are left off.
+  const byCheque = showAgeing && accountsView === ACCOUNTS_CHEQUE_VIEW;
+  const showGrnDetail = !byCheque;
+  const showChequeDetail = showAgeing && accountsView !== ACCOUNTS_GRN_VIEW;
   // Which GRNs are in flight, and which have landed since this table was drawn.
   //
   // A set rather than one GRN number: every action in this column now acts on
@@ -863,12 +877,16 @@ export default function ResultsTable({
     (multiMode && showAgeing ? 1 : 0) + // bulk-select checkbox
     (isAll ? 1 : 0) + // Match
     (showGrnSide ? 1 : 0) + // Warehouse
-    7 + // Division, GRN No, GRN Date, Bill No, Bill Date, Vendor, Vendor Code
+    4 + // Division, GRN No (Cheque No on Cheque view), Vendor, Vendor Code
+    (showGrnDetail ? 3 : 0) + // GRN Date, Bill No, Bill Date
     // Bill.Amount, Transport Amount, Total Amount, Add.Amount, Ded.Amount
     (showGrnSide ? 5 : 0) +
-    // Focus doc_no, the amounts, Cheque No, Cheque Date, PaymentDocNo,
-    // Account No, Action, Status
-    (showAgeing ? AMOUNT_COLUMNS.length + 7 : 0);
+    // Focus doc_no and the amounts, or the Cheque Amount in their place
+    (showAgeing ? (showGrnDetail ? 1 + AMOUNT_COLUMNS.length : 1) : 0) +
+    // Cheque No (pinned up front on Cheque view), Cheque Date, PaymentDocNo,
+    // Account No
+    (showChequeDetail ? (byCheque ? 3 : 4) : 0) +
+    (showAgeing ? 2 : 0); // Action, Status
 
   const isSent = (row) => row.csdSent || justSent.has(row.dprNo);
   const isFiled = (row) => row.recordsSent || justFiled.has(row.dprNo);
@@ -886,7 +904,7 @@ export default function ResultsTable({
    * and they are what chequeGroup below reads to work out which same-cheque
    * rows a per-row picker should carry with it.
    *
-   * `canSend` is kept apart from `canBulkCsd` because `can('csd')` is a fact
+   * `canSend` is kept apart from `canBulkCsd` because `canHandToCsd(can)` is a fact
    * about the account, not about the row: Send to Records is open to anyone
    * looking at this table, and which rows travel together is decided by what
    * the rows are, not by which of the two destinations was picked.
@@ -907,7 +925,7 @@ export default function ResultsTable({
     // No cheque drawn up yet, so there is nothing to hand over -- the same bar
     // the Send picker puts on its CSD option.
     chequePrepared(row) === true;
-  const canBulkCsd = (row) => can('csd') && canSend(row);
+  const canBulkCsd = (row) => canHandToCsd(can) && canSend(row);
   const canBulkReceive = (row) =>
     row.csdStage === 'MOVED_TO_ACCOUNTS' && (row.csdAccountsStage || 'QUEUED') === 'QUEUED';
   const canBulkForward = (row) =>
@@ -1050,7 +1068,7 @@ export default function ResultsTable({
 
     let group;
     try {
-      group = await chequeGroup(row, (r) => canTakeBack(r, can('csd')));
+      group = await chequeGroup(row, (r) => canTakeBack(r, canHandToCsd(can)));
     } catch (err) {
       setError(err.message);
       setBusy(new Set());
@@ -1188,10 +1206,12 @@ export default function ResultsTable({
                 styles.css -- since the two together are what a row is looked
                 up by once the table is scrolled sideways. */}
             <th className="table__pin table__pin--division">Division</th>
-            <th className="table__pin table__pin--grn">GRN No</th>
-            <th>GRN Date</th>
-            <th>Bill No</th>
-            <th>Bill Date</th>
+            {/* On Cheque view the cheque is what a row is looked up by, so it
+                takes GRN No's pinned place. */}
+            <th className="table__pin table__pin--grn">{byCheque ? 'Cheque No' : 'GRN No'}</th>
+            {showGrnDetail && <th>GRN Date</th>}
+            {showGrnDetail && <th>Bill No</th>}
+            {showGrnDetail && <th>Bill Date</th>}
             <th>Vendor</th>
             {/* The code used to sit under the name and was not shown at all.
                 Both are columns now: a code tucked under a name cannot be read
@@ -1208,18 +1228,22 @@ export default function ResultsTable({
             {showGrnSide && <th className="table__num">Total Amount</th>}
             {showGrnSide && <th className="table__num">Add.Amount</th>}
             {showGrnSide && <th className="table__num">Ded.Amount</th>}
-            {showAgeing && <th>Focus doc_no</th>}
+            {showAgeing && showGrnDetail && <th>Focus doc_no</th>}
             {showAgeing &&
+              showGrnDetail &&
               AMOUNT_COLUMNS.map((c) => (
                 <th key={c.key} className="table__num">
                   {c.label}
                 </th>
               ))}
-            {showAgeing && <th>Cheque No</th>}
+            {showChequeDetail && !byCheque && <th>Cheque No</th>}
             {/* The day the cheque was cut, off the ageing report -- beside the
                 cheque it belongs to, and not to be read as the day it cleared.
                 That is the bank's answer, and it is in Status. */}
-            {showAgeing && <th>Cheque Date</th>}
+            {showChequeDetail && <th>Cheque Date</th>}
+            {/* Every PayableAmount the cheque pays, added up on the server --
+                see chequeRows in routes/results.js. */}
+            {byCheque && <th className="table__num">Cheque Amount</th>}
             {/* The ageing report's own reference for the payment -- "Pmt:SE1/
                 26-27/RTG/929", "ADVP:..." for an advance. After the cheque
                 rather than beside Focus doc_no, because it identifies the
@@ -1231,11 +1255,11 @@ export default function ResultsTable({
                 PayableAmount beside it are headed and how every sheet of the
                 export spells it -- one name for the column wherever it is
                 read. */}
-            {showAgeing && <th>PaymentDocNo</th>}
+            {showChequeDetail && <th>PaymentDocNo</th>}
             {/* The account the branch banks through, off the configuration
                 screen rather than off any of the three reports -- so it sits
                 after the cheque, as the account that cheque was drawn on. */}
-            {showAgeing && <th>Account No</th>}
+            {showChequeDetail && <th>Account No</th>}
             {showAgeing && <th>Action</th>}
             {showAgeing && <th>Status</th>}
           </tr>
@@ -1252,7 +1276,7 @@ export default function ResultsTable({
             </tr>
           )}
           {rows.map((row) => (
-            <tr key={row.dprNo}>
+            <tr key={byCheque ? `${row.chequeNo}:${row.dprNo}` : row.dprNo}>
               {multiMode && showAgeing && (
                 <td className="table__select table__pin table__pin--select">
                   {canBulkSelect(row) && (
@@ -1260,7 +1284,11 @@ export default function ResultsTable({
                       type="checkbox"
                       checked={selected.has(row.dprNo)}
                       onChange={() => onToggleRow(row)}
-                      aria-label={`Select GRN ${row.dprNo} for a bulk action`}
+                      aria-label={
+                        byCheque
+                          ? `Select cheque ${row.chequeNo} for a bulk action`
+                          : `Select GRN ${row.dprNo} for a bulk action`
+                      }
                     />
                   )}
                 </td>
@@ -1276,10 +1304,21 @@ export default function ResultsTable({
                   <span className="table__miss">&mdash;</span>
                 )}
               </td>
-              <td className="table__mono table__pin table__pin--grn">{row.dprNo}</td>
-              <td>{formatDate(row.dprDate)}</td>
-              <td className="table__mono">{row.billNo}</td>
-              <td>{formatDate(row.billDate)}</td>
+              {byCheque ? (
+                <td className="table__mono table__pin table__pin--grn">
+                  {row.chequeNo || <span className="table__miss">&mdash;</span>}
+                  {row.chequeGrnCount != null && (
+                    <div className="table__sub">
+                      {`${row.chequeGrnCount} GRN${row.chequeGrnCount === 1 ? '' : 's'}`}
+                    </div>
+                  )}
+                </td>
+              ) : (
+                <td className="table__mono table__pin table__pin--grn">{row.dprNo}</td>
+              )}
+              {showGrnDetail && <td>{formatDate(row.dprDate)}</td>}
+              {showGrnDetail && <td className="table__mono">{row.billNo}</td>}
+              {showGrnDetail && <td>{formatDate(row.billDate)}</td>}
               <td>{row.vendorName}</td>
               <td className="table__mono">
                 {row.vendorCode || <span className="table__miss">&mdash;</span>}
@@ -1291,12 +1330,13 @@ export default function ResultsTable({
               {showGrnSide && <td className="table__num">{formatAmount(row.totalAmount)}</td>}
               {showGrnSide && <td className="table__num">{formatAmountOrDash(row.addAmount)}</td>}
               {showGrnSide && <td className="table__num">{formatAmountOrDash(row.dedAmount)}</td>}
-              {showAgeing && (
+              {showAgeing && showGrnDetail && (
                 <td className="table__mono">
                   {row.ageingGrnNo || <span className="table__miss">&mdash;</span>}
                 </td>
               )}
               {showAgeing &&
+                showGrnDetail &&
                 AMOUNT_COLUMNS.map((c) => (
                   <td key={c.key} className="table__num">
                     {/* A pending row has no ageing entry, so these are not
@@ -1309,15 +1349,16 @@ export default function ResultsTable({
                     )}
                   </td>
                 ))}
-              {showAgeing && (
+              {showChequeDetail && !byCheque && (
                 <td className="table__mono">
                   {row.chequeNo || <span className="table__miss">&mdash;</span>}
                 </td>
               )}
-              {showAgeing && (
+              {showChequeDetail && (
                 <td>{formatDate(row.chqDate) || <span className="table__miss">&mdash;</span>}</td>
               )}
-              {showAgeing && (
+              {byCheque && <td className="table__num">{formatAmountOrDash(row.chequeAmount)}</td>}
+              {showChequeDetail && (
                 /* Mono, like every other identifier in this table: it is a
                    reference to be read character by character and compared,
                    not a phrase. A dash where the report carries none, which is
@@ -1326,7 +1367,7 @@ export default function ResultsTable({
                   {row.paymentDocNo || <span className="table__miss">&mdash;</span>}
                 </td>
               )}
-              {showAgeing && (
+              {showChequeDetail && (
                 <td className="table__mono">
                   {/* Blank when the row's branch has no account recorded, or
                       no configured branch claims it -- there is nothing to
@@ -1369,7 +1410,7 @@ export default function ResultsTable({
                       sent={isSent(row)}
                       filed={isFiled(row)}
                       busy={busy.has(row.dprNo)}
-                      canCsd={can('csd')}
+                      canCsd={canHandToCsd(can)}
                       chequeReady={chequePrepared(row) === true}
                       grouped={Boolean(row.chequeNo)}
                       onSend={send}

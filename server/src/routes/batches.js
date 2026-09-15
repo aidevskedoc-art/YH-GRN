@@ -14,6 +14,7 @@ import {
 import { normKey } from '../services/normalize.js';
 import { reconcile } from '../services/reconcile.js';
 import { saveBatch } from '../services/ingest.js';
+import { logActivity } from '../services/activityLog.js';
 
 export const batchesRouter = express.Router();
 
@@ -312,6 +313,25 @@ batchesRouter.post(
       bpadScanned: bpad?.scanned ?? 0,
     });
 
+    const files = [grnFile, ageingFile, bankFile, bpadFile].filter(Boolean).map((f) => f.originalname);
+    logActivity(req, {
+      action: 'UPLOAD',
+      target: name,
+      summary: `Uploaded ${files.length} file${files.length === 1 ? '' : 's'}: ${files.join(', ')}`,
+      details: {
+        batchId,
+        grnFile: grnFile?.originalname ?? null,
+        grnRows: grn?.rows.length ?? 0,
+        ageingFile: ageingFile?.originalname ?? null,
+        ageingRows: ageing?.rows.length ?? 0,
+        bankFile: bankFile?.originalname ?? null,
+        bankRows: bank?.rows.length ?? 0,
+        bpadFile: bpadFile?.originalname ?? null,
+        bpadStoredRows: bpadRows.length,
+        reopenedRejections,
+      },
+    });
+
     return res.status(201).json({
       batchId,
       name,
@@ -373,6 +393,49 @@ batchesRouter.get(
 );
 
 /**
+ * An upload as it stood, for the activity log's record of deleting it or one of
+ * its files: who uploaded it and when, each file it carried with its row count,
+ * and how many reconciled results it held. Only the batch's own summary -- the
+ * rows themselves (thousands per file) are not copied.
+ *
+ * `runner` is anything with a `query` method -- the pool, or a transaction's
+ * client -- so the file delete can read it inside its own transaction.
+ * Returns null when the upload does not exist.
+ */
+async function uploadSnapshot(runner, batchId) {
+  const { rows } = await runner.query(
+    `SELECT b.name, b.uploaded_at,
+            b.grn_file_name, b.grn_row_count, b.ageing_file_name, b.ageing_row_count,
+            b.bank_file_name, b.bank_row_count, b.bank_account_no,
+            b.bpad_file_name, b.bpad_row_count, b.bpad_matched_count,
+            u.username AS uploaded_by, u.full_name AS uploaded_by_name,
+            (SELECT COUNT(*)::int FROM reconciliation_results r WHERE r.batch_id = b.id) AS result_count
+       FROM upload_batches b
+       LEFT JOIN users u ON u.id = b.uploaded_by
+      WHERE b.id = $1`,
+    [batchId],
+  );
+  const b = rows[0];
+  if (!b) return null;
+  return {
+    uploadName: b.name,
+    uploadedBy: b.uploaded_by_name || b.uploaded_by || null,
+    uploadedAt: b.uploaded_at,
+    grnFile: b.grn_file_name,
+    grnRows: b.grn_file_name ? b.grn_row_count : null,
+    ageingFile: b.ageing_file_name,
+    ageingRows: b.ageing_file_name ? b.ageing_row_count : null,
+    bankFile: b.bank_file_name,
+    bankRows: b.bank_file_name ? b.bank_row_count : null,
+    bankAccountNo: b.bank_account_no,
+    bpadFile: b.bpad_file_name,
+    bpadRows: b.bpad_file_name ? b.bpad_row_count : null,
+    bpadMatched: b.bpad_file_name ? b.bpad_matched_count : null,
+    reconciledResults: b.result_count,
+  };
+}
+
+/**
  * DELETE /api/batches/:id - removes the batch and everything under it.
  *
  * Administrators only. Being given the upload screen is permission to add a
@@ -385,8 +448,17 @@ batchesRouter.delete(
   '/:id',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const { rowCount } = await query('DELETE FROM upload_batches WHERE id = $1', [Number(req.params.id)]);
-    if (rowCount === 0) return res.status(404).json({ error: 'That upload no longer exists.' });
+    const batchId = Number(req.params.id);
+    // What is about to go, taken before it goes -- see uploadSnapshot.
+    const snapshot = await uploadSnapshot({ query }, batchId);
+    const { rows } = await query('DELETE FROM upload_batches WHERE id = $1 RETURNING id, name', [batchId]);
+    if (rows.length === 0) return res.status(404).json({ error: 'That upload no longer exists.' });
+    logActivity(req, {
+      action: 'UPLOAD_DELETE',
+      target: rows[0].name,
+      summary: `Deleted upload "${rows[0].name}" and everything under it`,
+      details: { batchId: rows[0].id, ...snapshot },
+    });
     return res.status(204).end();
   }),
 );
@@ -515,7 +587,7 @@ batchesRouter.delete(
       // last two files at once cannot both read "one file left" and leave a
       // batch behind that names none.
       const { rows } = await client.query(
-        `SELECT grn_file_name, ageing_file_name, bank_file_name, bpad_file_name
+        `SELECT name, grn_file_name, ageing_file_name, bank_file_name, bpad_file_name
            FROM upload_batches WHERE id = $1 FOR UPDATE`,
         [batchId],
       );
@@ -524,6 +596,9 @@ batchesRouter.delete(
       const batch = rows[0];
       if (!batch[kind.column]) return { missing: 'file' };
 
+      // The upload as it stood before this file came out of it, for the log.
+      const snapshot = await uploadSnapshot(client, batchId);
+
       const rowsDeleted = await kind.remove(client, batchId);
 
       // What the upload would still be carrying afterwards.
@@ -531,20 +606,46 @@ batchesRouter.delete(
         (k) => k.column !== kind.column && batch[k.column],
       );
 
+      const fileName = batch[kind.column];
       if (remaining.length === 0) {
         // Everything under it cascades -- see the references in schema.sql.
         await client.query('DELETE FROM upload_batches WHERE id = $1', [batchId]);
-        return { rowsDeleted, batchDeleted: true };
+        return { rowsDeleted, batchDeleted: true, batchName: batch.name, fileName, snapshot };
       }
 
       await client.query(`UPDATE upload_batches SET ${kind.clear} WHERE id = $1`, [batchId]);
-      return { rowsDeleted, batchDeleted: false };
+      return { rowsDeleted, batchDeleted: false, batchName: batch.name, fileName, snapshot };
     });
 
     if (result.missing === 'batch') return res.status(404).json({ error: 'That upload no longer exists.' });
     if (result.missing === 'file') {
       return res.status(404).json({ error: `This upload has no ${kind.label} to remove.` });
     }
+
+    logActivity(req, {
+      action: 'UPLOAD_FILE_DELETE',
+      target: result.batchName,
+      summary:
+        `Deleted the ${kind.label} (${result.fileName}) from "${result.batchName}"` +
+        (result.batchDeleted ? ' — the upload had no other file, so it was deleted too' : ''),
+      details: {
+        batchId,
+        fileType: kind.label,
+        fileName: result.fileName,
+        rowsDeleted: result.rowsDeleted,
+        uploadAlsoDeleted: result.batchDeleted,
+        uploadedBy: result.snapshot?.uploadedBy ?? null,
+        uploadedAt: result.snapshot?.uploadedAt ?? null,
+        // Every file the upload carried before this one came out, so what is
+        // left behind can be read off the entry too.
+        filesBefore: [
+          result.snapshot?.grnFile,
+          result.snapshot?.ageingFile,
+          result.snapshot?.bankFile,
+          result.snapshot?.bpadFile,
+        ].filter(Boolean),
+      },
+    });
 
     return res.json({
       batchId,

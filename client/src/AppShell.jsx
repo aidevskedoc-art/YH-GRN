@@ -4,6 +4,7 @@ import { useAuth } from './context/AuthContext.jsx';
 import { api } from './api/client.js';
 import { BrandLockup } from './components/Brand.jsx';
 import {
+  IconActivity,
   IconBank,
   IconChevronLeft,
   IconChevronRight,
@@ -36,26 +37,27 @@ const NARROW = '(max-width: 940px)';
  */
 const NAV = [
   { to: '/upload', label: 'New uploads', icon: IconUpload, end: true, screen: 'upload' },
-  // The upload screen's other half: what is already in, and where one file
-  // is taken back out. Same grant as the form above -- the delete itself is
-  // gated on the role, not on the nav entry.
   // end:false so /results/:batchId keeps the entry highlighted.
   { to: '/results', label: 'Results', icon: IconReport, end: false, badge: true, screen: 'results' },
     {
-    to: '/accounts-depot',
+    to: '/accounts-department',
     label: 'Accounts',
     icon: IconBank,
     end: true,
-    screen: 'accounts-depot',
+    screen: 'accounts-department',
   },
-  { to: '/csd', label: 'CS Departmemt', icon: IconDepartment, end: true, screen: 'csd' },
+  { to: '/csd', label: 'CS Department', icon: IconDepartment, end: true, screen: 'csd' },
   // The results screen's Accounts and PR-to-Bank views on their own. After
   // Results rather than beside it: an admin sees both, and the fuller screen
   // should come first for anyone who holds it.
 
   { to: '/config', label: 'Configuration', icon: IconSliders, end: true, screen: 'config' },
-  { to: '/uploads', label: 'Uploaded files', icon: IconSheet, end: true, screen: 'upload' },
-  { to: '/users', label: 'User management', icon: IconUsers, end: true, adminOnly: true },
+  // Every entry below is its own tick box on User management now -- deleting
+  // an upload or file, and changing an administrator account, stay with the
+  // administrator role on the server.
+  { to: '/uploads', label: 'Uploaded files', icon: IconSheet, end: true, screen: 'uploads' },
+  { to: '/users', label: 'User management', icon: IconUsers, end: true, screen: 'users' },
+  { to: '/logs', label: 'Activity logs', icon: IconActivity, end: true, screen: 'logs' },
 ];
 
 /** Title and breadcrumb for the top bar, derived from the active route. */
@@ -66,11 +68,12 @@ function pageTitle(pathname) {
   if (pathname.startsWith('/results')) {
     return { title: 'Reconciliation results', crumb: 'Results / Pending vs accounts' };
   }
-  if (pathname.startsWith('/csd')) return { title: 'CS Departmemt', crumb: 'CSD / Handed over' };
-  if (pathname.startsWith('/accounts-depot')) {
-    return { title: 'Accounts Depot', crumb: 'Accounts / In accounts and ageing' };
+  if (pathname.startsWith('/csd')) return { title: 'CS Department', crumb: 'CSD / Handed over' };
+  if (pathname.startsWith('/accounts-department')) {
+    return { title: 'Accounts Department', crumb: 'Accounts / In accounts and ageing' };
   }
   if (pathname.startsWith('/users')) return { title: 'User management', crumb: 'Admin / Accounts' };
+  if (pathname.startsWith('/logs')) return { title: 'Activity logs', crumb: 'Admin / Monitoring' };
   return { title: 'GRN Reconciliation', crumb: '' };
 }
 

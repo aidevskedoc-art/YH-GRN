@@ -1,10 +1,11 @@
 /**
  * User management.
  *
- * The administrator's screen: who has an account, what role it carries, and
- * which screens it may open. It is reachable only by an ADMIN -- the route is
- * guarded, the sidebar entry is hidden, and every request behind it is refused
- * by requireAdmin on the server.
+ * Who has an account, what role it carries, and which screens it may open.
+ * Behind the User management screen grant, which administrators hold by
+ * default. A standard user given it manages standard accounts only: the server
+ * refuses them administrator accounts (see routes/users.js), and those rows'
+ * controls are disabled here.
  *
  * The screen and role catalogues come down with the accounts on GET /api/users,
  * from server/src/config/screens.js, so the tick boxes on this page and the
@@ -436,6 +437,10 @@ export default function Users() {
   );
 
   const adminCount = users.filter((u) => u.role === 'ADMIN' && u.isActive).length;
+  // A standard user given this screen manages standard accounts only; the
+  // server refuses them administrator accounts, and these rows say so up front.
+  const canManageAdmins = data?.canManageAdmins ?? me?.role === 'ADMIN';
+  const ADMIN_LOCKED = 'Only an administrator can change an administrator account.';
 
   async function saveUser(values) {
     setSaving(true);
@@ -586,6 +591,7 @@ export default function Users() {
             {users.map((row) => {
               const isSelf = row.id === me?.id;
               const isAdminRow = row.role === 'ADMIN';
+              const locked = isAdminRow && !canManageAdmins;
               const granted = isAdminRow ? screens.map((s) => s.key) : row.screens;
 
               return (
@@ -672,9 +678,9 @@ export default function Users() {
                       <button
                         type="button"
                         className="icon-btn ghost"
-                        title={`Edit ${row.username}`}
+                        title={locked ? ADMIN_LOCKED : `Edit ${row.username}`}
                         aria-label={`Edit ${row.username}`}
-                        disabled={busy === row.id}
+                        disabled={busy === row.id || locked}
                         onClick={() => {
                           setFormError('');
                           setForm({ ...row, password: '' });
@@ -686,9 +692,9 @@ export default function Users() {
                       <button
                         type="button"
                         className="icon-btn ghost"
-                        title={`Reset the password for ${row.username}`}
+                        title={locked ? ADMIN_LOCKED : `Reset the password for ${row.username}`}
                         aria-label={`Reset the password for ${row.username}`}
-                        disabled={busy === row.id}
+                        disabled={busy === row.id || locked}
                         onClick={() => {
                           setFormError('');
                           setResetting(row);
@@ -700,9 +706,11 @@ export default function Users() {
                       <button
                         type="button"
                         className="ghost ghost--sm"
-                        disabled={busy === row.id || isSelf}
+                        disabled={busy === row.id || isSelf || locked}
                         title={
-                          isSelf
+                          locked
+                            ? ADMIN_LOCKED
+                            : isSelf
                             ? 'You cannot deactivate the account you are signed in as.'
                             : row.isActive
                               ? `Stop ${row.username} signing in`
@@ -717,12 +725,14 @@ export default function Users() {
                         type="button"
                         className="icon-btn ghost icon-btn--danger"
                         title={
-                          isSelf
-                            ? 'You cannot delete the account you are signed in as.'
-                            : `Delete ${row.username}`
+                          locked
+                            ? ADMIN_LOCKED
+                            : isSelf
+                              ? 'You cannot delete the account you are signed in as.'
+                              : `Delete ${row.username}`
                         }
                         aria-label={`Delete ${row.username}`}
-                        disabled={busy === row.id || isSelf}
+                        disabled={busy === row.id || isSelf || locked}
                         onClick={() => removeUser(row)}
                       >
                         <IconTrash size={16} />

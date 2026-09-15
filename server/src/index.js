@@ -10,6 +10,8 @@ import { batchesRouter } from './routes/batches.js';
 import { resultsRouter, ageingRouter, recordsRouter, accountsReturnsRouter } from './routes/results.js';
 import { csdRouter } from './routes/csd.js';
 import { configRouter } from './routes/config.js';
+import { logsRouter } from './routes/logs.js';
+import { purgeOldLogs } from './services/activityLog.js';
 import { errorHandler } from './middleware/error.js';
 
 const app = express();
@@ -49,6 +51,9 @@ app.use('/api/records', recordsRouter);
 // from -- see the section at the foot of routes/results.js.
 app.use('/api/accounts-returns', accountsReturnsRouter);
 app.use('/api/batches', batchesRouter);
+// Who did what, for the Activity logs screen. Administrator-only, enforced
+// inside the router.
+app.use('/api/logs', logsRouter);
 
 // Serve the built client if it exists, so `npm start` alone runs the whole app.
 const clientDist = path.join(config.rootDir, 'client', 'dist');
@@ -68,6 +73,12 @@ const server = app.listen(config.port, () => {
     console.log(`Client dev server expected at ${config.clientOrigin}`);
   }
 });
+
+// The activity log keeps 90 days: trimmed once at startup, then daily. unref so
+// the timer never holds the process open on shutdown.
+const DAY_MS = 24 * 60 * 60 * 1000;
+purgeOldLogs();
+setInterval(purgeOldLogs, DAY_MS).unref();
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {

@@ -455,7 +455,7 @@ code, .mono {
    so the button is never painted over by either as they scroll or animate --
    the actual bug report this fixed. */
 .rail-toggle {
-  position: absolute;
+  position:fixed;
   top: calc(var(--topbar-h) / 2);
   left: calc(var(--sidebar-w) - 12px);
   transform: translateY(-50%);
@@ -1245,6 +1245,46 @@ select.picker__input {
    control is where locations will appear, and its tooltip says where they come
    from -- a control that is simply absent asks a question nobody can answer. */
 select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
+/* The Accounts Department's GRNs / Cheques switch: two radio buttons in a box the
+   same height as the pickers beside it. */
+.view-radios {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background-color: var(--surface);
+}
+.view-radios__option {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.view-radios__option:hover { color: var(--brand); }
+.view-radios__option.is-active { background: var(--brand-50); color: var(--brand-700); font-weight: 600; }
+.view-radios__option input { margin: 0; accent-color: var(--brand); cursor: pointer; }
+.view-radios__option:focus-within { box-shadow: var(--ring); }
+
+/* --- Activity logs --------------------------------------------------------- */
+/* A From / To date pair in the toolbar: the caption sits beside its input
+   rather than above it, to keep the toolbar one row high. */
+.log-date { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+/* An entry's details, opened under its summary. */
+.log-details {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
 /* Under about a phone's width the head row wraps and the pickers get the line
    to themselves, where sharing it evenly reads better than two short boxes
    against the left margin. */
@@ -1649,6 +1689,10 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 .stat--approved { --stat-tint: var(--ok-soft); --stat-key: var(--ok); }
 .stat--approved .stat__value, .stat--approved .stat__amount { color: var(--ok); }
 .stat--rejected { --stat-tint: var(--danger-soft); --stat-key: var(--danger); }
+/* The Accounts Queue: handed back by CSD, in the same brand tone as its
+   "Handover by CSD" pill in the Status column. */
+.stat--moved_to_accounts { --stat-tint: var(--brand-100); --stat-key: var(--brand); }
+.stat--moved_to_accounts .stat__value, .stat--moved_to_accounts .stat__amount { color: var(--brand-700); }
 .stat--rejected .stat__value, .stat--rejected .stat__amount { color: var(--danger); }
 
 /* --- toolbar */
@@ -2175,6 +2219,13 @@ select.stage-filter { width: auto; min-width: 150px; }
   box-shadow: none;
 }
 .csd--take-back:hover:not(:disabled) .csd__icon { transform: none; }
+/* On the Accounts table the take-back stands alone in its cell, so it keeps an
+   outline at rest -- without one it reads as a label, not a button. */
+.csd--recall {
+  border-color: var(--border-strong);
+  background: var(--surface);
+  color: var(--text);
+}
 
 /* The administrator's delete, on a handover CSD have ruled on. Tinted at rest
    rather than only on hover, unlike .csd--take-back above: a take-back is a

@@ -4,6 +4,9 @@ import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
 import {
+  ACCOUNTS_CHEQUE_VIEW,
+  ACCOUNTS_GRN_VIEW,
+  ACCOUNTS_QUEUE_CARD,
   ACCOUNTS_ROW,
   ACCOUNTS_TAB,
   CHEQUE_CARDS,
@@ -13,8 +16,11 @@ import {
   VALID,
   bulkCategory as bulkCategoryOf,
   bulkCsdEligible,
+  canHandToCsd,
   bulkForwardEligible,
   bulkReceiveEligible,
+  csdCardFigures,
+  progressCardFigures,
   progressFilterOptions,
   sectionSheets,
 } from '../services/resultsViews.js';
@@ -23,6 +29,8 @@ import TurnaroundView from '../components/TurnaroundView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import { IconX } from '../components/icons.jsx';
+import ViewModeRadios from '../components/ViewModeRadios.jsx';
+import { expandCheques, resultsChequeBills } from '../services/chequeGroups.js';
 
 /**
  * The Accounts desk's own screen: the GRNs that reached accounts, and how long
@@ -100,6 +108,7 @@ const CARD_BY_ID = Object.fromEntries([
   [ACCOUNTS_TAB.status, { kind: 'bucket', ...ACCOUNTS_TAB }],
   ...CSD_CARDS.map((card) => [card.stage, { kind: 'csd', ...card }]),
   ...CHEQUE_CARDS.map((card) => [card.progress, { kind: 'progress', ...card }]),
+  [ACCOUNTS_QUEUE_CARD.progress, { kind: 'progress', ...ACCOUNTS_QUEUE_CARD }],
 ]);
 
 /**
@@ -110,7 +119,7 @@ const CARD_BY_ID = Object.fromEntries([
  */
 const ALL = 'all';
 
-export default function AccountsDepot() {
+export default function AccountsDepartment() {
   const { can } = useAuth();
   const navigate = useNavigate();
 
@@ -129,6 +138,11 @@ export default function AccountsDepot() {
   // the CSD and cheque cards as well as by the dropdown -- one filter with two
   // ways in.
   const [progress, setProgress] = useState('');
+  // How the Accounts table is read: a row per GRN, or a row per cheque with its
+  // bills' PayableAmount summed. The cards follow it -- GRN counts first on GRN
+  // view, cheque counts first on Cheque view.
+  const [accountsView, setAccountsView] = useState(ACCOUNTS_GRN_VIEW);
+  const byCheque = accountsView === ACCOUNTS_CHEQUE_VIEW;
   // One branch, by the name the configuration screen gives it, or '' for every
   // branch in scope. It narrows the whole page together -- rows, cards, option
   // counts and the export -- because it is a scope rather than a question
@@ -203,11 +217,19 @@ export default function AccountsDepot() {
     if (status === TURNAROUND) return;
     setLoading(true);
     api
-      .results(batchId, { status, page, pageSize, q, progress, location })
+      .results(batchId, {
+        status,
+        page,
+        pageSize,
+        q,
+        progress,
+        location,
+        view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
+      })
       .then(setData)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [batchId, status, page, pageSize, q, progress, location]);
+  }, [batchId, status, page, pageSize, q, progress, location, byCheque]);
 
   useEffect(loadRows, [loadRows]);
 
@@ -217,7 +239,7 @@ export default function AccountsDepot() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [batchId, status, page, pageSize, q, progress, location]);
+  }, [batchId, status, page, pageSize, q, progress, location, accountsView]);
 
   /*
    * The three things "Select multiple" can batch, mirroring the row's own
@@ -225,10 +247,10 @@ export default function AccountsDepot() {
    * results screen applies to the same rows. Only the CSD one asks anything of
    * this account, so only it takes the grant.
    */
-  const canBulkCsd = (row) => bulkCsdEligible(row, can('csd'));
+  const canBulkCsd = (row) => bulkCsdEligible(row, canHandToCsd(can));
   const canBulkReceive = bulkReceiveEligible;
   const canBulkForward = bulkForwardEligible;
-  const bulkCategory = (row) => bulkCategoryOf(row, can('csd'));
+  const bulkCategory = (row) => bulkCategoryOf(row, canHandToCsd(can));
 
   /**
    * Ticking one row also ticks every other row on the page still eligible for
@@ -264,6 +286,27 @@ export default function AccountsDepot() {
   }
 
   const selectedRows = (data?.rows || []).filter((row) => selected.has(row.dprNo));
+
+  /** What the bulk buttons call the selection: GRNs, or cheques on Cheque view. */
+  const selectedLabel = byCheque
+    ? `${selected.size} cheque${selected.size === 1 ? '' : 's'}`
+    : `${selected.size}`;
+
+  /**
+   * The rows a bulk action actually acts on. On GRN view that is the ticked
+   * rows. On Cheque view each ticked row stands for a whole cheque, so it is
+   * every bill that cheque pays and that is still eligible for the same action
+   * -- fetched from the server, since a cheque's bills are spread across the
+   * whole table (the same lookup as chequeGroup in ResultsTable.jsx).
+   */
+  function bulkTargets(eligible) {
+    if (!byCheque) return selectedRows;
+    return expandCheques(
+      selectedRows,
+      (row) => resultsChequeBills(batchId, row, eligible),
+      (row) => row.dprNo,
+    );
+  }
   const allSelectedCsd = selectedRows.length > 0 && selectedRows.every(canBulkCsd);
   const allSelectedReceive = selectedRows.length > 0 && selectedRows.every(canBulkReceive);
   const allSelectedForward = selectedRows.length > 0 && selectedRows.every(canBulkForward);
@@ -279,7 +322,8 @@ export default function AccountsDepot() {
     setBulkSending(true);
     setError('');
     try {
-      await Promise.all(selectedRows.map((row) => api.sendToCsd({ ...row, batchId: null })));
+      const targets = await bulkTargets(canBulkCsd);
+      await Promise.all(targets.map((row) => api.sendToCsd({ ...row, batchId: null })));
       exitMultiMode();
       loadRows();
     } catch (err) {
@@ -295,7 +339,8 @@ export default function AccountsDepot() {
     setBulkSending(true);
     setError('');
     try {
-      await Promise.all(selectedRows.map((row) => api.receiveAccountsReturn(row.csdDispatchId)));
+      const targets = await bulkTargets(canBulkReceive);
+      await Promise.all(targets.map((row) => api.receiveAccountsReturn(row.csdDispatchId)));
       exitMultiMode();
       loadRows();
     } catch (err) {
@@ -311,7 +356,8 @@ export default function AccountsDepot() {
     setBulkSending(true);
     setError('');
     try {
-      await Promise.all(selectedRows.map((row) => api.forwardAccountsReturn(row.csdDispatchId, { to })));
+      const targets = await bulkTargets(canBulkForward);
+      await Promise.all(targets.map((row) => api.forwardAccountsReturn(row.csdDispatchId, { to })));
       exitMultiMode();
       loadRows();
     } catch (err) {
@@ -333,8 +379,9 @@ export default function AccountsDepot() {
     setBulkSending(true);
     setBulkForwardError('');
     try {
+      const targets = await bulkTargets(canBulkForward);
       await Promise.all(
-        selectedRows.map((row) =>
+        targets.map((row) =>
           api.forwardAccountsReturn(row.csdDispatchId, {
             to,
             ...(to === 'VENDOR' ? { route } : {}),
@@ -362,6 +409,16 @@ export default function AccountsDepot() {
     // such column and does not apply it, so carrying it across would leave the
     // dropdown naming a stage over a table showing every row regardless.
     if (next !== VALID) setProgress('');
+  }
+
+  /** Switch the Accounts table between a row per GRN and a row per cheque. */
+  function selectAccountsView(next) {
+    if (next === accountsView) return;
+    setAccountsView(next);
+    setPage(1);
+    // The rows on hand are the other view's shape; drawing them under this
+    // view's columns until the reload lands would show a broken table.
+    setData(null);
   }
 
   /** Narrow every figure on the page to one branch, or '' for all of them. */
@@ -438,7 +495,13 @@ export default function AccountsDepot() {
     setExporting(true);
     setError('');
     try {
-      await exportSection(batchId, exportSheets, { q, location, spans });
+      // The Accounts sheets follow the GRNs / Cheques switch -- see exportSection.
+      await exportSection(batchId, exportSheets, {
+        q,
+        location,
+        spans,
+        accountsView: status === VALID ? accountsView : undefined,
+      });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -490,6 +553,10 @@ export default function AccountsDepot() {
               })}
             </select>
           </label>
+
+          {/* GRN view or Cheque view of the Accounts table -- see accountsView.
+              Not on the ageing view, which has its own columns. */}
+          {status === VALID && <ViewModeRadios value={accountsView} onChange={selectAccountsView} />}
 
           <LocationFilter value={location} onChange={selectLocation} />
 
@@ -561,7 +628,9 @@ export default function AccountsDepot() {
               <button
                 key={card.progress}
                 type="button"
-                className={`card stat stat--dept ${progress === card.progress ? 'is-active' : ''}`}
+                className={`card stat stat--${card.tone ?? 'dept'} ${
+                  progress === card.progress ? 'is-active' : ''
+                }`}
                 onClick={() => selectProgress(progress === card.progress ? '' : card.progress)}
                 aria-pressed={progress === card.progress}
                 title={
@@ -571,18 +640,15 @@ export default function AccountsDepot() {
                 }
               >
                 <div className="stat__label">{card.label}</div>
+                {/* GRN view leads with the GRN count, Cheque view with the
+                    cheque count -- see progressCardFigures. */}
                 <div className="stat__value">
-                  {(typeof card.value === 'function'
-                    ? card.value(summary)
-                    : (summary.progress?.[card.progress]?.count ?? 0)
-                  ).toLocaleString('en-IN')}
+                  {progressCardFigures(card, summary, byCheque).value.toLocaleString('en-IN')}
                 </div>
                 <div className="stat__amount">
                   ₹ {formatAmount(summary.progress?.[card.progress]?.amount ?? 0)}
                 </div>
-                <div className="stat__hint">
-                  {typeof card.hint === 'function' ? card.hint(summary) : card.hint}
-                </div>
+                <div className="stat__hint">{progressCardFigures(card, summary, byCheque).hint}</div>
               </button>
             ) : (
               /* One CSD stage's share of the rows below. Pressing it narrows
@@ -608,16 +674,13 @@ export default function AccountsDepot() {
                 }
               >
                 <div className="stat__label">{card.label}</div>
-                {/* The cheque count, not the GRN count -- see CSD_CARDS. */}
+                {/* Cheque view: the cheque count big and the GRNs below it --
+                    see CSD_CARDS. GRN view: the other way round. */}
                 <div className="stat__value">
-                  {(summary.csd?.[card.stage]?.cheques ?? 0).toLocaleString('en-IN')}
+                  {csdCardFigures(card, summary, byCheque).value.toLocaleString('en-IN')}
                 </div>
                 <div className="stat__amount">₹ {formatAmount(summary.csd?.[card.stage]?.amount ?? 0)}</div>
-                <div className="stat__hint">
-                  {`${(summary.csd?.[card.stage]?.count ?? 0).toLocaleString('en-IN')} GRN${
-                    (summary.csd?.[card.stage]?.count ?? 0) === 1 ? '' : 's'
-                  } ${card.note}`}
-                </div>
+                <div className="stat__hint">{csdCardFigures(card, summary, byCheque).hint}</div>
               </button>
             ),
           )}
@@ -670,12 +733,12 @@ export default function AccountsDepot() {
             <>
               {multiMode && allSelectedCsd && (
                 <button type="button" className="primary" onClick={sendSelectedToCsd} disabled={bulkSending}>
-                  {bulkSending ? 'Sending…' : `Send ${selected.size} to CSD`}
+                  {bulkSending ? 'Sending…' : `Send ${selectedLabel} to CSD`}
                 </button>
               )}
               {multiMode && allSelectedReceive && (
                 <button type="button" className="primary" onClick={receiveSelected} disabled={bulkSending}>
-                  {bulkSending ? 'Receiving…' : `Receive ${selected.size}`}
+                  {bulkSending ? 'Receiving…' : `Receive ${selectedLabel}`}
                 </button>
               )}
               {multiMode && allSelectedForward && (
@@ -690,7 +753,7 @@ export default function AccountsDepot() {
                   }}
                   aria-label={`Send ${selected.size} selected GRNs on to their next destination`}
                 >
-                  <option value="">Send {selected.size} to…</option>
+                  <option value="">Send {selectedLabel} to…</option>
                   <option value="BANK">Send to Bank</option>
                   <option value="VENDOR">Send to Vendor</option>
                   <option value="COURIER">Send to Courier</option>
@@ -714,7 +777,7 @@ export default function AccountsDepot() {
 
       {bulkForwardTo && (
         <ForwardDetailsDialog
-          subject={`${selected.size} GRNs`}
+          subject={byCheque ? selectedLabel : `${selected.size} GRNs`}
           to={bulkForwardTo}
           busy={bulkSending}
           error={bulkForwardError}
@@ -744,6 +807,7 @@ export default function AccountsDepot() {
               multiMode={multiMode}
               selected={selected}
               onToggleRow={toggleSelectRow}
+              accountsView={accountsView}
             />
             <div className="pager">
               <span className="pager__info">

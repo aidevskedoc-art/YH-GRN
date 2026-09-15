@@ -7,9 +7,10 @@ import Upload from './pages/Upload.jsx';
 import Uploads from './pages/Uploads.jsx';
 import Results from './pages/Results.jsx';
 import Csd from './pages/Csd.jsx';
-import AccountsDepot from './pages/AccountsDepot.jsx';
+import AccountsDepartment from './pages/AccountsDepartment.jsx';
 import Users from './pages/Users.jsx';
 import Config from './pages/Config.jsx';
+import Logs from './pages/Logs.jsx';
 
 export default function App() {
   return (
@@ -52,7 +53,7 @@ export default function App() {
         <Route
           path="/uploads"
           element={
-            <ProtectedRoute screen="upload">
+            <ProtectedRoute screen="uploads">
               <Uploads />
             </ProtectedRoute>
           }
@@ -87,15 +88,17 @@ export default function App() {
             else. Its own screen grant rather than a filter on `results`: what
             it leaves out is the point, so an account given this one must not
             also be given the screen it is a narrowing of -- see
-            pages/AccountsDepot.jsx. */}
+            pages/AccountsDepartment.jsx. */}
         <Route
-          path="/accounts-depot"
+          path="/accounts-department"
           element={
-            <ProtectedRoute screen="accounts-depot">
-              <AccountsDepot />
+            <ProtectedRoute screen="accounts-department">
+              <AccountsDepartment />
             </ProtectedRoute>
           }
         />
+        {/* The screen's old address, so bookmarks and links still land. */}
+        <Route path="/accounts-depot" element={<Navigate to="/accounts-department" replace />} />
         {/* Branch definitions, and which branches the figures are narrowed to.
             A grantable screen rather than an admin one: the people who know
             which branch a DivisionCode belongs to are not necessarily the
@@ -108,13 +111,22 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-        {/* Managing accounts is the administrator's own screen rather than a
-            grantable one -- it is where the grants are handed out. */}
+        {/* Account management. A grantable screen: a standard user given it
+            manages standard accounts only -- see routes/users.js. */}
         <Route
           path="/users"
           element={
-            <ProtectedRoute adminOnly>
+            <ProtectedRoute screen="users">
               <Users />
+            </ProtectedRoute>
+          }
+        />
+        {/* Who did what -- the monitoring screen, grantable like the rest. */}
+        <Route
+          path="/logs"
+          element={
+            <ProtectedRoute screen="logs">
+              <Logs />
             </ProtectedRoute>
           }
         />

@@ -22,6 +22,14 @@ import { api } from '../api/client.js';
 import { CHECKPOINTS, STAGE_KEYS, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
 import { chequePrepared } from './cheque.js';
 
+/*
+ * The GRNs / Cheques switch's two values. Spelled here rather than imported
+ * from resultsViews.js, which imports this file -- and must match it, since
+ * they are the same values the server's `view` parameter takes.
+ */
+const ACCOUNTS_GRN_VIEW = 'grn';
+const ACCOUNTS_CHEQUE_VIEW = 'cheque';
+
 const COLUMNS = [
   { key: 'status', label: 'Status' },
   { key: 'warehouse', label: 'Warehouse' },
@@ -105,6 +113,33 @@ const MATCHED_COLUMNS = [
   { key: 'chequePrepared', label: 'Cheque Prepared' },
   // The bank statement's answer on that cheque. Blank when no statement carries
   // the number, which is not the same as "not cleared".
+  { key: 'chequeStatus', label: 'Cheque Status' },
+  { key: 'csdStage', label: 'CSD Status' },
+];
+
+/** The cheque's own columns, which GRN view leaves off -- as the table does. */
+const CHEQUE_DETAIL_KEYS = new Set(['chequeNo', 'chqDate', 'paymentDocNo', 'accountNo']);
+
+/** The Accounts sheet on GRN view: a row per GRN, without the cheque's columns. */
+const ACCOUNTS_GRN_COLUMNS = MATCHED_COLUMNS.filter((c) => !CHEQUE_DETAIL_KEYS.has(c.key));
+
+/**
+ * The Accounts sheet on Cheque view: a row per cheque, the per-GRN columns
+ * gone and the cheque's own in their place -- Cheque Amount being every
+ * PayableAmount the cheque pays, summed on the server (see chequeRows in
+ * routes/results.js).
+ */
+const ACCOUNTS_CHEQUE_COLUMNS = [
+  { key: 'status', label: 'Status' },
+  { key: 'divisionCode', label: 'Division' },
+  { key: 'chequeNo', label: 'Cheque No' },
+  { key: 'chequeGrnCount', label: 'GRNs', integer: true },
+  { key: 'vendorCode', label: 'Vendor Code' },
+  { key: 'vendorName', label: 'Vendor Name' },
+  { key: 'chqDate', label: 'Cheque Date', date: true },
+  { key: 'chequeAmount', label: 'Cheque Amount', numeric: true },
+  { key: 'paymentDocNo', label: 'PaymentDocNo' },
+  { key: 'accountNo', label: 'Account No' },
   { key: 'chequeStatus', label: 'Cheque Status' },
   { key: 'csdStage', label: 'CSD Status' },
 ];
@@ -307,6 +342,28 @@ const CSD_COLUMNS = [
   { key: 'movedToAccountsDate', label: 'Moved To Accounts Date' },
 ];
 
+/** The CSD file on GRN view: without the cheque's columns, as the table. */
+const CSD_GRN_COLUMNS = CSD_COLUMNS.filter((c) => !CHEQUE_DETAIL_KEYS.has(c.key));
+
+/** The CSD file on Cheque view: a row per cheque, as the table. */
+const CSD_CHEQUE_COLUMNS = [
+  { key: 'divisionCode', label: 'Division' },
+  { key: 'chequeNo', label: 'Cheque No' },
+  { key: 'chequeGrnCount', label: 'GRNs', integer: true },
+  { key: 'vendorName', label: 'Vendor' },
+  { key: 'vendorCode', label: 'Vendor Code' },
+  { key: 'chqDate', label: 'Cheque Date', date: true },
+  { key: 'chequeAmount', label: 'Cheque Amount', numeric: true },
+  { key: 'paymentDocNo', label: 'PaymentDocNo' },
+  { key: 'accountNo', label: 'Account No' },
+  { key: 'stage', label: 'Status' },
+  { key: 'queueDate', label: 'Queue Date' },
+  { key: 'receivedDate', label: 'Received Date' },
+  { key: 'approvedDate', label: 'Approved Date' },
+  { key: 'rejectedDate', label: 'Rejected Date' },
+  { key: 'movedToAccountsDate', label: 'Moved To Accounts Date' },
+];
+
 /**
  * Per-row, from the stored status. Valid GRNs holds both matched statuses, but
  * both read the same here -- a GRN found in the ageing report has moved to
@@ -403,12 +460,22 @@ function slug(text) {
  * that: both sides of the match on one row, with Status saying which bucket
  * each is in -- the sheet the screen's Match column exists for.
  */
-export function columnsForStatus(status, spans = []) {
+export function columnsForStatus(status, spans = [], view) {
   if (status === 'PENDING') return GRN_COLUMNS;
   if (status === 'TURNAROUND') return turnaroundColumns(spans);
-  if (status === 'VALID') return MATCHED_COLUMNS;
+  // `view` is the GRNs / Cheques switch, where the screen has one; without it
+  // a sheet carries every column, as before.
+  if (status === 'VALID') {
+    if (view === ACCOUNTS_CHEQUE_VIEW) return ACCOUNTS_CHEQUE_COLUMNS;
+    if (view === ACCOUNTS_GRN_VIEW) return ACCOUNTS_GRN_COLUMNS;
+    return MATCHED_COLUMNS;
+  }
   if (status === 'BPAD') return BPAD_COLUMNS;
-  if (status === 'CSD') return CSD_COLUMNS;
+  if (status === 'CSD') {
+    if (view === ACCOUNTS_CHEQUE_VIEW) return CSD_CHEQUE_COLUMNS;
+    if (view === ACCOUNTS_GRN_VIEW) return CSD_GRN_COLUMNS;
+    return CSD_COLUMNS;
+  }
   return COLUMNS;
 }
 
@@ -745,13 +812,14 @@ function save(blob, fileName) {
  * level here so the column keys resolve like every other column's, the same
  * way the table itself reads them.
  */
-async function sheetRows(batchId, spec, { q, location, spans }) {
+async function sheetRows(batchId, spec, { q, location, spans, view }) {
   const { name, rows: raw } = await api.exportRows(batchId, spec.status, {
     q,
     location,
     progress: spec.progress,
     dept: spec.dept,
     register: spec.register,
+    view,
   });
   const rows =
     spec.status === 'TURNAROUND'
@@ -814,14 +882,24 @@ async function inBatches(items, work) {
  * always divide that section whole rather than whatever was left after a
  * dropdown had already cut it down.
  */
-export async function exportSection(batchId, sheets, { q, location, spans = [] } = {}) {
-  const fetched = await inBatches(sheets, (s) => sheetRows(batchId, s, { q, location, spans }));
+export async function exportSection(batchId, sheets, { q, location, spans = [], accountsView } = {}) {
+  // The GRNs / Cheques switch reaches the Accounts sheets only: those are the
+  // rows it changes on screen.
+  const viewFor = (s) => (s.status === 'VALID' ? accountsView : undefined);
+  const fetched = await inBatches(sheets, (s) =>
+    sheetRows(batchId, s, {
+      q,
+      location,
+      spans,
+      view: viewFor(s) === ACCOUNTS_CHEQUE_VIEW ? ACCOUNTS_CHEQUE_VIEW : undefined,
+    }),
+  );
   const name = fetched.find((f) => f.name)?.name ?? '';
 
   const built = sheets.map((s, i) => ({
     sheetName: s.sheetName,
     rows: fetched[i].rows,
-    columns: columnsForStatus(s.status, spans),
+    columns: columnsForStatus(s.status, spans, viewFor(s)),
     // A card's sheet says which card it is above its headers; a section's own
     // sheet is just the report.
     title: s.title ?? titleForStatus(s.status),
@@ -843,6 +921,8 @@ export async function exportSection(batchId, sheets, { q, location, spans = [] }
     spans.length > 0 &&
       sheets.some((s) => s.status === 'TURNAROUND') &&
       slug(spans.map(spanLabel).join(' ')),
+    // A cheque-per-row file is a different report from a GRN-per-row one.
+    accountsView === ACCOUNTS_CHEQUE_VIEW && sheets.some((s) => s.status === 'VALID') && 'Cheque_View',
     safeName,
   ]
     .filter(Boolean)
@@ -850,6 +930,48 @@ export async function exportSection(batchId, sheets, { q, location, spans = [] }
 
   const blob = await buildWorkbook(built);
   save(blob, fileName);
+}
+
+/** The activity log's sheet, column for column with its screen. */
+const LOG_COLUMNS = [
+  { key: 'time', label: 'Time' },
+  { key: 'userName', label: 'User' },
+  { key: 'username', label: 'Username' },
+  { key: 'categoryLabel', label: 'Category' },
+  { key: 'actionLabel', label: 'Action' },
+  { key: 'target', label: 'Target' },
+  { key: 'summary', label: 'Summary' },
+  { key: 'detailText', label: 'Details' },
+  { key: 'ip', label: 'IP address' },
+];
+
+/**
+ * The activity log as a file, with the screen's filters applied.
+ *
+ * `describe` turns one entry's details into readable text -- passed in by the
+ * screen so the file and the page word them identically.
+ */
+export async function exportLogs(filters, describe) {
+  const data = await api.listLogs({ ...filters, all: true });
+  const categoryLabels = Object.fromEntries((data.categories ?? []).map((c) => [c.key, c.label]));
+  const stamp = (value) => {
+    const at = new Date(value);
+    if (!Number.isFinite(at.getTime())) return null;
+    return `${at.toLocaleDateString('en-GB')} ${at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+  };
+
+  const rows = data.rows.map((r) => ({
+    ...r,
+    time: stamp(r.createdAt),
+    userName: r.userName || r.username,
+    categoryLabel: categoryLabels[r.category] || r.category,
+    detailText: describe(r.details).join('\n') || null,
+  }));
+
+  const report = 'Activity Logs';
+  const blob = await buildXlsx(rows, { sheetName: report, columns: LOG_COLUMNS, title: report });
+  save(blob, `${slug(report)}_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  return { count: rows.length, truncated: Boolean(data.truncated), total: data.total };
 }
 
 /**
@@ -862,8 +984,14 @@ export async function exportSection(batchId, sheets, { q, location, spans = [] }
  * turn round, so it is flattened to a display string here; the same goes for
  * the status label, which the queue stores raw.
  */
-export async function exportCsd(q, stage, location) {
-  const { rows: raw } = await api.listCsd({ all: true, q, stage, location });
+export async function exportCsd(q, stage, location, view) {
+  const { rows: raw } = await api.listCsd({
+    all: true,
+    q,
+    stage,
+    location,
+    view: view === ACCOUNTS_CHEQUE_VIEW ? ACCOUNTS_CHEQUE_VIEW : undefined,
+  });
 
   // The four stamps are timestamps; the screen shows the day, so the file does
   // too. Flattened here because toCell only reads top-level keys, and `date:
@@ -887,11 +1015,13 @@ export async function exportCsd(q, stage, location) {
 
   // The stage joins the name when one is chosen, so two exports taken minutes
   // apart are not the same file with different contents.
-  const fileName = `${[slug(report), stage && slug(stage)].filter(Boolean).join('_')}.xlsx`;
+  const fileName = `${[slug(report), stage && slug(stage), view === ACCOUNTS_CHEQUE_VIEW && 'Cheque_View']
+    .filter(Boolean)
+    .join('_')}.xlsx`;
 
   const blob = await buildXlsx(rows, {
     sheetName: report,
-    columns: columnsForStatus('CSD'),
+    columns: columnsForStatus('CSD', [], view),
     title: report,
   });
   save(blob, fileName);

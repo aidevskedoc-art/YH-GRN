@@ -1,15 +1,17 @@
 /**
  * Accounts, and what each of them may open.
  *
- * Every route here is administrator-only. The screen an admin manages this from
- * is itself gated on the same role, but the gate that matters is this one -- the
- * client hides controls, the server refuses requests.
+ * Behind the User management screen grant. Administrators hold it by default;
+ * a standard user given it manages standard accounts only, and every write
+ * below refuses them an administrator account. The client hides those
+ * controls, but the gate that matters is this one -- the server refuses requests.
  */
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import { query } from '../db/pool.js';
-import { requireAuth, requireAdmin } from '../middleware/auth.js';
+import { requireAuth, requireScreen } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
+import { changedFields, logActivity } from '../services/activityLog.js';
 import {
   SCREENS,
   ROLES,
@@ -21,9 +23,33 @@ import {
 
 export const usersRouter = express.Router();
 
-usersRouter.use(requireAuth, requireAdmin);
+// The User management screen grant -- administrators hold every screen. A
+// standard user given it manages standard accounts only: see the
+// administrator guards on each write below.
+usersRouter.use(requireAuth, requireScreen('users'));
+
+/** Whether the signed-in account is an administrator. */
+const callerIsAdmin = (req) => req.user?.role === 'ADMIN';
+
+/** The refusal a non-administrator gets when reaching for an administrator account. */
+function refuseAdminAccount(res) {
+  return res
+    .status(403)
+    .json({ error: 'Only an administrator can create, change or delete an administrator account.' });
+}
 
 const MIN_PASSWORD = 6;
+
+/** The account fields the activity log records on create and compares on update. */
+const LOGGED_USER_FIELDS = [
+  'username',
+  'fullName',
+  'role',
+  'screens',
+  'department',
+  'branchLocation',
+  'isActive',
+];
 
 const USER_COLUMNS = `
   SELECT u.id, u.username, u.full_name, u.role, u.screens, u.department,
@@ -153,7 +179,11 @@ usersRouter.get(
     res.json({
       users: rows.map(mapUser),
       screens: SCREENS,
-      roles: ROLES,
+      // A standard user managing accounts can only hand out the standard role.
+      roles: callerIsAdmin(req) ? ROLES : ROLES.filter((r) => r.key !== 'ADMIN'),
+      // Whether administrator rows may be changed from this session -- the
+      // client greys out their controls when not.
+      canManageAdmins: callerIsAdmin(req),
       departments: DEPARTMENTS,
       // The configured branches, so the form's Location dropdown offers what
       // this installation actually has rather than a list kept on the client
@@ -196,6 +226,7 @@ usersRouter.post(
     if (!ROLE_KEYS.includes(role)) {
       return res.status(400).json({ error: `"${req.body?.role ?? ''}" is not a role.` });
     }
+    if (role === 'ADMIN' && !callerIsAdmin(req)) return refuseAdminAccount(res);
 
     const department = readDepartment(req.body?.department);
     if (!department.ok) {
@@ -250,7 +281,17 @@ usersRouter.post(
     }
 
     const { rows: full } = await query(`${USER_COLUMNS} WHERE u.id = $1`, [created]);
-    return res.status(201).json({ user: mapUser(full[0]) });
+    const user = mapUser(full[0]);
+    logActivity(req, {
+      action: 'USER_CREATE',
+      target: user.username,
+      summary: `Created ${user.role === 'ADMIN' ? 'administrator' : 'user'} account "${user.username}"`,
+      details: {
+        userId: user.id,
+        ...Object.fromEntries(LOGGED_USER_FIELDS.map((f) => [f, user[f] ?? null])),
+      },
+    });
+    return res.status(201).json({ user });
   }),
 );
 
@@ -289,6 +330,10 @@ usersRouter.patch(
       return res.status(404).json({ error: 'That account no longer exists.' });
     }
     const before = existing[0];
+    if (before.role === 'ADMIN' && !callerIsAdmin(req)) return refuseAdminAccount(res);
+    // The whole account as it stood, for the activity log's list of changes.
+    const { rows: beforeRows } = await query(`${USER_COLUMNS} WHERE u.id = $1`, [id]);
+    const beforeUser = mapUser(beforeRows[0]);
 
     const assignments = [];
     const params = [];
@@ -347,6 +392,7 @@ usersRouter.patch(
       if (!ROLE_KEYS.includes(role)) {
         return res.status(400).json({ error: `"${req.body.role ?? ''}" is not a role.` });
       }
+      if (role === 'ADMIN' && !callerIsAdmin(req)) return refuseAdminAccount(res);
       params.push(role);
       assignments.push(`role = $${params.length}`);
     }
@@ -400,7 +446,17 @@ usersRouter.patch(
     }
 
     const { rows: full } = await query(`${USER_COLUMNS} WHERE u.id = $1`, [id]);
-    return res.json({ user: mapUser(full[0]) });
+    const user = mapUser(full[0]);
+    const changes = changedFields(beforeUser, user, LOGGED_USER_FIELDS);
+    if (changes) {
+      logActivity(req, {
+        action: 'USER_UPDATE',
+        target: user.username,
+        summary: `Updated account "${user.username}": ${Object.keys(changes).join(', ')}`,
+        details: { userId: id, changes },
+      });
+    }
+    return res.json({ user });
   }),
 );
 
@@ -428,15 +484,25 @@ usersRouter.patch(
         .json({ error: `The password must be at least ${MIN_PASSWORD} characters.` });
     }
 
+    const { rows: target } = await query('SELECT role FROM users WHERE id = $1', [id]);
+    if (target[0]?.role === 'ADMIN' && !callerIsAdmin(req)) return refuseAdminAccount(res);
+
     const passwordHash = await bcrypt.hash(password, 10);
-    const { rowCount } = await query('UPDATE users SET password_hash = $1 WHERE id = $2', [
+    const { rows } = await query('UPDATE users SET password_hash = $1 WHERE id = $2 RETURNING username', [
       passwordHash,
       id,
     ]);
 
-    if (rowCount === 0) {
+    if (rows.length === 0) {
       return res.status(404).json({ error: 'That account no longer exists.' });
     }
+    // The fact of the reset only -- never the password.
+    logActivity(req, {
+      action: 'USER_PASSWORD',
+      target: rows[0].username,
+      summary: `Reset the password of "${rows[0].username}"`,
+      details: { userId: id },
+    });
     return res.json({ ok: true });
   }),
 );
@@ -462,10 +528,11 @@ usersRouter.delete(
       return res.status(409).json({ error: 'You cannot delete the account you are signed in as.' });
     }
 
-    const { rows } = await query('SELECT role, is_active FROM users WHERE id = $1', [id]);
+    const { rows } = await query('SELECT username, full_name, role, is_active FROM users WHERE id = $1', [id]);
     if (rows.length === 0) {
       return res.status(404).json({ error: 'That account no longer exists.' });
     }
+    if (rows[0].role === 'ADMIN' && !callerIsAdmin(req)) return refuseAdminAccount(res);
 
     if (rows[0].role === 'ADMIN' && rows[0].is_active && (await activeAdminCount()) <= 1) {
       return res.status(409).json({
@@ -473,7 +540,27 @@ usersRouter.delete(
       });
     }
 
+    // The whole account as it stood -- never the password -- so the log keeps
+    // a record of who it was and what they could open.
+    const { rows: snapshotRows } = await query(`${USER_COLUMNS} WHERE u.id = $1`, [id]);
+    const snapshot = snapshotRows[0] ? mapUser(snapshotRows[0]) : null;
+
     await query('DELETE FROM users WHERE id = $1', [id]);
+    logActivity(req, {
+      action: 'USER_DELETE',
+      target: rows[0].username,
+      summary: `Deleted account "${rows[0].username}"`,
+      details: {
+        userId: id,
+        ...(snapshot
+          ? {
+              ...Object.fromEntries(LOGGED_USER_FIELDS.map((f) => [f, snapshot[f] ?? null])),
+              createdAt: snapshot.createdAt,
+              uploads: snapshot.uploadCount,
+            }
+          : { fullName: rows[0].full_name, role: rows[0].role }),
+      },
+    });
     return res.status(204).end();
   }),
 );

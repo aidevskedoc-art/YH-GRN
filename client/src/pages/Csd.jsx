@@ -28,6 +28,9 @@ import { useConfirm } from '../components/ConfirmDialog.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import Sheet from '../components/Sheet.jsx';
+import ViewModeRadios from '../components/ViewModeRadios.jsx';
+import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, leadFigures } from '../services/resultsViews.js';
+import { csdChequeHandovers, expandCheques } from '../services/chequeGroups.js';
 
 
 /** Matches the results page's search box -- see the note there. */
@@ -168,12 +171,13 @@ const STAGE_DATES = [
 ];
 
 /**
- * The header row below, counted: eighteen columns from GRN No through Status,
- * then one per stage date, then Action. Worked out rather than written as a
- * number, which is what it was -- and the number had already drifted out of
- * step with the row it is meant to span.
+ * The header row below, counted, for either view: Division, the pinned GRN No
+ * (Cheque No on Cheque view), Vendor, Vendor Code and Status on both; GRN view
+ * adds GRN Date, Bill No, Bill Date, Focus doc_no and the five amounts; Cheque
+ * view adds Cheque Date, Cheque Amount, PaymentDocNo and Account No. Then one
+ * per stage date, then Action.
  */
-const COLUMN_COUNT = 18 + STAGE_DATES.length + 1;
+const columnCount = (byCheque) => 5 + (byCheque ? 4 : 9) + STAGE_DATES.length + 1;
 
 /**
  * The two matched statuses, spelled for a reader. A GRN reaches CSD from either
@@ -378,6 +382,13 @@ export default function Csd() {
   // location is a view somebody adjusts while reading this screen.
   const [location, setLocation] = useState('');
 
+  // How the queue is read: a row per GRN, or a row per cheque with its
+  // handovers' PayableAmount summed -- the same switch the Accounts views
+  // carry. The cards follow it: GRN counts first on GRN view, cheque counts
+  // first on Cheque view.
+  const [csdView, setCsdView] = useState(ACCOUNTS_GRN_VIEW);
+  const byCheque = csdView === ACCOUNTS_CHEQUE_VIEW;
+
   // Acting on several handovers at once, same idea as the Valid GRNS tab's own
   // "Select multiple" -- a cheque that pays several GRNs together is one thing
   // to move or take back, not one dropdown per row. `multiMode` is the
@@ -401,7 +412,7 @@ export default function Csd() {
   // the browser's Back button.
   useEffect(() => {
     setPage(1);
-  }, [stage, location]);
+  }, [stage, location, csdView]);
 
   // A ticked row belongs to the page it was ticked on -- changing any of the
   // page's own inputs invalidates the selection rather than carrying it,
@@ -409,16 +420,25 @@ export default function Csd() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [page, pageSize, q, stage, location]);
+  }, [page, pageSize, q, stage, location, csdView]);
 
   const load = useCallback(() => {
     setLoading(true);
     api
-      .listCsd({ page, pageSize, q, stage, location })
+      .listCsd({ page, pageSize, q, stage, location, view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined })
       .then(setData)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [page, pageSize, q, stage, location]);
+  }, [page, pageSize, q, stage, location, byCheque]);
+
+  /** Switch the queue between a row per GRN and a row per cheque. */
+  function selectCsdView(next) {
+    if (next === csdView) return;
+    setCsdView(next);
+    // The rows on hand are the other view's shape; drawing them under this
+    // view's columns until the reload lands would show a broken table.
+    setData(null);
+  }
 
   useEffect(load, [load]);
 
@@ -459,6 +479,22 @@ export default function Csd() {
    * apply to.
    */
   const selectedRows = (data?.rows || []).filter((row) => selected.has(row.id));
+
+  /** What the bulk controls call the selection: GRNs, or cheques on Cheque view. */
+  const selectedLabel = byCheque
+    ? `${selected.size} cheque${selected.size === 1 ? '' : 's'}`
+    : `${selected.size}`;
+
+  /**
+   * The handovers a bulk action actually acts on: the ticked rows, or on
+   * Cheque view every handover the ticked cheques pay that `eligible` accepts
+   * -- see chequeGroups.js.
+   */
+  function bulkTargets(eligible) {
+    if (!byCheque) return selectedRows;
+    return expandCheques(selectedRows, (row) => csdChequeHandovers(row, eligible), (row) => row.id);
+  }
+
   const bulkNextStages = selectedRows.length
     ? selectedRows
         .map((row) => NEXT_STAGES[row.stage] ?? [])
@@ -480,7 +516,8 @@ export default function Csd() {
     setBulkBusy(true);
     setError('');
     try {
-      await Promise.all(selectedRows.map((row) => api.setCsdStage(row.id, next, remarks)));
+      const targets = await bulkTargets((r) => (NEXT_STAGES[r.stage] ?? []).includes(next));
+      await Promise.all(targets.map((row) => api.setCsdStage(row.id, next, remarks)));
       setReject(null);
       exitMultiMode();
       load();
@@ -496,10 +533,12 @@ export default function Csd() {
   async function bulkRemove() {
     if (selectedRows.length === 0) return;
     const ok = await confirm({
-      title: 'Take these GRNs back?',
-      message: `Are you sure you want to take ${selectedRows.length} GRN${
-        selectedRows.length === 1 ? '' : 's'
-      } off the CSD queue?`,
+      title: byCheque ? 'Take these cheques back?' : 'Take these GRNs back?',
+      message: byCheque
+        ? `Are you sure you want to take every recallable GRN on ${selectedLabel} off the CSD queue?`
+        : `Are you sure you want to take ${selectedRows.length} GRN${
+            selectedRows.length === 1 ? '' : 's'
+          } off the CSD queue?`,
       confirmLabel: 'Take back',
     });
     if (!ok) return;
@@ -507,7 +546,8 @@ export default function Csd() {
     setBulkBusy(true);
     setError('');
     try {
-      await Promise.all(selectedRows.map((row) => api.removeFromCsd(row.id)));
+      const targets = await bulkTargets((r) => TAKE_BACK_STAGES.includes(r.stage));
+      await Promise.all(targets.map((row) => api.removeFromCsd(row.id)));
       exitMultiMode();
       // Removing every row of the last page would otherwise leave the pager
       // pointing past the end of a now-shorter queue.
@@ -602,7 +642,7 @@ export default function Csd() {
     setExporting(true);
     setError('');
     try {
-      await exportCsd(q, stage, location);
+      await exportCsd(q, stage, location, csdView);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -798,7 +838,9 @@ export default function Csd() {
              counted already because the person ticked them. */
           subject={
             reject.bulk
-              ? `${selected.size} GRN${selected.size === 1 ? '' : 's'}`
+              ? byCheque
+                ? selectedLabel
+                : `${selected.size} GRN${selected.size === 1 ? '' : 's'}`
               : reject.row.chequeNo
                 ? `every GRN on cheque ${reject.row.chequeNo}`
                 : `GRN ${reject.row.dprNo}`
@@ -818,7 +860,7 @@ export default function Csd() {
           <h2 className="page__title">Sent to CSD</h2>
           <p className="page__lead">
             {data
-              ? `${data.total.toLocaleString('en-IN')} GRN${data.total === 1 ? '' : 's'}` +
+              ? `${data.total.toLocaleString('en-IN')} ${byCheque ? 'cheque' : 'GRN'}${data.total === 1 ? '' : 's'}` +
                 `${stage ? ` ${STAGE_LABELS[stage].toLowerCase()}` : ' handed over'}` +
                 ` — ₹ ${formatAmount(data.amount)} payable.`
               : 'Everything handed over from the Valid GRNS tab.'}{' '}
@@ -831,6 +873,7 @@ export default function Csd() {
             came from, so the queue is every upload at once -- which leaves the
             location on its own, in the same place and the same shape. */}
         <div className="page__actions">
+          <ViewModeRadios value={csdView} onChange={selectCsdView} />
           <LocationFilter value={location} onChange={setLocation} />
         </div>
       </div>
@@ -839,6 +882,8 @@ export default function Csd() {
         <div className="cards">
           {CARD_STAGES.map((s) => {
             const bucket = data.stages[s.key] || { count: 0, cheques: 0, amount: 0 };
+            // GRN count first on GRN view, cheque count first on Cheque view.
+            const figures = leadFigures({ grns: bucket.count, cheques: bucket.cheques ?? 0 }, byCheque);
             return (
               <button
                 key={s.key}
@@ -848,12 +893,9 @@ export default function Csd() {
                 aria-pressed={stage === s.key}
               >
                 <div className="stat__label">{s.label}</div>
-                {/* The cheque count, not the GRN count -- see STAGES. */}
-                <div className="stat__value">{(bucket.cheques ?? 0).toLocaleString('en-IN')}</div>
+                <div className="stat__value">{figures.value.toLocaleString('en-IN')}</div>
                 <div className="stat__amount">₹ {formatAmount(bucket.amount)}</div>
-                <div className="stat__hint">
-                  {`${bucket.count.toLocaleString('en-IN')} GRN${bucket.count === 1 ? '' : 's'} ${s.note}`}
-                </div>
+                <div className="stat__hint">{`${figures.sub} ${s.note}`}</div>
               </button>
             );
           })}
@@ -921,9 +963,9 @@ export default function Csd() {
                   value=""
                   disabled={bulkBusy}
                   onChange={(e) => e.target.value && bulkSetStage(e.target.value)}
-                  aria-label={`Move ${selected.size} selected GRNs to a CSD stage`}
+                  aria-label={`Move ${selectedLabel} selected to a CSD stage`}
                 >
-                  <option value="">Move {selected.size} to…</option>
+                  <option value="">Move {selectedLabel} to…</option>
                   {bulkNextStages.map((key) => (
                     <option key={key} value={key}>
                       {STAGE_LABELS[key] || key}
@@ -937,7 +979,7 @@ export default function Csd() {
                 onClick={bulkRemove}
                 disabled={selected.size === 0 || bulkBusy}
               >
-                {bulkBusy ? 'Working…' : selected.size > 0 ? `Sent back ${selected.size}` : 'Sent back'}
+                {bulkBusy ? 'Working…' : selected.size > 0 ? `Sent back ${selectedLabel}` : 'Sent back'}
               </button>
             </>
           )}
@@ -980,36 +1022,45 @@ export default function Csd() {
                         .table__pin in styles.css -- so the two together hold
                         the left edge once the queue is scrolled sideways. */}
                     <th className="table__pin table__pin--division">Division</th>
-                    <th className="table__pin table__pin--grn">GRN No</th>
-                    <th>GRN Date</th>
-                    <th>Bill No</th>
-                    <th>Bill Date</th>
+                    {/* On Cheque view the cheque is what a row is looked up
+                        by, so it takes GRN No's pinned place. */}
+                    <th className="table__pin table__pin--grn">{byCheque ? 'Cheque No' : 'GRN No'}</th>
+                    {!byCheque && <th>GRN Date</th>}
+                    {!byCheque && <th>Bill No</th>}
+                    {!byCheque && <th>Bill Date</th>}
                     <th>Vendor</th>
                     {/* The code used to sit under the name, where it could not
                         be read down the column. */}
                     <th>Vendor Code</th>
-                    <th>Focus doc_no</th>
-                    <th className="table__num">NetAmt</th>
-                    {/* The ageing report's own amount breakdown, in the same
-                        order as the Valid GRNs export: NetAmt through
-                        PayableAmount, each an adjustment on the last. */}
-                    <th className="table__num">AdjPurReturn</th>
-                    <th className="table__num">AdjustedJV</th>
-                    <th className="table__num">TDSJV</th>
-                    <th className="table__num">PayableAmount</th>
-                    {/* The cheque this bill was paid by, and the payment
-                        document it was recorded under -- both off the ageing
-                        report, snapshotted like everything else here. */}
-                    <th>PaymentDocNo</th>
-                    <th>Cheque No</th>
-                    {/* The day the ageing report says the cheque was cut --
-                        not the day it cleared, which this table does not
-                        track. */}
-                    <th>Cheque Date</th>
-                    {/* The account the dispatch's branch banks through, off
-                        the configuration screen -- same lookup and same spot
-                        as the results table's own Account No column. */}
-                    <th>Account No</th>
+                    {!byCheque && (
+                      <>
+                        <th>Focus doc_no</th>
+                        <th className="table__num">NetAmt</th>
+                        {/* The ageing report's own amount breakdown, in the same
+                            order as the Valid GRNs export: NetAmt through
+                            PayableAmount, each an adjustment on the last. */}
+                        <th className="table__num">AdjPurReturn</th>
+                        <th className="table__num">AdjustedJV</th>
+                        <th className="table__num">TDSJV</th>
+                        <th className="table__num">PayableAmount</th>
+                      </>
+                    )}
+                    {/* Cheque view only: the cheque's own columns. GRN view
+                        leaves them off, as the Accounts views do. Cheque
+                        Amount is every PayableAmount the cheque pays, summed
+                        on the server -- see chequeDispatches in routes/csd.js. */}
+                    {byCheque && (
+                      <>
+                        {/* The day the ageing report says the cheque was cut
+                            -- not the day it cleared. */}
+                        <th>Cheque Date</th>
+                        <th className="table__num">Cheque Amount</th>
+                        <th>PaymentDocNo</th>
+                        {/* The account the dispatch's branch banks through,
+                            off the configuration screen. */}
+                        <th>Account No</th>
+                      </>
+                    )}
 
                     {/* <th>Match</th> */}
                     <th>Status</th>
@@ -1026,7 +1077,10 @@ export default function Csd() {
                 <tbody>
                   {data.rows.length === 0 && (
                     <tr>
-                      <td className="table__empty" colSpan={multiMode ? COLUMN_COUNT + 1 : COLUMN_COUNT}>
+                      <td
+                        className="table__empty"
+                        colSpan={columnCount(byCheque) + (multiMode ? 1 : 0)}
+                      >
                         {/* The same wording the results table uses for a search
                             that finds nothing, so the two screens answer an
                             empty search the same way. A stage filter with no
@@ -1045,35 +1099,56 @@ export default function Csd() {
                             type="checkbox"
                             checked={selected.has(row.id)}
                             onChange={() => toggleSelectRow(row)}
-                            aria-label={`Select GRN ${row.dprNo} for a bulk action`}
+                            aria-label={
+                              byCheque
+                                ? `Select cheque ${row.chequeNo} for a bulk action`
+                                : `Select GRN ${row.dprNo} for a bulk action`
+                            }
                           />
                         </td>
                       )}
                       <td className="table__pin table__pin--division">{row.divisionCode}</td>
-                      <td className="table__mono table__pin table__pin--grn">{row.dprNo}</td>
-                      <td>{formatDate(row.dprDate)}</td>
-                      <td className="table__mono">{row.billNo}</td>
-                      <td>{formatDate(row.billDate)}</td>
+                      {byCheque ? (
+                        <td className="table__mono table__pin table__pin--grn">
+                          {row.chequeNo || <span className="table__miss">&mdash;</span>}
+                          {row.chequeGrnCount != null && (
+                            <div className="table__sub">
+                              {`${row.chequeGrnCount} GRN${row.chequeGrnCount === 1 ? '' : 's'}`}
+                            </div>
+                          )}
+                        </td>
+                      ) : (
+                        <td className="table__mono table__pin table__pin--grn">{row.dprNo}</td>
+                      )}
+                      {!byCheque && <td>{formatDate(row.dprDate)}</td>}
+                      {!byCheque && <td className="table__mono">{row.billNo}</td>}
+                      {!byCheque && <td>{formatDate(row.billDate)}</td>}
                       <td>{row.vendorName}</td>
                       <td className="table__mono">
                         {row.vendorCode || <span className="table__miss">&mdash;</span>}
                       </td>
-                      <td className="table__mono">{row.ageingGrnNo}</td>
-                      <td className="table__num">{formatAmount(row.netAmt)}</td>
-                      <td className="table__num">{formatAmountOrDash(row.adjPurReturn)}</td>
-                      <td className="table__num">{formatAmountOrDash(row.adjustedJv)}</td>
-                      <td className="table__num">{formatAmountOrDash(row.tdsJv)}</td>
-                      <td className="table__num">{formatAmount(row.payableAmount)}</td>
-                             <td className="table__mono">
-                        {row.paymentDocNo || <span className="table__miss">&mdash;</span>}
-                      </td>
-                      <td className="table__mono">
-                        {row.chequeNo || <span className="table__miss">&mdash;</span>}
-                      </td>
-                      <td>{formatDate(row.chqDate) || <span className="table__miss">&mdash;</span>}</td>
-                      <td className="table__mono">
-                        {row.accountNo || <span className="table__miss">&mdash;</span>}
-                      </td>
+                      {!byCheque && (
+                        <>
+                          <td className="table__mono">{row.ageingGrnNo}</td>
+                          <td className="table__num">{formatAmount(row.netAmt)}</td>
+                          <td className="table__num">{formatAmountOrDash(row.adjPurReturn)}</td>
+                          <td className="table__num">{formatAmountOrDash(row.adjustedJv)}</td>
+                          <td className="table__num">{formatAmountOrDash(row.tdsJv)}</td>
+                          <td className="table__num">{formatAmount(row.payableAmount)}</td>
+                        </>
+                      )}
+                      {byCheque && (
+                        <>
+                          <td>{formatDate(row.chqDate) || <span className="table__miss">&mdash;</span>}</td>
+                          <td className="table__num">{formatAmountOrDash(row.chequeAmount)}</td>
+                          <td className="table__mono">
+                            {row.paymentDocNo || <span className="table__miss">&mdash;</span>}
+                          </td>
+                          <td className="table__mono">
+                            {row.accountNo || <span className="table__miss">&mdash;</span>}
+                          </td>
+                        </>
+                      )}
 
                       {/* <td>
                         <span
@@ -1163,7 +1238,9 @@ export default function Csd() {
                               thing: a handover CSD have ruled on, which they
                               refuse to give back and which until now could not
                               be removed at all. */}
-                          {isAdmin && !TAKE_BACK_STAGES.includes(row.stage) && (
+                          {/* GRN view only: Delete removes one handover, and a
+                              Cheque view row stands for several. */}
+                          {isAdmin && !byCheque && !TAKE_BACK_STAGES.includes(row.stage) && (
                             <button
                               type="button"
                               className="csd csd--delete"

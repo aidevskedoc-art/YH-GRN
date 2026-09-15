@@ -13,17 +13,18 @@ import {
   branchPick,
 } from '../services/branchScope.js';
 import { branchFor } from '../config/screens.js';
+import { logActivity } from '../services/activityLog.js';
 
 export const resultsRouter = express.Router();
 
 /*
- * Either screen, not only `results`: the Accounts Depot is this screen with two
+ * Either screen, not only `results`: the Accounts Department is this screen with two
  * of its five views -- Accounts and the PR-to-Bank ageing -- and reads the same
  * rows from the same endpoints. What it leaves out is decided in the browser,
  * by offering no other view, so there is nothing here to narrow and no second
  * copy of these queries to keep in step. See config/screens.js.
  */
-resultsRouter.use(requireAuth, requireScreen('results', 'accounts-depot'));
+resultsRouter.use(requireAuth, requireScreen('results', 'accounts-department'));
 
 const VALID_STATUSES = new Set(Object.values(STATUS));
 const MAX_PAGE_SIZE = 200;
@@ -779,6 +780,109 @@ function pendingDeptFilter(dept, params) {
   return `${PENDING_DEPT} = $${params.length}`;
 }
 
+/**
+ * The Accounts Department's Cheque view, as the `view` query parameter spells it.
+ */
+const CHEQUE_VIEW = 'cheque';
+
+/**
+ * The rows endpoint's Cheque view: one row per cheque instead of one per GRN.
+ *
+ * A cheque pays a group of bills, and on this view the cheque is the thing
+ * being read -- its number, date, payment document and account, and what it
+ * pays in total. So the GRNs one cheque number covers are folded into a single
+ * row carrying the sum of their PayableAmount as `chequeAmount`. Bills with no
+ * cheque number are not a cheque and are left off.
+ *
+ * Two layers of filtering, deliberately apart:
+ *
+ *  - the cheque's own population (batch, status, branch) decides which bills
+ *    make up a cheque and so what it adds up to;
+ *  - the search box and the Status filter only decide which cheques are
+ *    listed. A cheque is shown when ANY of its bills matches, and its amount is
+ *    still the whole cheque -- searching one GRN number must not report the
+ *    cheque as paying only that bill.
+ *
+ * The rest of the row (Division, Vendor, the CSD columns the Action and Status
+ * cells read) is one representative bill's: the first matching bill in the
+ * table's usual order. The Action column already acts on every bill the cheque
+ * pays (see chequeGroup in ResultsTable.jsx), so which bill stands in for it
+ * does not change what an action does.
+ */
+async function chequeRows(
+  req,
+  scope,
+  { status, progress, dept, deptJoin = '', chequeNo, page = 1, pageSize = 50, all = false },
+) {
+  const params = [];
+  const baseWhere = whereFrom([
+    batchFilter(scope, params),
+    statusFilter(status, params),
+    chequeFilter(chequeNo, params),
+    BRANCH_SCOPE,
+    ...branchClauses(req, params),
+    `COALESCE(a.cheque_no, '') <> ''`,
+  ]);
+  const hitClauses = [
+    searchFilter(req.query.q, params),
+    progressFilter(progress),
+    pendingDeptFilter(dept, params),
+  ].filter(Boolean);
+  // COALESCE because an ILIKE over a null column is null, not false, and a
+  // null would sort ahead of true when picking the representative bill.
+  const hit = `COALESCE((${hitClauses.length > 0 ? hitClauses.join(' AND ') : 'TRUE'}), FALSE)`;
+  const batchOrder = (alias) => (scope.all ? `${alias}.cv_batch_id, ` : '');
+
+  const { rows: countRows } = await query(
+    `SELECT COUNT(*)::int AS total FROM (
+       SELECT a.cheque_no
+       ${resultJoins(scope)} ${deptJoin} ${baseWhere}
+       GROUP BY a.cheque_no
+       HAVING BOOL_OR(${hit})
+     ) t`,
+    params,
+  );
+  const total = countRows[0].total;
+
+  const { rows } = await query(
+    `SELECT z.* FROM (
+       SELECT q.*,
+              SUM(q.payable_amount) OVER (PARTITION BY q.cheque_no) AS cheque_amount,
+              (COUNT(*) OVER (PARTITION BY q.cheque_no))::int AS cheque_grn_count,
+              ROW_NUMBER() OVER (
+                PARTITION BY q.cheque_no
+                ORDER BY q.cv_hit DESC, ${batchOrder('q')}q.sl_no NULLS LAST, q.cv_grn_id
+              ) AS cv_rn
+       FROM (
+         ${ROW_COLUMNS},
+         r.batch_id AS cv_batch_id,
+         g.id AS cv_grn_id,
+         ${hit} AS cv_hit
+         ${resultJoins(scope)} ${PRIOR_REJECTION_JOIN} ${deptJoin}
+         ${baseWhere}
+       ) q
+     ) z
+     WHERE z.cv_rn = 1 AND z.cv_hit
+     ORDER BY ${batchOrder('z')}z.sl_no NULLS LAST, z.cv_grn_id
+     ${all ? '' : `LIMIT $${params.length + 1} OFFSET $${params.length + 2}`}`,
+    // `all` is the export: every cheque, unpaginated.
+    all ? params : [...params, pageSize, (page - 1) * pageSize],
+  );
+
+  return {
+    page,
+    pageSize,
+    total,
+    totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    rows: rows.map((r) => ({
+      ...mapRow(r),
+      // Every PayableAmount the cheque pays, added up -- see above.
+      chequeAmount: r.cheque_amount ?? null,
+      chequeGrnCount: r.cheque_grn_count ?? 0,
+    })),
+  };
+}
+
 /** GET /api/batches/:id/summary - counts and amounts per status, plus per CSD stage. */
 resultsRouter.get(
   '/:id/summary',
@@ -908,7 +1012,12 @@ resultsRouter.get(
         (key) =>
           `(COUNT(*) FILTER (WHERE ${PROGRESS[key]}))::int AS ${key.toLowerCase()}_count,
            COALESCE(SUM(g.total_amount) FILTER (WHERE ${PROGRESS[key]}), 0) AS ${key.toLowerCase()}_amount`,
-      ).join(', ')}
+      ).join(', ')},
+       -- How many cheques the Accounts queue's GRNs are spread across, for its
+       -- card: a cheque is handed back from CSD as one thing.
+       (COUNT(DISTINCT a.cheque_no) FILTER (
+          WHERE ${PROGRESS.RETURNED_BY_CSD} AND COALESCE(a.cheque_no, '') <> ''
+       ))::int AS accounts_queue_cheques
        ${resultJoins(scope)}
        ${progressWhere}`,
       progressParams,
@@ -924,6 +1033,9 @@ resultsRouter.get(
         },
       ]),
     );
+    // The Accounts Queue card's cheque figure -- its GRN count and amount are
+    // summary.progress.RETURNED_BY_CSD above.
+    summary.accountsQueueCheques = p.accounts_queue_cheques ?? 0;
 
     /*
      * How many cheques those prepared GRNs are spread across.
@@ -1015,6 +1127,13 @@ resultsRouter.get(
     // applies on top of it, branch scope included, so it can never reach a row
     // the account is not allowed to see.
     const chequeNo = String(req.query.chequeNo || '').trim();
+
+    // The Accounts Department's Cheque view: one row per cheque rather than per GRN.
+    if (String(req.query.view || '').toLowerCase() === CHEQUE_VIEW) {
+      return res.json(
+        await chequeRows(req, scope, { status, progress, dept, deptJoin, chequeNo, page, pageSize }),
+      );
+    }
 
     const params = [];
     const where = whereFrom([
@@ -1115,6 +1234,19 @@ resultsRouter.get(
     // is carried only while it is asked for -- see PENDING_DEPT_JOIN.
     const dept = String(req.query.dept || '');
     const deptJoin = dept ? PENDING_DEPT_JOIN : '';
+
+    // The Cheque view's sheet: one row per cheque, the same rows the table
+    // shows on that view -- see chequeRows.
+    if (String(req.query.view || '').toLowerCase() === CHEQUE_VIEW) {
+      const { rows: cheques } = await chequeRows(req, scope, {
+        status,
+        progress,
+        dept,
+        deptJoin,
+        all: true,
+      });
+      return res.json({ batchId: scope.id, name: scope.name, status: status || null, rows: cheques });
+    }
 
     const params = [];
     const where = whereFrom([
@@ -1884,7 +2016,7 @@ resultsRouter.get(
 
 export const ageingRouter = express.Router();
 
-ageingRouter.use(requireAuth, requireScreen('results', 'accounts-depot'));
+ageingRouter.use(requireAuth, requireScreen('results', 'accounts-department'));
 
 /** The editable checkpoints: the name on the wire, and the column behind it. */
 const EDITABLE_DATES = {
@@ -1957,6 +2089,13 @@ ageingRouter.patch(
       return res.status(400).json({ error: 'No date was given to change.' });
     }
 
+    // The dates as they stood, so the activity log can say what changed.
+    const { rows: before } = await query(
+      `SELECT grn_number, grn_no, ${Object.values(EDITABLE_DATES).join(', ')}
+         FROM vendor_ageing WHERE id = $1`,
+      [ageingId],
+    );
+
     params.push(ageingId);
     const { rows } = await query(
       `UPDATE vendor_ageing
@@ -1982,6 +2121,25 @@ ageingRouter.patch(
       chqDate: r.chq_date,
     };
 
+    const old = before[0] ?? {};
+    const changes = {};
+    for (const [field, column] of Object.entries(EDITABLE_DATES)) {
+      if (!(field in req.body)) continue;
+      const from = old[column] ?? null;
+      const to = req.body[field] === '' || req.body[field] == null ? null : String(req.body[field]);
+      if (from !== to) changes[field] = { from, to };
+    }
+    const grnNo = old.grn_number || old.grn_no || `ageing row ${ageingId}`;
+    const changed = Object.keys(changes).length;
+    if (changed > 0) {
+      logActivity(req, {
+        action: 'AGEING_DATES',
+        target: grnNo,
+        summary: `Corrected ${changed} stage date${changed === 1 ? '' : 's'} on GRN ${grnNo}`,
+        details: { ageingId, changes },
+      });
+    }
+
     return res.json({ id: r.id, dates, gaps: gapsFor(dates) });
   }),
 );
@@ -2005,7 +2163,7 @@ ageingRouter.patch(
 
 export const recordsRouter = express.Router();
 
-recordsRouter.use(requireAuth, requireScreen('results', 'accounts-depot'));
+recordsRouter.use(requireAuth, requireScreen('results', 'accounts-department'));
 
 /** Only a GRN that reached accounts has anything to file. */
 const FILEABLE = new Set([STATUS.MATCHED, STATUS.MATCHED_WITH_DIFF]);
@@ -2076,6 +2234,17 @@ recordsRouter.post(
        RETURNING id, dpr_no, sent_at`,
       [key, dprNo, batchId, req.user.id],
     );
+
+    logActivity(req, {
+      action: 'RECORDS_SEND',
+      target: rows[0].dpr_no,
+      summary: `Sent GRN ${rows[0].dpr_no} to Records`,
+      details: {
+        recordId: rows[0].id,
+        chequeNo: String(body.chequeNo ?? '').trim() || null,
+        vendorName: String(body.vendorName ?? '').trim() || null,
+      },
+    });
 
     return res.status(201).json({
       record: { id: rows[0].id, dprNo: rows[0].dpr_no, sentAt: rows[0].sent_at },
@@ -2165,7 +2334,7 @@ function isForwardCalendarDate(value) {
 
 export const accountsReturnsRouter = express.Router();
 
-accountsReturnsRouter.use(requireAuth, requireScreen('results', 'accounts-depot'));
+accountsReturnsRouter.use(requireAuth, requireScreen('results', 'accounts-department'));
 
 /**
  * PATCH /api/accounts-returns/:id/receive
@@ -2193,7 +2362,16 @@ accountsReturnsRouter.patch(
 
     if (rows.length > 0) {
       const { rows: full } = await query(`${ACCOUNTS_RETURN_COLUMNS} WHERE c.id = $1`, [id]);
-      return res.json({ accountsReturn: mapAccountsReturn(full[0]) });
+      const accountsReturn = mapAccountsReturn(full[0]);
+      logActivity(req, {
+        action: 'ACCOUNTS_RECEIVE',
+        target: accountsReturn.dprNo,
+        summary:
+          `Accounts received GRN ${accountsReturn.dprNo} back from CSD` +
+          (accountsReturn.chequeNo ? ` (cheque ${accountsReturn.chequeNo})` : ''),
+        details: { dispatchId: id, chequeNo: accountsReturn.chequeNo },
+      });
+      return res.json({ accountsReturn });
     }
 
     const { rows: current } = await query(
@@ -2326,7 +2504,30 @@ accountsReturnsRouter.patch(
 
     if (rows.length > 0) {
       const { rows: full } = await query(`${ACCOUNTS_RETURN_COLUMNS} WHERE c.id = $1`, [id]);
-      return res.json({ accountsReturn: mapAccountsReturn(full[0]) });
+      const accountsReturn = mapAccountsReturn(full[0]);
+      const where =
+        to === 'VENDOR' && route === 'PURCHASE_DEPT'
+          ? 'Purchase Dept'
+          : to.charAt(0) + to.slice(1).toLowerCase();
+      logActivity(req, {
+        action: 'ACCOUNTS_FORWARD',
+        target: accountsReturn.dprNo,
+        summary:
+          `Sent GRN ${accountsReturn.dprNo} to ${where}` +
+          (name ? ` — handed to ${name}` : '') +
+          (courierName ? ` — ${courierName}, docket ${docketNo}` : ''),
+        details: {
+          dispatchId: id,
+          chequeNo: accountsReturn.chequeNo,
+          to,
+          ...(route ? { route } : {}),
+          ...(name ? { name, mobile } : {}),
+          ...(courierName ? { courierName, docketNo } : {}),
+          ...(date ? { date } : {}),
+          ...(remarks ? { remarks } : {}),
+        },
+      });
+      return res.json({ accountsReturn });
     }
 
     const { rows: current } = await query(
