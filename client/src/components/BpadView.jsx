@@ -139,6 +139,10 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
                   two dates above are the ones it reports, and they do not go
                   stale. */}
               <th>Pend.Reason/Pend Dept</th>
+              {/* Days from GRN Date, worked out on the server per desk:
+                  Accounts to Accounts Received Date, Stores to today, every
+                  other desk to BPAD Received Date. */}
+              <th className="table__num">Ageing</th>
             </tr>
           </thead>
           <tbody>
@@ -147,7 +151,7 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
                 the page from jumping as a search is typed. */}
             {rows.length === 0 && (
               <tr>
-                <td className="table__empty" colSpan={19}>
+                <td className="table__empty" colSpan={20}>
                   Matches not found
                 </td>
               </tr>
@@ -204,6 +208,9 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
                 </td>
                 <td>
                   <Text value={row.pendReason} />
+                </td>
+                <td className="table__num">
+                  {row.ageing ?? <span className="table__miss">&mdash;</span>}
                 </td>
               </tr>
             ))}

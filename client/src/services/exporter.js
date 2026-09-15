@@ -186,6 +186,8 @@ const BPAD_COLUMNS = [
   { key: 'accountsReceivedDate', label: 'Accounts Received Date', date: true },
   { key: 'pendingWithUser', label: 'Pending With User/Status' },
   { key: 'pendReason', label: 'Pend.Reason/Pend Dept' },
+  // Days from GRN Date, per desk -- see BPAD_AGEING_SQL on the server.
+  { key: 'ageing', label: 'Ageing', integer: true },
 ];
 
 /**

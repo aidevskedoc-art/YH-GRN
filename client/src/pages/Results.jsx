@@ -192,8 +192,9 @@ const BUCKET_CARDS = [ALL_GRNS, BPAD, VALID, 'PENDING'];
  * BPAD keeps none of the four. It is the one view not about the
  * reconciliation at all -- it reads the register's own table, and how many
  * GRNs are pending or through accounts says nothing about where a bill is
- * sitting. Its row is built entirely at render time, out of the register's own
- * two questions: which desk, and whether the register knew the GRN at all.
+ * sitting. Its row is built entirely at render time: its own BPAD count, then
+ * the register's own two questions -- which desk, and whether the register
+ * knew the GRN at all.
  *
  * One thing the old arrangement bought that this does not: with the same four
  * cards in the same order everywhere, a press could never move a different
@@ -665,8 +666,16 @@ export default function Results() {
     // Suppressed entirely with nothing in the register, where a row of zeroes
     // would sit over BpadView's own "no register uploaded yet" notice and
     // answer a question nobody asked.
+    //
+    // Headed by the BPAD count card itself, the way Pending and Accounts lead
+    // with their own count: pressing it clears the desk or Not in BPAD filter
+    // and shows every row again -- see rowHead.
     ...(status === BPAD && summary?.bpad?.count > 0
-      ? [{ kind: 'missing' }, ...departments.map((d) => ({ kind: 'dept', ...d }))]
+      ? [
+          CARD_BY_ID[BPAD],
+          { kind: 'missing' },
+          ...departments.map((d) => ({ kind: 'dept', ...d })),
+        ]
       : []),
     // Where the pending ones are pending -- the register's Pending With Dept.
     // for each of them, grouped. "Pending" says only that the ageing report
@@ -767,6 +776,19 @@ export default function Results() {
       // value is what narrows this row and clearing it is what "all of them"
       // means here.
       return { on: Boolean(progress), noun: 'GRN in accounts', clear: () => selectProgress('') };
+    }
+    if (rowStatus === BPAD) {
+      // The desk cards set `dept` and Not in BPAD sets `register`, and the two
+      // never stand together -- so either one is what narrows this row, and
+      // clearing both is "all of them".
+      return {
+        on: Boolean(dept || register),
+        noun: 'BPAD row',
+        clear: () => {
+          setDept('');
+          setRegister('');
+        },
+      };
     }
     return null;
   };

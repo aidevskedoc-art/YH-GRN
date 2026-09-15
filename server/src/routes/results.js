@@ -1287,6 +1287,31 @@ const BPAD_JOINS = `
   ${BPAD_GRN_JOIN}
 `;
 
+/**
+ * Ageing: days from the GRN date to the date the bill reached the desk it is
+ * pending with, for the desks that date is known for.
+ *
+ * - ACCOUNTS  -- to Accounts Received Date
+ * - STORES    -- to today; the bill has not left the stores, so it has no
+ *                received date anywhere and is still ageing
+ * - every other desk (AUDIT, CIVIL DEPARTMENT, PURCHASE DEPARTMENT, ...)
+ *                -- to BPAD Received Date
+ *
+ * A date missing on either end is null. Worked out on read
+ * rather than stored, so the STORES figure is true on the day it is looked at.
+ * CURRENT_DATE is in the database's timezone, the same local day ::date casts
+ * use elsewhere in this file.
+ */
+const BPAD_AGEING_SQL = `
+  CASE
+    WHEN upper(btrim(b.pending_with_dept)) = 'ACCOUNTS'
+      THEN b.accounts_received_date - b.grn_date
+    WHEN upper(btrim(b.pending_with_dept)) = 'STORES'
+      THEN CURRENT_DATE - b.grn_date
+    ELSE b.bpad_received_date - b.grn_date
+  END
+`;
+
 const BPAD_COLUMNS_SQL = `
   SELECT b.id, b.in_register,
          b.sl_no, b.location, b.warehouse,
@@ -1296,6 +1321,7 @@ const BPAD_COLUMNS_SQL = `
          b.po_number, b.po_date,
          b.pending_with_dept, b.bpad_received_date, b.accounts_received_date,
          b.pending_with_user, b.pend_reason,
+         ${BPAD_AGEING_SQL} AS ageing,
          ${BPAD_BRANCH_DIVISION_CODE} AS branch_division_code
 `;
 
@@ -1390,6 +1416,9 @@ function mapBpadRow(r) {
     accountsReceivedDate: r.accounts_received_date,
     pendingWithUser: r.pending_with_user,
     pendReason: r.pend_reason,
+    // Days from GRN date, per desk -- see BPAD_AGEING_SQL. Null where it does
+    // not apply.
+    ageing: r.ageing ?? null,
   };
 }
 
