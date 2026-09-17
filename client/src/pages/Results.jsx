@@ -26,6 +26,7 @@ import {
   bulkReceiveEligible,
   csdCardFigures,
   deptLabel,
+  isAccountsDept,
   progressCardFigures,
   progressFilterOptions,
   sectionSheets,
@@ -37,7 +38,7 @@ import TurnaroundView from '../components/TurnaroundView.jsx';
 import BpadView from '../components/BpadView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
-import { IconX } from '../components/icons.jsx';
+import { IconArrowRight, IconX } from '../components/icons.jsx';
 
 /** How long the search box waits for the typing to stop before it asks. */
 const SEARCH_DELAY_MS = 300;
@@ -759,7 +760,12 @@ export default function Results() {
     ...(status === BPAD && summary?.bpad?.count > 0
       ? [
           CARD_BY_ID[BPAD],
-          ...departments.map((d) => ({ kind: 'dept', ...d })),
+          // Accounts is the one desk this system has a screen of its own for,
+          // so its card leaves for that view instead of filtering the register
+          // to it -- see the deptAccounts branch in the row below. Split here
+          // rather than tested at render time so the export knows about it too
+          // (cardSheet in resultsViews.js).
+          ...departments.map((d) => ({ kind: isAccountsDept(d.dept) ? 'deptAccounts' : 'dept', ...d })),
         ]
       : []),
     // Where the pending ones are pending -- the register's Pending With Dept.
@@ -1111,6 +1117,36 @@ export default function Results() {
                 </div>
                 <div className="stat__amount">₹ {formatAmount(summary.bpadMissing?.amount ?? 0)}</div>
                 <div className="stat__hint">GRNs Not Finalized</div>
+              </button>
+            ) : card.kind === 'deptAccounts' ? (
+              /* The register's Accounts desk -- the bills it says are sitting
+                 with accounts. Alone among the desks, this system has a screen
+                 for that: the Accounts view lists the GRNs the ageing report
+                 picked up, which is the next thing a reader looking at this
+                 figure wants.
+
+                 So it goes there instead of narrowing the register's table to
+                 the desk. The narrowing is not lost -- the Department dropdown
+                 in the toolbar below still offers Accounts, and the export
+                 still takes its sheet off this card's own count.
+
+                 It is not a toggle, so no `aria-pressed`: a press leaves this
+                 row entirely, and a pressed state on a control that is never
+                 on screen to be unpressed says nothing. The Accounts tone and
+                 the arrow are what mark it out from the plain desk cards
+                 beside it -- see .stat--go. */
+              <button
+                key={`dept:${card.dept}`}
+                type="button"
+                className="card stat stat--valid stat--go"
+                onClick={() => selectStatus(VALID)}
+                title="Open the Accounts view — the GRNs the ageing report picked up"
+              >
+                <IconArrowRight size={15} className="stat__go" />
+                <div className="stat__label">{deptLabel(card.dept)}</div>
+                <div className="stat__value">{card.count.toLocaleString('en-IN')}</div>
+                <div className="stat__amount">₹ {formatAmount(card.amount ?? 0)}</div>
+                <div className="stat__hint">Pending with this desk — open Accounts</div>
               </button>
             ) : card.kind === 'dept' ? (
               <button

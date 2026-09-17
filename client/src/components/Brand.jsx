@@ -26,7 +26,7 @@ export function BrandLockup({ size = 32, onDark = false, subtitle = 'GRN Reconci
       {showText && (
         <div className="brand-text">
           <span className="brand-name">Yashoda Hospitals</span>
-          {subtitle && <span className="brand-sub">{subtitle}</span>}
+          {/* {subtitle && <span className="brand-sub">{subtitle}</span>} */}
         </div>
       )}
     </div>

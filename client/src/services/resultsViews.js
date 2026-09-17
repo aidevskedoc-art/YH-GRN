@@ -127,6 +127,25 @@ export function deptLabel(dept) {
   return dept === NOT_IN_BPAD ? 'Not in BPAD' : deptCase(dept);
 }
 
+/**
+ * Whether a desk the register names is the Accounts department.
+ *
+ * Pending With Dept. is free text out of somebody else's workbook -- the
+ * values on file are ACCOUNTS, AUDIT, STORES, PURCHASE DEPARTMENT and CIVIL
+ * DEPARTMENT -- so this matches the word rather than one exact spelling, and a
+ * file that starts writing "Accounts Dept." keeps working with no edit here.
+ *
+ * Anchored at the start, so a desk that merely mentions accounts further along
+ * its name is not swept in with it.
+ *
+ * It is the one desk this system has a screen of its own for, which is what
+ * the card on the BPAD row does with the answer -- see the deptAccounts card
+ * in Results.jsx.
+ */
+export function isAccountsDept(dept) {
+  return typeof dept === 'string' && /^accounts/i.test(dept.trim());
+}
+
 /** The Accounts view, as the view dropdown and the export sheet name it. */
 export const ACCOUNTS_TAB = { status: VALID, label: 'Accounts', hint: 'Found in the ageing report' };
 
@@ -523,7 +542,13 @@ function cardSheet(card) {
       return narrowedSheet('PENDING', deptLabel(card.dept), { dept: card.dept });
     // The register's own two questions: which desk, and whether it knew the
     // GRN at all.
+    //
+    // The Accounts desk is the same sheet as any other. Its card leaves for
+    // the Accounts view rather than narrowing the table, but the sheet reports
+    // what the card COUNTS -- the register rows sitting at that desk -- and
+    // that is unchanged by where pressing it goes.
     case 'dept':
+    case 'deptAccounts':
       return narrowedSheet(BPAD, deptLabel(card.dept), { dept: card.dept });
     // The GRNs the register has no entry for. Its card stands on the Total
     // GRNS row and narrows those rows by the desk filter's own sentinel, so

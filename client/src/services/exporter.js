@@ -164,8 +164,8 @@ const ACCOUNTS_CHEQUE_COLUMNS = [
  * where the rows between went to another sheet. That reads as rows missing
  * rather than as the source's numbering, and it is not on screen either -- the
  * reconciliation table has never carried it. Anyone wanting to count the rows
- * has Excel's own numbers down the side. (The BPAD layout below keeps a Sl.No.
- * of its own, which is the register's column and does show on its tab.)
+ * has Excel's own numbers down the side. The BPAD layout below drops its own
+ * Sl.No. for the same reason.
  */
 const GRN_COLUMNS = [
   { key: 'warehouse', label: 'Warehouse' },
@@ -193,8 +193,14 @@ const GRN_COLUMNS = [
  * branch resolved through the GRN row each record matched, since the
  * register's own Location beside it is a short site code rather than a branch.
  *
- * Sl.No. is the register's own serial, kept because the BPAD tab shows it --
- * not the GRN report's row number, which GRN_COLUMNS above drops.
+ * The register's own Sl.No. is dropped, as the GRN report's is above and for
+ * the same reason: a sheet here is every upload's records together, or one
+ * desk's share of them, so the register's numbering arrives starting wherever
+ * the first row fell and full of gaps where the rows between went elsewhere.
+ * It is off the tab too. The rows still come back in that order -- see
+ * bpadRows on the server -- so the sheet is still checkable against the file
+ * it was extracted from, by the register's own columns rather than by a serial
+ * that no longer runs 1, 2, 3.
  *
  * The register's own QueryAgeing, Ageing and GRN Age used to close the sheet.
  * They are gone from the whole feature -- the register recomputes them from
@@ -203,7 +209,6 @@ const GRN_COLUMNS = [
  */
 const BPAD_COLUMNS = [
   { key: 'branchDivisionCode', label: 'Division' },
-  { key: 'slNo', label: 'Sl.No.', integer: true },
   { key: 'location', label: 'Location' },
   { key: 'warehouse', label: 'WareHouse' },
   { key: 'vendorCode', label: 'Vendor Code' },
@@ -563,8 +568,8 @@ function buildAoa(rows, columns) {
    Dark text on the orange header rather than white -- white on #F58633 is
    about 2.4:1, which is unreadable on a photocopy.
    ------------------------------------------------------------------------- */
-const INK = 'FF241B12'; // --umber-900, warm near-black
-const BRAND = '1370bf'; // --brand
+const INK = '2D5080'; // --umber-900, warm near-black
+const BRAND = '2D5080'; // --brand
 const BAND = 'FFFFFFFF'; // --brand-50, the alternating row wash
 const RULE = 'FFFBEEDA'; // warm grey for the gridlines
 const PAPER = 'FFFFFFFF';
@@ -650,7 +655,7 @@ function addSheet(book, rows, { sheetName = 'Reconciliation', columns = COLUMNS,
   // --- The group band ------------------------------------------------------
   if (hasGroups) {
     const row = sheet.addRow([]);
-    row.height = 18;
+    row.height = 26;
     let col = 1;
     for (const group of groups) {
       if (group.span > 1) sheet.mergeCells(row.number, col, row.number, col + group.span - 1);
@@ -668,7 +673,7 @@ function addSheet(book, rows, { sheetName = 'Reconciliation', columns = COLUMNS,
 
   // --- The header row ------------------------------------------------------
   const header = sheet.addRow(columns.map((c) => c.label));
-  header.height = 20;
+  header.height = 24;
   header.eachCell((cell) => {
     cell.font = { name: FONT, size: 10.5, bold: true, color: { argb: PAPER } };
     cell.fill = solid(BRAND);
@@ -683,7 +688,7 @@ function addSheet(book, rows, { sheetName = 'Reconciliation', columns = COLUMNS,
 
     line.eachCell({ includeEmpty: true }, (cell, col) => {
       const column = columns[col - 1];
-      cell.font = { name: FONT, size: 10, color: { argb: INK } };
+      cell.font = { name: FONT, size: 10, color:"#0b1017" };
       cell.border = BORDER;
       if (banded) cell.fill = solid(BAND);
 

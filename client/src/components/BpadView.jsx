@@ -113,8 +113,15 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
               {/* From here on, the register's own columns in the register's own
                   order. It is a report somebody else produces and reads, and
                   reordering it would make the tab harder to check against the
-                  file it came from, not easier. */}
-              <th className="table__num">Sl.No.</th>
+                  file it came from, not easier.
+
+                  Its Sl.No. led this run and no longer shows, here or in the
+                  export: it is the source workbook's row number, and a tab
+                  that pages through every upload's records together hands back
+                  numbers starting wherever the page happened to fall. The
+                  register's own ordering is unchanged -- the rows still arrive
+                  in Sl.No. order (see bpadRows on the server), the column
+                  saying so is just not printed. */}
               <th>Location</th>
               <th>WareHouse</th>
               <th>Vendor Code</th>
@@ -142,7 +149,7 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
               {/* Days from GRN Date, worked out on the server per desk:
                   Accounts to Accounts Received Date, Stores to today, every
                   other desk to BPAD Received Date. */}
-              <th className="table__num">Ageing</th>
+              <th className="table__num">Age from GRN Date</th>
             </tr>
           </thead>
           <tbody>
@@ -151,21 +158,19 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
                 the page from jumping as a search is typed. */}
             {rows.length === 0 && (
               <tr>
-                <td className="table__empty" colSpan={20}>
+                <td className="table__empty" colSpan={19}>
                   Matches not found
                 </td>
               </tr>
             )}
             {rows.map((row) => (
-              // The register repeats a GRN across a split invoice, and a GRN it
-              // has no entry for carries no Sl.No at all -- so neither is a key
-              // here the way the GRN number is on the other tabs. The stored
-              // row's own id is.
+              // The register repeats a GRN across a split invoice, so the GRN
+              // number is not a key here the way it is on the other tabs. The
+              // stored row's own id is.
               <tr key={row.id}>
                 <td>
                   <Text value={row.branchDivisionCode} />
                 </td>
-                <td className="table__num">{row.slNo ?? ''}</td>
                 <td>
                   <Text value={row.location} />
                 </td>

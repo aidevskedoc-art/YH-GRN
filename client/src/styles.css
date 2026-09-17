@@ -1891,6 +1891,21 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
    coloured counts followed by a group of plain ones. */
 .stat--dept { --stat-key: var(--border-strong); }
 
+/* The one desk card that goes somewhere: Accounts, which opens the Accounts
+   view rather than narrowing the register to itself. It takes that view's
+   tone, so the card and the screen it leads to are the same colour, and an
+   arrow says it leaves -- the row's other cards toggle in place, and a card
+   that quietly did something else would be found out by pressing it. */
+.stat--go .stat__go {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  color: var(--st-matched);
+  opacity: 0.5;
+  transition: transform 0.32s var(--ease-spring), opacity 0.2s ease;
+}
+.stat--go:hover .stat__go { opacity: 1; transform: translateX(3px); }
+
 /* The GRNs the BPAD register has no entry for, on the BPAD view. Amber rather
    than red: it is work outstanding -- a delivery with no vendor invoice raised
    against it yet -- and not an error, which is the same reading Pending takes
