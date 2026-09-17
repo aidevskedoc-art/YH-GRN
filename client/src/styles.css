@@ -1,58 +1,40 @@
 /* ==========================================================================
    Yashoda Hospitals - GRN Reconciliation
-   Design system: brand tokens, materials, app shell, and shared components.
+   Design system: tokens, surfaces, app shell, and shared components.
 
    ---------------------------------------------------------------------------
-   THE MATERIAL IDEA
+   THE IDEA: INK AND DAYLIGHT
    ---------------------------------------------------------------------------
-   The app is staged like a photographed object: a dark drape of cloth as the
-   room, and cast-concrete slabs standing on it holding the numbers. Three
-   assets do the whole job, and nothing here is decoration for its own sake -
-   each layer is solving a legibility problem the flat version had.
+   Two skins over one set of components. Dark is a deep blue-black ink; light
+   is a cool, slightly blue daylight white. Both are nearly colourless, and
+   that is on purpose. The screens are full of rupee amounts and status pills.
+   The brand orange (#f58633, taken from the hospital app icon) and the four
+   status colours are the only colours that carry meaning, so the ground stays
+   quiet and lets them stand out.
 
-     assets/bg-drape-dark.svg   the room. Soft folds of cloth lit from the top
-     assets/bg-drape-light.svg  right, with the brand orange bleeding in as the
-                                only light source in the scene. Fixed to the
-                                viewport, so the page slides over a still room
-                                instead of dragging its own background along.
+   Depth comes from three layers, all set as tokens below:
 
-     assets/wall-grain.svg      the material. A seamless concrete tile that is
-                                mid-grey on average, so it is BLENDED into a
-                                surface colour rather than painted over it -
-                                which is why one tile can skin both the warm
-                                dark slabs and the pale plaster of the light
-                                theme without a second asset.
+     the aurora   A few big soft radial gradients (brand orange, indigo, teal)
+                  that drift slowly behind everything, on a fixed layer, with a
+                  faint dot grid over them. They give the page some warmth
+                  without putting a picture behind the numbers.
 
-   Every panel is a slab: a lit chamfer along its top edge, a shaded underside,
-   and a solid extruded lip beneath it (`0 Npx 0 -1px`) that gives the card real
-   thickness rather than a drop shadow pretending to. The lip is what separates
-   a card from the drape behind it; a blurred shadow alone disappears against a
-   dark, textured ground.
+     the glass    Panels are translucent, with a faint diagonal sheen (--face)
+                  and a light hairline along the top edge (--lip). Only the
+                  chrome (rail, top bar, dialogs) uses backdrop blur. A blur
+                  behind every table would cost a repaint on every scroll.
 
-   ---------------------------------------------------------------------------
-   WHY THE GROUND IS WARM
-   ---------------------------------------------------------------------------
-   The skin follows the house style set by the Non-erg Pendings tool, so the two
-   finance apps read as one product: a warm dark ground (espresso and taupe
-   rather than navy or near-black), generously rounded panels that float as
-   cards, pill buttons, and the brand orange #f58633 sampled from the hospital
-   app icon.
+     the glow     Emphasis is a coloured shadow, not a heavier border. The
+                  primary button, the active nav item and the selected stat
+                  card each cast their own colour onto the surface around them.
 
-   The ground is warm on purpose. The brand orange is a warm colour, and on a
-   cool navy - its direct complement - every accent has to fight the page to be
-   seen. On a brown of the same hue family the orange is simply the saturated
-   end of the page's own colour, so it reads as emphasis rather than as an
-   alarm, and the status colours get the contrast budget spent on THEM.
+   Colour lives in one of the two palettes below and is only ever used through
+   a token, so a component written once works in both skins. Dark is the
+   default and sits on bare :root, so a missing data-theme attribute still
+   lands on the intended design.
 
-   A warm dark ground has less headroom than a near-black one: #130e0a is a
-   colour rather than an absence of one, so the surfaces have to step up in
-   visible increments or they smear together. Every neutral carries the same
-   hue, because one grey rung in a warm ladder reads as dirt on the screen.
-
-   Colour lives in one of the two palettes below and is only ever consumed
-   through a token, so a component written once works in both skins. Dark is the
-   default and sits on bare :root, so a missing data-theme attribute - a failed
-   inline bootstrap, a saved page - still lands on the intended design.
+   --bg has to match index.html's pre-paint literal and theme.js's theme-color.
+   No token can reach either of those, so all three are kept in step by hand.
    ========================================================================== */
 
 :root {
@@ -60,36 +42,33 @@
      its variants travel. On a dark ground the "strong" tint has to get LIGHTER
      to stay legible, so --brand-700 is a highlight here and a shadow in light. */
   --brand: #f58633;
-  --brand-600: #ff9448;
-  --brand-700: #ffab6e;
-  --brand-200: rgba(245, 134, 51, 0.30);
+  --brand-600: #ff9a52;
+  --brand-700: #ffb27a;
+  --brand-200: rgba(245, 134, 51, 0.32);
   --brand-100: rgba(245, 134, 51, 0.18);
   --brand-50: rgba(245, 134, 51, 0.10);
 
-  /* The chrome ink - used where something sits BELOW the page rather than on
-     it (the rail, the login aside). Umber: the same hue, taken almost to black. */
-  --umber-900: #0d0906;
-  --umber-800: #171009;
-  --umber-700: #241a11;
+  /* The second hue. Used only in gradients and the aurora, never to mean
+     anything: indigo is far enough round the wheel from the orange that the
+     two blend through a warm violet rather than through mud. */
+  --accent: #8b7bff;
+  --accent-soft: rgba(139, 123, 255, 0.18);
 
-  /* Neutrals - an elevation ladder, not a set of near-identical darks. Each
-     rung is a visible step up in lightness AND a step up the page.
+  --grad-brand: linear-gradient(135deg, #ffb057 0%, #f58633 46%, #ec5f2a 100%);
+  --grad-brand-soft: linear-gradient(135deg, rgba(245, 134, 51, 0.22) 0%, rgba(139, 123, 255, 0.10) 100%);
+  --grad-accent: linear-gradient(90deg, #ffb057 0%, #f58633 35%, #ff6f91 70%, #8b7bff 100%);
+  --grad-title: linear-gradient(95deg, #ffffff 0%, #c9d1e0 100%);
+  --grad-hairline: linear-gradient(90deg, transparent, rgba(245, 134, 51, 0.65) 30%, rgba(139, 123, 255, 0.55) 70%, transparent);
 
-     They are translucent rather than solid so the drape shows faintly through
-     a slab, the way light passes the edge of a thick sheet. The alpha stays
-     high (0.90+) because these panels carry dense numeric tables, and anything
-     more transparent puts the fold of a curtain behind a column of rupees.
-
-     --bg is the ground the drape plate is painted on, so it is only ever seen
-     if that SVG fails to load - but it has to match the plate, and it has to
-     match index.html's pre-paint literal and theme.js's theme-color. No token
-     can reach either of those, so all three are kept in step by hand. */
-  --bg: #130e0a;
-  --surface: rgba(40, 32, 24, 0.90);
-  --surface-2: rgba(54, 43, 33, 0.92);
-  --surface-3: rgba(67, 54, 40, 0.94);
-  --border: #4b3d2d;
-  --border-strong: #64533e;
+  /* Neutrals - an elevation ladder, each rung a visible step up the page.
+     Translucent so the aurora warms a panel slightly. The alpha stays high
+     because these panels carry dense numeric tables. */
+  --bg: #0a0d14;
+  --surface: rgba(20, 25, 36, 0.84);
+  --surface-2: rgba(28, 34, 48, 0.90);
+  --surface-3: rgba(38, 45, 62, 0.94);
+  --border: rgba(148, 163, 194, 0.15);
+  --border-strong: rgba(148, 163, 194, 0.28);
 
   /* The table's own ground, in its four states: normal row, alternate row,
      hovered row, header band.
@@ -97,48 +76,42 @@
      Opaque, unlike the panel it sits in. The frozen GRN No column has the rest
      of its row sliding underneath it, so that column has to paint something
      solid -- and a solid fill can only match what is beside it if what is
-     beside it is solid too. The panel's face is a diagonal gradient, which no
-     flat colour matches anywhere but one point along it; so the table lays its
-     own flat ground over that gradient and every cell, pinned or not, takes its
-     colour from these four and from nowhere else.
+     beside it is solid too. Every cell, pinned or not, takes its colour from
+     these four and from nowhere else.
 
-     The values are the old translucent tones composited down over --surface and
-     --bg, so the table reads as it did. Change --surface, --bg or --brand-50 and
-     these have to be worked out again by hand: CSS cannot compute a composite. */
-  --table-bg: #261e17;
-  --table-bg-alt: #2b231c;
-  --table-bg-hover: #3d2a1c;
-  --table-head-bg: #413527;
+     The hover tone is --brand-50 composited over --table-bg by hand. Change
+     either and it has to be worked out again: CSS cannot compute a composite. */
+  --table-bg: #121722;
+  --table-bg-alt: #161c28;
+  --table-bg-hover: #292224;
+  --table-head-bg: #1b2231;
 
-  /* Cream, not white. #fff on warm brown reads blue-ish and harsh - the eye
-     takes the ground as neutral and pushes everything else the other way. */
-  --text: #f6efe2;
-  --text-2: #cdbfa9;
-  --muted: #a4957f;
-  --placeholder: #7e7160;
-  --scroll-thumb: #4e4132;
-  --scroll-thumb-hover: #66553f;
+  --text: #e9edf5;
+  --text-2: #b8c0cf;
+  --muted: #8a94a8;
+  --placeholder: #5f6a7e;
+  --scroll-thumb: #2a3244;
+  --scroll-thumb-hover: #3b465c;
 
   /* Semantic. Saturated foregrounds over translucent fills, so a status pill
      tints the panel it lands on instead of punching a light hole in it. */
-  --ok: #4fd39b;
-  --ok-soft: rgba(79, 211, 155, 0.14);
-  --ok-line: rgba(79, 211, 155, 0.32);
-  --danger: #f9706e;
-  --danger-soft: rgba(249, 112, 110, 0.14);
-  --danger-line: rgba(249, 112, 110, 0.34);
+  --ok: #34d399;
+  --ok-soft: rgba(52, 211, 153, 0.13);
+  --ok-line: rgba(52, 211, 153, 0.32);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.13);
+  --danger-line: rgba(248, 113, 113, 0.34);
   /* The filled variant, for the one button in a confirmation panel that goes
-     through with it. The soft pair above tints a surface; this one IS the
-     surface, so it needs a body the translucent fill cannot give it. */
-  --danger-solid: #e2564f;
-  --danger-solid-top: #f4736c;
-  --danger-solid-bottom: #c8433d;
-  --warn: #efc84e;
-  --warn-soft: rgba(239, 200, 78, 0.14);
-  --warn-line: rgba(239, 200, 78, 0.32);
-  --info: #6cb6f5;
-  --info-soft: rgba(108, 182, 245, 0.14);
-  --info-line: rgba(108, 182, 245, 0.34);
+     through with it. */
+  --danger-solid: #e5484d;
+  --danger-solid-top: #f5686c;
+  --danger-solid-bottom: #c73a3f;
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.13);
+  --warn-line: rgba(251, 191, 36, 0.32);
+  --info: #60a5fa;
+  --info-soft: rgba(96, 165, 250, 0.13);
+  --info-line: rgba(96, 165, 250, 0.34);
 
   /* The three reconciliation states. Pending is the one the report exists to
      surface, so it takes the warning colour rather than the danger one: it is
@@ -153,48 +126,55 @@
   --st-review-soft: var(--info-soft);
   --st-review-line: var(--info-line);
 
-  --shadow-1: 0 2px 4px rgba(9, 5, 2, 0.40), 0 6px 16px rgba(9, 5, 2, 0.32);
-  --shadow-2: 0 4px 10px rgba(9, 5, 2, 0.46), 0 18px 44px rgba(9, 5, 2, 0.52);
-  --shadow-3: 0 24px 60px rgba(9, 5, 2, 0.62);
-  --ring: 0 0 0 3px rgba(245, 134, 51, 0.34);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.40), 0 4px 12px rgba(0, 0, 0, 0.24);
+  --shadow-2: 0 1px 2px rgba(0, 0, 0, 0.30), 0 18px 40px -14px rgba(0, 0, 0, 0.60);
+  --shadow-3: 0 32px 80px -24px rgba(0, 0, 0, 0.78);
+  --glow-brand: 0 10px 28px -8px rgba(245, 134, 51, 0.60);
+  --ring: 0 0 0 3px rgba(245, 134, 51, 0.36);
 
-  --scrim: rgba(9, 5, 2, 0.70);
+  --scrim: rgba(3, 5, 10, 0.64);
 
   /* --- Materials -------------------------------------------------------- */
 
-  /* The room, and the fixed vignette that sits over it. The vignette is what
-     stops the drape competing with the content: it drains the corners so the
-     eye lands on the lit centre where the slabs are. It is cast in the same
-     espresso the plate is, because it is part of the same background layer -
-     a neutral black vignette over a warm plate greys out all four corners of
-     it, which reads as the image being dirty rather than as falloff. */
-  --room: url('./assets/bg-drape-dark.svg');
-  --room-vignette: radial-gradient(118% 88% at 68% 4%, rgba(6, 4, 2, 0) 30%, rgba(6, 4, 2, 0.34) 76%, rgba(3, 2, 1, 0.62) 100%);
+  /* The drifting light behind the page. Three blobs rather than one wash, so
+     the page is never lit evenly from edge to edge. */
+  --aurora-1: rgba(245, 134, 51, 0.20);
+  --aurora-2: rgba(124, 108, 255, 0.17);
+  --aurora-3: rgba(45, 212, 191, 0.09);
+  --grid-dot: rgba(148, 163, 194, 0.08);
 
-  /* The concrete. --tex-blend is the whole trick: `overlay` on a dark slab
-     lets the tile's light flecks lift and its dark flecks bite, around an
-     average that leaves the surface colour where the palette put it. */
-  --tex: url('./assets/wall-grain.svg');
-  --tex-size: 420px;
-  --tex-blend: overlay;
+  /* The sheen on a panel, lit from the top left. Components override --face
+     locally where they need a different light (the table header) and keep the
+     rest of the surface rule. */
+  --face: linear-gradient(160deg, rgba(255, 255, 255, 0.05) 0%, rgba(255, 255, 255, 0.012) 42%, rgba(0, 0, 0, 0.10) 100%);
 
-  /* The cast face of a slab, lit from the same top-right the drape is. Panels
-     override --face locally where they need a different pour (the rail, the
-     table header) and inherit the texture plumbing unchanged. */
-  --face: linear-gradient(152deg, rgba(120, 98, 74, 0.34) 0%, rgba(58, 46, 34, 0.16) 38%, rgba(12, 8, 5, 0.30) 100%);
+  /* The top-edge highlight of a panel. --edge and --edge-h are the hard
+     "thickness" lip under a panel. This skin has no lip, so they are zeroed
+     rather than removed: the shadow lists that use them stay valid. */
+  --lip: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --edge: transparent;
+  --edge-h: 0px;
 
-  /* The edges of a slab, kept separate so a component can take the chamfer
-     without the thickness (the top bar) or both (a card). */
-  --lip: inset 0 1px 0 rgba(255, 226, 195, 0.13), inset 0 -1px 0 rgba(0, 0, 0, 0.42);
-  --edge: rgba(10, 6, 3, 0.92);
-  --edge-h: 7px;
+  --glass: saturate(160%) blur(20px);
 
-  --glass: saturate(135%) blur(18px);
+  /* The rail and the top bar: glass over the aurora. */
+  --rail-bg: rgba(9, 12, 19, 0.74);
+  --rail-text: #a9b2c3;
+  --rail-strong: #f3f6fb;
+  --rail-muted: #69748a;
+  --rail-hover: rgba(148, 163, 194, 0.09);
+  --rail-line: rgba(148, 163, 194, 0.12);
+  --topbar-bg: rgba(11, 15, 23, 0.66);
+
+  /* --- Motion. One pair of curves for the whole app, so every piece of motion
+     reads as one system. */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* --- Geometry */
   --r-sm: 8px;
-  --r: 14px;
-  --r-lg: 22px;
+  --r: 12px;
+  --r-lg: 18px;
   --r-pill: 999px;
   --sidebar-w: 258px;
   --sidebar-w-collapsed: 76px;
@@ -203,89 +183,86 @@
 
 /* ------------------------------------------------------------------
    Palette - light skin
-
-   The same concrete tile, blended with `soft-light` instead of `overlay`.
-   Overlay on a pale surface blows the light flecks out to white and the
-   plaster turns to static; soft-light keeps the grain as tooth in the
-   surface, which is what a limewashed wall actually looks like.
    ------------------------------------------------------------------ */
 
 [data-theme="light"] {
   --brand: #f58633;
-  --brand-600: #dd6f1b;
-  --brand-700: #b95a10;
-  --brand-200: #f6d3ac;
-  --brand-100: #fae5cd;
-  --brand-50: #fbeeda;
+  --brand-600: #e8731c;
+  --brand-700: #c25a0c;
+  --brand-200: #fcd5b3;
+  --brand-100: #fde6d2;
+  --brand-50: #fff3e8;
 
-  --umber-900: #241b12;
-  --umber-800: #33271b;
-  --umber-700: #453626;
+  --accent: #6d5dfc;
+  --accent-soft: rgba(109, 93, 252, 0.12);
 
-  /* Paper, not screen. The page takes the tone of an unbleached sheet; the
-     cards are cream, one clear step above it. Nothing here is pure #fff. */
-  --bg: #ece3d3;
-  --surface: rgba(253, 248, 238, 0.90);
-  --surface-2: rgba(247, 239, 224, 0.94);
-  --surface-3: rgba(240, 229, 210, 0.96);
-  --border: #e0d3bd;
-  --border-strong: #c9b79b;
+  --grad-brand: linear-gradient(135deg, #ff9f4a 0%, #f07a22 48%, #dc5d14 100%);
+  --grad-brand-soft: linear-gradient(135deg, rgba(245, 134, 51, 0.14) 0%, rgba(109, 93, 252, 0.07) 100%);
+  --grad-accent: linear-gradient(90deg, #f08a2c 0%, #e8661a 35%, #e2466e 70%, #6d5dfc 100%);
+  --grad-title: linear-gradient(95deg, #0f172a 0%, #3f4b5f 100%);
+  --grad-hairline: linear-gradient(90deg, transparent, rgba(245, 134, 51, 0.55) 30%, rgba(109, 93, 252, 0.40) 70%, transparent);
 
-  /* The same four, flattened over the paper. See the dark set above. */
-  --table-bg: #fbf6eb;
-  --table-bg-alt: #f6f1e5;
-  --table-bg-hover: #fbeeda;
-  --table-head-bg: #f0e6d3;
+  /* White cards on a cool daylight page. Nothing is flat grey: every neutral
+     carries a hint of blue, so the orange reads warmer against it. */
+  --bg: #f3f5fa;
+  --surface: rgba(255, 255, 255, 0.86);
+  --surface-2: rgba(248, 250, 253, 0.96);
+  --surface-3: rgba(236, 240, 247, 0.98);
+  --border: #e2e7f0;
+  --border-strong: #cdd5e2;
 
-  --text: #2a231b;
-  --text-2: #5a4e40;
-  --muted: #8b7c69;
-  --placeholder: #ab9d8a;
-  --scroll-thumb: #cfc0a8;
-  --scroll-thumb-hover: #b3a086;
+  /* The same four, flattened over white. See the dark set above. */
+  --table-bg: #ffffff;
+  --table-bg-alt: #f8fafd;
+  --table-bg-hover: #fff5ec;
+  --table-head-bg: #f2f5fa;
 
-  /* Soft fills are warmed towards the paper they land on. A cool #e6f5ed chip
-     on a cream card reads as a hole punched through to a different document. */
-  --ok: #12704a;
-  --ok-soft: #e7f1e3;
-  --ok-line: #bdd8bb;
-  --danger: #b93a2c;
-  --danger-soft: #fbe9e1;
-  --danger-line: #f0c9ba;
-  --danger-solid: #b93a2c;
-  --danger-solid-top: #cc4a37;
-  --danger-solid-bottom: #9d2e21;
-  --warn: #8a6212;
-  --warn-soft: #f9eed6;
-  --warn-line: #e8d3a4;
-  --info: #1f5fae;
-  --info-soft: #e9eef7;
-  --info-line: #c6d6ec;
+  --text: #0f172a;
+  --text-2: #3f4b5f;
+  --muted: #64748b;
+  --placeholder: #94a3b8;
+  --scroll-thumb: #cbd3e0;
+  --scroll-thumb-hover: #a9b4c6;
 
-  --shadow-1: 0 1px 2px rgba(58, 40, 22, 0.05), 0 1px 3px rgba(58, 40, 22, 0.07);
-  --shadow-2: 0 2px 4px rgba(58, 40, 22, 0.06), 0 8px 20px rgba(58, 40, 22, 0.11);
-  --shadow-3: 0 18px 48px rgba(40, 26, 12, 0.20);
-  --ring: 0 0 0 3px rgba(245, 134, 51, 0.26);
+  --ok: #0c8f63;
+  --ok-soft: #e5f6ef;
+  --ok-line: #b3e3cf;
+  --danger: #d23b3b;
+  --danger-soft: #fdeded;
+  --danger-line: #f5c6c6;
+  --danger-solid: #dc3b3b;
+  --danger-solid-top: #ee5a5a;
+  --danger-solid-bottom: #bd2f2f;
+  --warn: #a8570a;
+  --warn-soft: #fdf3e2;
+  --warn-line: #f2d7a6;
+  --info: #2563eb;
+  --info-soft: #eaf1fe;
+  --info-line: #c5d7fb;
 
-  --scrim: rgba(40, 26, 12, 0.44);
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.05), 0 2px 6px rgba(15, 23, 42, 0.05);
+  --shadow-2: 0 1px 2px rgba(15, 23, 42, 0.05), 0 14px 34px -14px rgba(15, 23, 42, 0.16);
+  --shadow-3: 0 32px 70px -22px rgba(15, 23, 42, 0.30);
+  --glow-brand: 0 10px 24px -8px rgba(240, 122, 34, 0.50);
+  --ring: 0 0 0 3px rgba(245, 134, 51, 0.28);
 
-  /* The dark drape's folds read as shadow -- the same warm-brown gradient on a
-     pale ground reads as a stain, because a brown patch on cream has no shadow
-     to be. So the room here carries a near-opaque paper-coloured wash as its
-     TOPMOST layer (background-image paints first-listed on top), which mutes
-     the photograph underneath to a whisper of grain rather than a visible
-     smear. The corner vignette below it is the same idea as the dark theme's,
-     just weakened for the same reason -- it only has to deepen the edges. */
-  /* --room: url('./assets/bg-drape-light.svg'); */
-  --room-vignette:
-    linear-gradient(rgba(236, 227, 211, 0.93), rgba(236, 227, 211, 0.93)),
-    radial-gradient(115% 85% at 68% 4%, rgba(120, 96, 62, 0) 30%, rgba(120, 96, 62, 0.05) 76%, rgba(96, 76, 48, 0.09) 100%);
+  --scrim: rgba(15, 23, 42, 0.36);
 
-  --tex-blend: soft-light;
-  --face: linear-gradient(152deg, rgba(255, 255, 255, 0.72) 0%, rgba(255, 251, 243, 0.30) 40%, rgba(174, 152, 120, 0.16) 100%);
+  --aurora-1: rgba(245, 134, 51, 0.15);
+  --aurora-2: rgba(109, 93, 252, 0.10);
+  --aurora-3: rgba(20, 184, 166, 0.08);
+  --grid-dot: rgba(15, 23, 42, 0.06);
 
-  --lip: inset 0 1px 0 rgba(255, 255, 255, 0.85), inset 0 -1px 0 rgba(120, 96, 62, 0.14);
-  --edge: rgba(186, 165, 134, 0.85);
+  --face: linear-gradient(160deg, rgba(255, 255, 255, 0.90) 0%, rgba(255, 255, 255, 0.35) 50%, rgba(238, 242, 250, 0.50) 100%);
+  --lip: inset 0 1px 0 rgba(255, 255, 255, 0.95);
+
+  --rail-bg: rgba(255, 255, 255, 0.74);
+  --rail-text: #475569;
+  --rail-strong: #0f172a;
+  --rail-muted: #94a3b8;
+  --rail-hover: rgba(15, 23, 42, 0.05);
+  --rail-line: #e2e7f0;
+  --topbar-bg: rgba(255, 255, 255, 0.70);
 }
 
 /* ==========================================================================
@@ -296,20 +273,19 @@
 
 html, body, #root { height: 100%; }
 
+/* The ground is painted on html, not body. The aurora below is a fixed
+   pseudo-element at z-index -1. That puts it above the root background but
+   below any in-flow background, so a background on body would cover it. */
+html {
+  background-color: var(--bg);
+  color-scheme: dark;
+}
+html[data-theme="light"] { color-scheme: light; }
+
 body {
   margin: 0;
   color: var(--text);
-
-  /* The room. Fixed attachment so the drape belongs to the window rather than
-     to the document - scrolling a long pending list must not drag the folds up
-     with it, or the slabs stop reading as objects standing in front of them.
-     The vignette rides on the same fixed layer for the same reason. */
-  background-color: var(--bg);
-  background-image: var(--room-vignette), var(--room);
-  background-size: cover, cover;
-  background-position: center, center top;
-  background-repeat: no-repeat, no-repeat;
-  background-attachment: fixed, fixed;
+  background: transparent;
 
   /* Poppins matches the house style but is not fetched from a CDN - this tool
      has to keep working on a hospital network with no outbound internet - so it
@@ -321,6 +297,39 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+/* The aurora. Oversized by 20vmax on every side so the drift never pulls an
+   edge into view, and moved with transform only, which the compositor can
+   animate without repainting the page above it. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -20vmax;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(40vmax 30vmax at 76% 16%, var(--aurora-1), transparent 70%),
+    radial-gradient(36vmax 30vmax at 16% 84%, var(--aurora-2), transparent 70%),
+    radial-gradient(30vmax 26vmax at 50% 52%, var(--aurora-3), transparent 70%);
+  animation: aurora 42s ease-in-out infinite alternate;
+}
+/* A dot grid over the aurora, faded out towards the bottom of the window. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: radial-gradient(var(--grid-dot) 1px, transparent 1.2px);
+  background-size: 22px 22px;
+  -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 20%, transparent 75%);
+  mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, #000 20%, transparent 75%);
+}
+@keyframes aurora {
+  0% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50% { transform: translate3d(-4vmax, 3vmax, 0) rotate(8deg) scale(1.08); }
+  100% { transform: translate3d(3vmax, -2vmax, 0) rotate(-5deg) scale(1.02); }
 }
 
 code, .mono {
@@ -343,15 +352,10 @@ code, .mono {
 :focus-visible { outline: none; box-shadow: var(--ring); border-radius: var(--r-sm); }
 
 /* ==========================================================================
-   The cast surface
+   The panel surface
 
-   One rule skins every panel in the app. The texture is layer 1 and the cast
-   face is layer 2, so `background-blend-mode: var(--tex-blend), normal` blends
-   the concrete INTO the face and the face onto the panel's own colour. Two
-   layers and two blend values, deliberately: the list repeats to fill extra
-   layers, so a third background on any of these would silently be blended too.
-   A panel that needs a tint on top of the concrete uses an inset shadow (see
-   --stat-tint) rather than a third layer.
+   One rule gives every panel its sheen. Panels that need a different light
+   override --face locally instead of restating the background.
    ========================================================================== */
 
 .card,
@@ -365,10 +369,8 @@ code, .mono {
 .sheet__panel,
 .ped__face,
 .table th {
-  background-image: var(--tex), var(--face);
-  background-size: var(--tex-size) var(--tex-size), auto;
-  background-repeat: repeat, no-repeat;
-  background-blend-mode: var(--tex-blend), normal;
+  background-image: var(--face);
+  background-repeat: no-repeat;
 }
 
 /* ==========================================================================
@@ -380,7 +382,7 @@ code, .mono {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   min-height: 100vh;
-  transition: grid-template-columns 0.18s ease;
+  transition: grid-template-columns 0.32s var(--ease-out);
 }
 .app-shell.collapsed { grid-template-columns: var(--sidebar-w-collapsed) minmax(0, 1fr); }
 
@@ -390,26 +392,28 @@ code, .mono {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  /* The rail is the one slab standing edge-on to the room, so it is poured
-     darker than the cards and lit only along its inner edge. */
-  --face: linear-gradient(180deg, rgba(46, 33, 21, 0.72) 0%, rgba(13, 9, 6, 0.86) 100%);
-  background-color: rgba(11, 8, 5, 0.72);
+  --face: linear-gradient(180deg, rgba(245, 134, 51, 0.07) 0%, transparent 28%, transparent 72%, rgba(124, 108, 255, 0.07) 100%);
+  background-color: var(--rail-bg);
   -webkit-backdrop-filter: var(--glass);
   backdrop-filter: var(--glass);
-  box-shadow: inset -1px 0 0 rgba(255, 226, 195, 0.09), 12px 0 40px rgba(6, 3, 1, 0.45);
-  color: #fff;
+  border-right: 1px solid var(--rail-line);
+  color: var(--rail-strong);
   overflow: hidden;
   z-index: 40;
 }
-/* A warm glow at the top of the rail, so the darkest surface in the app still
-   carries the brand hue rather than reading as a black bar. */
+/* A slow brand glow at the top of the rail, so the chrome carries the brand
+   hue without a coloured bar. */
 .sidebar::before {
   content: "";
   position: absolute;
   inset: -40% -60% auto -40%;
-  height: 320px;
-  background: radial-gradient(circle at 30% 30%, rgba(245, 134, 51, 0.26), transparent 62%);
+  height: 340px;
+  background: radial-gradient(circle at 30% 30%, rgba(245, 134, 51, 0.24), transparent 62%);
   pointer-events: none;
+  animation: breathe 9s ease-in-out infinite;
+}
+[data-theme="light"] .sidebar::before {
+  background: radial-gradient(circle at 30% 30%, rgba(245, 134, 51, 0.16), transparent 62%);
 }
 
 .sidebar-head {
@@ -419,18 +423,18 @@ code, .mono {
   gap: 8px;
   height: var(--topbar-h);
   padding: 0 14px 0 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+  border-bottom: 1px solid var(--rail-line);
   flex: none;
 }
 
 .brand-lockup { display: flex; align-items: center; gap: 10px; min-width: 0; }
-/* The mark is a physical tile on the rail rather than a floating PNG: a lit
-   top edge and a shadow beneath give it the same thickness as everything else. */
 .brand-lockup img {
   flex: none;
-  border-radius: 7px;
-  box-shadow: 0 1px 0 rgba(255, 226, 195, 0.22), 0 3px 8px rgba(0, 0, 0, 0.5);
+  border-radius: 8px;
+  filter: drop-shadow(0 4px 10px rgba(245, 134, 51, 0.35));
+  transition: transform 0.5s var(--ease-spring);
 }
+.brand-lockup:hover img { transform: rotate(-8deg) scale(1.06); }
 .brand-text { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
 .brand-name {
   font-weight: 650;
@@ -440,22 +444,18 @@ code, .mono {
   text-overflow: ellipsis;
 }
 .brand-sub { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
-.brand-lockup.on-dark .brand-name { color: #fff; }
-.brand-lockup.on-dark .brand-sub { color: rgba(255, 255, 255, 0.55); }
+.brand-lockup.on-dark .brand-name { color: var(--rail-strong); }
+.brand-lockup.on-dark .brand-sub { color: var(--rail-muted); }
 
 /* Sits on the seam between the rail and the page, half over each -- which is
    why it is a sibling of .sidebar in AppShell.jsx rather than nested inside
-   it. .sidebar is overflow:hidden to contain its own glow (see
-   .sidebar::before below), and that clipped the half of this button meant to
-   poke past the rail's edge. .app-shell (position: relative) is the
-   positioned ancestor instead, so `left` is pinned to the rail width and
-   never gets clipped by it.
+   it: .sidebar is overflow:hidden to contain its own glow, and that would clip
+   the half meant to poke past the rail's edge.
 
    z-index sits above both .sidebar (40) and .topbar (30, inside .app-main)
-   so the button is never painted over by either as they scroll or animate --
-   the actual bug report this fixed. */
+   so the button is never painted over by either as they scroll or animate. */
 .rail-toggle {
-  position:fixed;
+  position: fixed;
   top: calc(var(--topbar-h) / 2);
   left: calc(var(--sidebar-w) - 12px);
   transform: translateY(-50%);
@@ -465,15 +465,21 @@ code, .mono {
   width: 24px;
   height: 24px;
   padding: 0;
-  border-radius: var(--r-sm);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.72);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-3);
+  color: var(--text-2);
   cursor: pointer;
-  box-shadow: none;
-  transition: left 0.18s ease, background 0.14s, color 0.14s;
+  box-shadow: var(--shadow-1);
+  transition: left 0.32s var(--ease-out), background 0.2s, color 0.2s, border-color 0.2s,
+    transform 0.3s var(--ease-spring);
 }
-.rail-toggle:hover { background: var(--brand-200); color: #fff; }
+.rail-toggle:hover {
+  background: var(--grad-brand);
+  border-color: transparent;
+  color: #fff;
+  transform: translateY(-50%) scale(1.12);
+}
 /* Follows the rail's own width when collapsed, same transition as the grid
    columns it tracks (see .app-shell.collapsed) so the two move together. */
 .app-shell.collapsed .rail-toggle { left: calc(var(--sidebar-w-collapsed) - 12px); }
@@ -487,15 +493,77 @@ code, .mono {
   flex-direction: column;
   gap: 3px;
 }
-.nav-section {
+/* --- the links' dropdown
+   Every rail link sits under one control. It wears the caption's type -- small,
+   spaced, upper-case -- because it is still the heading of the group; what is
+   added is a caret and the hover of something you can press. The selectors are
+   scoped to .sidenav so they outweigh the global `button:hover:not(:disabled)`,
+   which would otherwise paint a page-surface background onto the dark rail. */
+.sidenav .nav-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-bottom: 2px;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: var(--r);
+  background: transparent;
+  box-shadow: none;
+  color: #a9b2c3;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.13em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.42);
-  padding: 16px 12px 6px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
 }
-.nav-section:first-child { padding-top: 2px; }
+.sidenav .nav-group:hover { background: var(--rail-hover); border-color: transparent; color: var(--rail-strong); }
+.sidenav .nav-group:focus-visible { outline: none; color: var(--rail-strong); box-shadow: var(--ring); }
+.nav-group__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-group__caret {
+  margin-left: auto;
+  flex: none;
+  opacity: 0.8;
+  transition: transform 0.32s var(--ease-spring);
+}
+.sidenav .nav-group.is-open .nav-group__caret { transform: rotate(180deg); }
+.sidenav .nav-group:hover .nav-group__caret { opacity: 1; }
+
+/* The reveal. A row of `0fr` collapses the list to nothing and `1fr` lets it
+   take its natural height, so the panel opens to exactly the height of the
+   links it holds -- no max-height guess that clips a ninth entry or leaves the
+   animation idling past the last one. */
+.nav-group__items {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.34s var(--ease-out), opacity 0.24s ease;
+  opacity: 0;
+}
+.nav-group.is-open + .nav-group__items { grid-template-rows: 1fr; opacity: 1; }
+
+/* The links held out of the dropdown. They keep the group's spacing so the
+   rail still reads as one column, and a hairline marks where the group ends
+   rather than a second caption -- there is only one heading in this rail, and
+   naming these would imply the dropdown could be closed to hide them too. */
+.sidenav__loose { display: flex; flex-direction: column; gap: 3px; }
+/* .sidenav__loose.has-rule {
+  margin-top: 9px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rail-line);
+} */
+.nav-group__list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+  /* The active marker hangs 12px into the rail's padding, so the clipping box
+     is opened on that side and the row put back where it was. */
+  overflow: hidden;
+  margin: 0 -12px;
+  padding: 0 12px;
+}
 
 .nav-item {
   position: relative;
@@ -504,20 +572,23 @@ code, .mono {
   gap: 12px;
   padding: 10px 12px;
   border-radius: var(--r);
-  color: rgba(255, 255, 255, 0.76);
+  color: var(--rail-text);
   font-weight: 550;
   text-decoration: none;
   white-space: nowrap;
-  transition: background 0.14s, color 0.14s, box-shadow 0.14s;
+  isolation: isolate;
+  transition: background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
 }
-.nav-item:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
-.nav-item svg { flex: none; opacity: 0.9; }
+.nav-item:hover { background: var(--rail-hover); color: var(--rail-strong); }
+.nav-item svg { flex: none; opacity: 0.9; transition: transform 0.35s var(--ease-spring), color 0.2s ease; }
+.nav-item:hover svg { transform: translateX(2px) scale(1.08); }
 .nav-item.active {
-  background: linear-gradient(90deg, rgba(245, 134, 51, 0.26), rgba(245, 134, 51, 0.05));
-  color: #fff;
-  /* Chiselled in, not stuck on: light on the top edge, shadow underneath. */
-  box-shadow: inset 0 1px 0 rgba(255, 210, 170, 0.22), inset 0 -1px 0 rgba(0, 0, 0, 0.34);
+  background: linear-gradient(90deg, var(--brand-100), rgba(245, 134, 51, 0.02));
+  color: var(--rail-strong);
+  box-shadow: inset 0 0 0 1px var(--brand-100);
 }
+/* The active marker: a lit bar on the rail's edge that grows in when the
+   route changes. */
 .nav-item.active::before {
   content: "";
   position: absolute;
@@ -526,8 +597,9 @@ code, .mono {
   bottom: 8px;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: var(--brand);
-  box-shadow: 0 0 12px rgba(245, 134, 51, 0.75);
+  background: linear-gradient(180deg, #ffb057, var(--brand) 50%, #ec5f2a);
+  box-shadow: 0 0 14px rgba(245, 134, 51, 0.8);
+  animation: marker-in 0.4s var(--ease-spring) both;
 }
 .nav-item.active svg { color: var(--brand); opacity: 1; }
 .nav-label { overflow: hidden; text-overflow: ellipsis; }
@@ -537,14 +609,14 @@ code, .mono {
   font-weight: 700;
   padding: 1px 8px;
   border-radius: var(--r-pill);
-  background: rgba(255, 255, 255, 0.12);
-  color: rgba(255, 255, 255, 0.85);
+  background: var(--rail-hover);
+  color: var(--rail-text);
 }
 
 .sidebar-foot {
   position: relative;
   flex: none;
-  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  border-top: 1px solid var(--rail-line);
   padding: 12px;
 }
 .user-chip {
@@ -553,8 +625,8 @@ code, .mono {
   gap: 10px;
   padding: 8px;
   border-radius: var(--r);
-  background: rgba(255, 255, 255, 0.06);
-  box-shadow: inset 0 1px 0 rgba(255, 226, 195, 0.10);
+  background: var(--rail-hover);
+  border: 1px solid var(--rail-line);
   min-width: 0;
 }
 .avatar {
@@ -564,25 +636,23 @@ code, .mono {
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--brand), var(--brand-700));
+  background: var(--grad-brand);
   color: #fff;
   font-weight: 700;
   font-size: 13px;
-  /* A sphere rather than a disc: a specular highlight up top, a shaded
-     underside, and the brand glow it would actually throw onto the rail. */
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.55), inset 0 -3px 6px rgba(120, 45, 0, 0.45),
-    0 3px 10px rgba(245, 134, 51, 0.35);
+  text-shadow: 0 1px 1px rgba(120, 45, 0, 0.35);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45), 0 4px 12px -2px rgba(245, 134, 51, 0.55);
 }
 .user-meta { min-width: 0; line-height: 1.25; }
 .user-meta .user-name {
   font-weight: 650;
-  color: #fff;
+  color: var(--rail-strong);
   font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.user-meta .user-role { font-size: 11px; color: rgba(255, 255, 255, 0.55); }
+.user-meta .user-role { font-size: 11px; color: var(--rail-muted); }
 
 .icon-btn-dark {
   margin-left: auto;
@@ -595,78 +665,29 @@ code, .mono {
   border-radius: var(--r-sm);
   border: 1px solid transparent;
   background: transparent;
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--rail-text);
   cursor: pointer;
   box-shadow: none;
 }
-.icon-btn-dark:hover:not(:disabled) { background: var(--brand-200); color: #fff; }
-
-/* --- the rail, re-poured for paper ------------------------------------------
-   Every rule above reads its light and dark as a literal rgba(255,255,255,a)
-   or rgba(0,0,0,a) rather than off a theme token, so none of it noticed the
-   theme changing underneath it -- the rail stayed the dark theme's own black,
-   dropped onto an otherwise light page like a leftover fragment. This gives it
-   its own light material instead: a panel one shade back from the page (so it
-   still reads as a rail, not a continuation of the content), dark ink for
-   type, and every rgba(255,255,255,a) reading white-on-black flipped to its
-   rgba(58,40,22,a) reading dark-on-paper. */
-[data-theme="light"] .sidebar {
-  --face: linear-gradient(180deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 251, 243, 0.15) 45%, rgba(174, 152, 120, 0.10) 100%);
-  background-color: #f1e8d7;
-  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.6), 1px 0 0 var(--border), 12px 0 30px rgba(58, 40, 22, 0.08);
-  color: var(--text);
-}
-[data-theme="light"] .sidebar::before {
-  background: radial-gradient(circle at 30% 30%, rgba(245, 134, 51, 0.16), transparent 62%);
-}
-[data-theme="light"] .sidebar-head,
-[data-theme="light"] .sidebar-foot {
-  border-color: var(--border);
-}
-[data-theme="light"] .brand-lockup.on-dark .brand-name { color: var(--text); }
-[data-theme="light"] .brand-lockup.on-dark .brand-sub { color: var(--text-2); }
-[data-theme="light"] .brand-lockup img {
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7), 0 2px 8px rgba(58, 40, 22, 0.18);
-}
-[data-theme="light"] .nav-section { color: var(--muted); }
-[data-theme="light"] .nav-item { color: var(--text-2); }
-[data-theme="light"] .nav-item:hover { background: rgba(58, 40, 22, 0.06); color: var(--text); }
-[data-theme="light"] .nav-item.active {
-  background: linear-gradient(90deg, var(--brand-100), rgba(245, 134, 51, 0.02));
-  color: var(--text);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), inset 0 -1px 0 rgba(58, 40, 22, 0.10);
-}
-[data-theme="light"] .nav-count { background: rgba(58, 40, 22, 0.08); color: var(--text-2); }
-[data-theme="light"] .user-chip {
-  background: rgba(58, 40, 22, 0.045);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
-}
-[data-theme="light"] .user-meta .user-name { color: var(--text); }
-[data-theme="light"] .user-meta .user-role { color: var(--muted); }
-[data-theme="light"] .icon-btn-dark { color: var(--text-2); }
-[data-theme="light"] .icon-btn-dark:hover:not(:disabled) { color: #fff; }
-[data-theme="light"] .rail-toggle {
-  border-color: var(--border-strong);
-  background: rgba(58, 40, 22, 0.05);
-  color: var(--text-2);
-}
-[data-theme="light"] .rail-toggle:hover { color: #fff; }
+.icon-btn-dark:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger-line); color: var(--danger); }
 
 /* Collapsed rail: icons only, labels removed from flow. Desktop only - below
    the drawer breakpoint the sidebar is an overlay and always shows its labels,
    so the collapse rules are scoped rather than undone. */
 @media (min-width: 941px) {
-  /* Padding-right reserves the corner .rail-toggle sits over -- it is no
-     longer part of this row's flow (see the note on .rail-toggle) but still
-     visually lands here, so centering the logo in what's left of the row
-     doesn't centre it under the button. */
+  /* Padding-right reserves the corner .rail-toggle sits over, so the logo is
+     centred in what is left of the row rather than under the button. */
   .app-shell.collapsed .sidebar-head { padding: 0 38px 0 0; justify-content: center; }
   .app-shell.collapsed .brand-text,
   .app-shell.collapsed .nav-label,
   .app-shell.collapsed .nav-count,
-  .app-shell.collapsed .nav-section,
+  .app-shell.collapsed .nav-group,
   .app-shell.collapsed .user-meta,
   .app-shell.collapsed .sidebar-foot .icon-btn-dark { display: none; }
+  /* With the toggle gone there is nothing left to reopen the panel with, so
+     the icons-only rail always shows the links (AppShell.jsx forces the same
+     state on the React side, which is what keeps them out of `inert`). */
+  .app-shell.collapsed .nav-group__items { grid-template-rows: 1fr; opacity: 1; }
   .app-shell.collapsed .nav-item { justify-content: center; padding: 11px 0; }
   .app-shell.collapsed .user-chip { justify-content: center; padding: 8px 0; }
 }
@@ -682,33 +703,50 @@ code, .mono {
   gap: 14px;
   height: var(--topbar-h);
   padding: 0 24px;
-  /* Glass, not a solid bar: the page scrolls under it and the drape stays
-     visible through it, which is what keeps the room continuous behind the
-     chrome. The blur is what makes the text passing under it unreadable
-     enough to ignore. */
-  background-color: rgba(28, 21, 15, 0.72);
+  /* Glass: the page scrolls under it and the aurora stays visible through it. */
+  background-color: var(--topbar-bg);
   -webkit-backdrop-filter: var(--glass);
   backdrop-filter: var(--glass);
   border-bottom: 1px solid var(--border);
-  box-shadow: 0 1px 0 rgba(255, 226, 195, 0.06), 0 12px 30px rgba(6, 3, 1, 0.32);
 }
-[data-theme="light"] .topbar {
-  background-color: rgba(253, 248, 238, 0.78);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7), 0 10px 26px rgba(58, 40, 22, 0.08);
+/* A gradient hairline along the foot of the bar, with a highlight that
+   travels along it slowly. */
+.topbar::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--grad-hairline);
+  background-size: 200% 100%;
+  opacity: 0.8;
+  animation: hairline 8s linear infinite;
+  pointer-events: none;
 }
 .topbar-title { min-width: 0; line-height: 1.25; }
 .topbar-title h1 {
   margin: 0;
-  font-size: 16px;
+  font-size: 16.5px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  background: var(--grad-title);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: title-in 0.5s var(--ease-out) both;
 }
-.topbar-title .crumb { font-size: 12px; color: var(--muted); }
+.topbar-title .crumb { font-size: 12px; color: var(--muted); animation: title-in 0.5s 0.06s var(--ease-out) both; }
 .topbar-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 .nav-toggle { flex: none; }
+
+/* The theme switch. The glyph is swapped rather than restyled, so it
+   re-mounts and plays its entrance each time. */
+.theme-toggle svg { animation: toggle-spin 0.6s var(--ease-spring) both; }
+.theme-toggle:hover:not(:disabled) { color: var(--brand); }
 
 /* min-width:0 so a wide child (the table, the tab strip) can never push the
    page wider than the shell column it sits in. */
@@ -722,7 +760,7 @@ code, .mono {
     inset: 0 auto 0 0;
     width: var(--sidebar-w);
     transform: translateX(-100%);
-    transition: transform 0.22s ease;
+    transition: transform 0.36s var(--ease-out);
     box-shadow: var(--shadow-3);
   }
   .app-shell.drawer-open .sidebar { transform: none; }
@@ -730,13 +768,14 @@ code, .mono {
     position: fixed;
     inset: 0;
     background: var(--scrim);
-    -webkit-backdrop-filter: blur(3px);
-    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(4px);
+    backdrop-filter: blur(4px);
     z-index: 35;
     border: 0;
     padding: 0;
     cursor: pointer;
     box-shadow: none;
+    animation: fade-in 0.25s ease both;
   }
   .page { padding: 16px; }
   .topbar { padding: 0 14px; }
@@ -757,35 +796,52 @@ button, .btn {
   color: var(--text);
   cursor: pointer;
   box-shadow: var(--lip);
-  transition: background 0.22s ease, border-color 0.22s ease, color 0.22s ease,
-    box-shadow 0.22s ease, transform 0.22s ease;
+  transition: background 0.22s ease, background-position 0.5s var(--ease-out), border-color 0.22s ease,
+    color 0.22s ease, box-shadow 0.22s ease, transform 0.22s var(--ease-out);
 }
 button:disabled, .btn:disabled { opacity: 0.55; cursor: not-allowed; }
 button:hover:not(:disabled), .btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-3); }
 
+/* The primary action: the one gradient button on a screen. The gradient is
+   oversized so hover can slide it, and a light sweep crosses the face as the
+   pointer arrives. */
 button.primary, .btn--primary {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  /* Not a flat fill: a lit top, a shaded bottom, and the glow the colour would
-     actually cast - the primary action is the one lamp on a dark stage. */
-  background: linear-gradient(180deg, var(--brand-600) 0%, var(--brand) 55%, #e0741f 100%);
-  border-color: rgba(255, 178, 120, 0.55);
+  background: var(--grad-brand);
+  background-size: 180% 180%;
+  background-position: 0% 50%;
+  border-color: transparent;
   color: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 224, 198, 0.60), inset 0 -2px 4px rgba(122, 48, 0, 0.35),
-    0 4px 14px rgba(245, 134, 51, 0.30);
+  text-shadow: 0 1px 1px rgba(120, 45, 0, 0.25);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), var(--glow-brand);
+}
+button.primary::after, .btn--primary::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.42) 50%, transparent 70%);
+  transform: translateX(-120%);
+  transition: transform 0.8s var(--ease-out);
+  pointer-events: none;
 }
 button.primary:hover:not(:disabled), .btn--primary:hover:not(:disabled) {
-  background: linear-gradient(180deg, #ffa25c 0%, var(--brand-600) 55%, #ef8028 100%);
-  border-color: rgba(255, 198, 150, 0.70);
+  background: var(--grad-brand);
+  background-size: 180% 180%;
+  background-position: 100% 50%;
+  border-color: transparent;
   transform: translateY(-1px);
-  box-shadow: inset 0 1px 0 rgba(255, 232, 212, 0.70), inset 0 -2px 4px rgba(122, 48, 0, 0.30),
-    0 8px 22px rgba(245, 134, 51, 0.42);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45), 0 14px 34px -8px rgba(245, 134, 51, 0.70);
 }
-/* Pressed means pressed IN: the highlight goes, the inset shadow arrives. */
+button.primary:hover:not(:disabled)::after, .btn--primary:hover:not(:disabled)::after { transform: translateX(120%); }
 button.primary:active:not(:disabled) {
-  transform: translateY(1px);
-  box-shadow: inset 0 2px 5px rgba(110, 42, 0, 0.50), 0 2px 6px rgba(245, 134, 51, 0.24);
+  transform: translateY(1px) scale(0.98);
+  box-shadow: inset 0 2px 6px rgba(110, 42, 0, 0.40), 0 4px 10px -4px rgba(245, 134, 51, 0.5);
 }
 
 button.ghost, .btn--ghost {
@@ -797,9 +853,10 @@ button.ghost, .btn--ghost {
 button.ghost {
   background: var(--surface-3);
   color: var(--text);
-  border-color: transparent;
+  border-color: var(--border);
   box-shadow: var(--lip);
 }
+button.ghost:hover:not(:disabled) { border-color: var(--brand-200); color: var(--brand-700); }
 
 button.danger:hover:not(:disabled) {
   background: var(--danger-soft);
@@ -814,23 +871,21 @@ button.danger--solid {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  background: linear-gradient(180deg, var(--danger-solid-top) 0%, var(--danger-solid) 55%,
+  background: linear-gradient(135deg, var(--danger-solid-top) 0%, var(--danger-solid) 55%,
     var(--danger-solid-bottom) 100%);
-  border-color: var(--danger-line);
+  border-color: transparent;
   color: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 219, 215, 0.50), inset 0 -2px 4px rgba(104, 22, 16, 0.35),
-    0 4px 14px rgba(200, 67, 61, 0.26);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.30), 0 10px 26px -8px rgba(229, 72, 77, 0.55);
 }
 button.danger--solid:hover:not(:disabled) {
-  background: linear-gradient(180deg, #ff8a83 0%, var(--danger-solid-top) 55%, var(--danger-solid) 100%);
-  border-color: var(--danger-line);
+  background: linear-gradient(135deg, #ff8a86 0%, var(--danger-solid-top) 55%, var(--danger-solid) 100%);
+  border-color: transparent;
   transform: translateY(-1px);
-  box-shadow: inset 0 1px 0 rgba(255, 230, 227, 0.60), inset 0 -2px 4px rgba(104, 22, 16, 0.30),
-    0 8px 22px rgba(200, 67, 61, 0.38);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.40), 0 14px 32px -8px rgba(229, 72, 77, 0.65);
 }
 button.danger--solid:active:not(:disabled) {
-  transform: translateY(1px);
-  box-shadow: inset 0 2px 5px rgba(94, 18, 12, 0.50), 0 2px 6px rgba(200, 67, 61, 0.22);
+  transform: translateY(1px) scale(0.98);
+  box-shadow: inset 0 2px 6px rgba(94, 18, 12, 0.45);
 }
 
 .icon-btn { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; flex: none; }
@@ -848,23 +903,52 @@ button.danger--solid:active:not(:disabled) {
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
-  /* An input is cut INTO the slab, so its lighting is the inverse of a
-     button's: shadow along the top edge, light along the bottom. */
-  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.28), inset 0 -1px 0 rgba(255, 226, 195, 0.07);
-  transition: border-color 0.18s, box-shadow 0.18s;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22);
+  transition: border-color 0.2s ease, box-shadow 0.25s ease, background-color 0.2s ease;
 }
 [data-theme="light"] .field__input, [data-theme="light"] select.field__input {
-  box-shadow: inset 0 2px 4px rgba(120, 96, 62, 0.09), inset 0 -1px 0 rgba(255, 255, 255, 0.80);
+  background: #fff;
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
 }
+.field__input:hover:not(:disabled):not(:focus) { border-color: var(--border-strong); }
 .field__input::placeholder { color: var(--placeholder); }
 .field__input:focus { outline: none; border-color: var(--brand); box-shadow: var(--ring); }
 .field__hint { display: block; margin-top: 6px; color: var(--muted); font-size: 12px; }
 
-/* A date field in an ordinary form -- e.g. the Vendor/Others hand-off dialog's
-   own Date -- gets the same branded calendar glyph as the table's inline date
-   cells (.cell-date__input), so the control reads as one thing wherever it
-   turns up rather than the browser's plain black icon breaking the surface it
-   sits on in the dark theme. */
+/* A password field and its reveal toggle. The button sits inside the input'''s
+   box, so the field keeps the height and width of every other one on the form;
+   the input is padded on the right by the button'''s width so a long password
+   scrolls out from under it rather than behind it. Browsers that ship their own
+   reveal glyph (Edge, IE) have it suppressed -- two eyes on one field, only one
+   of which React knows about, is worse than none. */
+.field__reveal { position: relative; display: block; }
+.field__reveal .field__input { padding-right: 42px; }
+.field__reveal .field__input::-ms-reveal,
+.field__reveal .field__input::-ms-clear { display: none; }
+.field__reveal-btn {
+  position: absolute;
+  top: 50%;
+  right: 4px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.16s ease, background-color 0.16s ease;
+}
+.field__reveal-btn:hover { color: var(--text); background: var(--surface-3); }
+.field__reveal-btn[aria-pressed="true"] { color: var(--brand); }
+.field__reveal-btn:focus-visible { outline: none; color: var(--brand); box-shadow: var(--ring); }
+
+/* A date field in an ordinary form gets the same branded calendar glyph as
+   the table's inline date cells (.cell-date__input), so the control reads as
+   one thing wherever it turns up. */
 input[type="date"].field__input { color-scheme: dark; }
 [data-theme="light"] input[type="date"].field__input { color-scheme: light; }
 input[type="date"].field__input::-webkit-calendar-picker-indicator {
@@ -878,15 +962,34 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator {
 }
 input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opacity: 1; }
 
-.alert { padding: 11px 15px; border-radius: var(--r-sm); margin-bottom: 16px; font-size: 13px; }
+.alert {
+  padding: 11px 15px;
+  border-radius: var(--r-sm);
+  margin-bottom: 16px;
+  font-size: 13px;
+  animation: alert-in 0.4s var(--ease-out) both;
+}
 .alert--error {
   background: var(--danger-soft);
   color: var(--danger);
   border: 1px solid var(--danger-line);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .loading, .empty { padding: 44px; text-align: center; color: var(--muted); }
+/* A spinner over the words: a gradient ring turning, so a slow request reads
+   as work in progress rather than a page that has stopped. */
+.loading::before {
+  content: "";
+  display: block;
+  width: 30px;
+  height: 30px;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, transparent 0 15%, var(--brand) 70%, var(--accent) 100%);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  animation: spin 0.8s linear infinite;
+}
 /* The same message as .empty, but as a row inside the table so the header and
    the table's own frame stay on the page. */
 .table__empty { padding: 44px; text-align: center; color: var(--muted); }
@@ -894,23 +997,33 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
   background-color: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  box-shadow: var(--lip), 0 var(--edge-h) 0 -1px var(--edge), var(--shadow-2);
+  box-shadow: var(--lip), var(--shadow-2);
 }
 .empty--page h2 { margin: 0 0 6px; color: var(--text); font-size: 18px; }
 
-/* --- the slab -----------------------------------------------------------
-   A card is a poured panel standing on the drape. The `0 Npx 0 -1px` shadow is
-   not a glow - it is a hard, unblurred lip that reads as the thickness of the
-   slab, and it is the reason a card separates from a dark textured ground that
-   a blurred shadow alone would dissolve into. */
+/* --- the card ----------------------------------------------------------- */
 .card {
   position: relative;
   background-color: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   padding: 22px;
-  box-shadow: var(--lip), 0 var(--edge-h) 0 -1px var(--edge), var(--shadow-2);
+  box-shadow: var(--lip), var(--shadow-2);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
 }
+/* A brand-tinted highlight along the top edge. */
+.card::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 24px;
+  right: 24px;
+  height: 1px;
+  background: var(--grad-hairline);
+  opacity: 0.7;
+  pointer-events: none;
+}
+.card:hover { border-color: var(--border-strong); }
 
 /* ==========================================================================
    Three-dimensional pieces
@@ -926,28 +1039,28 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
    ========================================================================== */
 
 .stage {
-  /* The object is the same dark, lit-from-one-side thing in both skins, so
-     the stage keeps the dark blend even when the room around it is plaster. */
-  --tex-blend: overlay;
   position: relative;
   height: 460px;
   perspective: 1400px;
   perspective-origin: 52% 42%;
 }
 
-/* The lamp in the scene. Everything else is lit as though this is where the
-   light comes from, which is what stops the 3D reading as clip-art. */
+/* The lamp in the scene: an orange core with an indigo halo, breathing slowly.
+   Everything else is lit as though this is where the light comes from. */
 .stage__glow {
   position: absolute;
   left: 50%;
-  top: 90px;
-  width: 460px;
-  height: 460px;
-  margin-left: -230px;
+  top: 70px;
+  width: 500px;
+  height: 500px;
+  margin-left: -250px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(245, 134, 51, 0.34) 0%, rgba(245, 134, 51, 0.10) 38%, transparent 68%);
-  filter: blur(14px);
+  background:
+    radial-gradient(circle at 50% 42%, rgba(245, 134, 51, 0.38) 0%, rgba(245, 134, 51, 0.10) 34%, transparent 62%),
+    radial-gradient(circle at 50% 60%, rgba(139, 123, 255, 0.22) 0%, transparent 66%);
+  filter: blur(16px);
   pointer-events: none;
+  animation: breathe 7s ease-in-out infinite;
 }
 
 .box3d { position: absolute; transform-style: preserve-3d; }
@@ -961,28 +1074,29 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
   height: 132px;
   margin-left: -214px;
   z-index: 9;
-  /* transform: rotateX(15deg) rotateY(-26deg); */
   transform: rotateX(9deg) rotateY(22deg);
 }
+/* Smoked glass rather than stone: a dark slate body with a lit edge. */
 .ped__face {
-  background-color: #1c140e;
-  border: 1px solid rgba(255, 226, 195, 0.07);
+  background-color: #111723;
+  border: 1px solid rgba(148, 163, 194, 0.14);
 }
 
-.ped__face--front{
-    font-size: 38px;
-    line-height: 44px;
-    font-weight: 600;
-    color: #fc8f41;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    letter-spacing: 3px;
+.ped__face--front {
+  font-size: 38px;
+  line-height: 44px;
+  font-weight: 600;
+  color: #ff9a52;
+  text-shadow: 0 0 18px rgba(245, 134, 51, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  letter-spacing: 3px;
 }
 /* Front and back: the shaded vertical planes. */
 .ped__face--front, .ped__face--back {
-  --face: linear-gradient(180deg, rgba(96, 76, 56, 0.30) 0%, rgba(10, 7, 4, 0.55) 100%);
+  --face: linear-gradient(180deg, rgba(110, 126, 160, 0.26) 0%, rgba(4, 6, 12, 0.60) 100%);
   width: 300px;
   height: 132px;
 }
@@ -990,17 +1104,17 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
 .ped__face--back { transform: translateZ(-95px) rotateY(180deg); }
 /* The sides are turned further from the light, so darker still. */
 .ped__face--left, .ped__face--right {
-  --face: linear-gradient(180deg, rgba(70, 55, 40, 0.26) 0%, rgba(6, 4, 2, 0.66) 100%);
+  --face: linear-gradient(180deg, rgba(90, 104, 136, 0.22) 0%, rgba(2, 4, 8, 0.70) 100%);
   width: 190px;
   height: 132px;
   left: 55px;
 }
 .ped__face--right { transform: rotateY(90deg) translateZ(150px); }
 .ped__face--left { transform: rotateY(-90deg) translateZ(150px); display: flex; align-items: center; justify-content: center; }
-/* The top catches the light square-on: the only lit plane in the block. */
+/* The top catches the light square-on, and the orange lamp above it. */
 .ped__face--top {
-  --face: linear-gradient(158deg, rgba(214, 182, 146, 0.66) 0%, rgba(132, 106, 78, 0.40) 42%, rgba(52, 39, 27, 0.42) 100%);
-  background-color: #3a2c1f;
+  --face: linear-gradient(158deg, rgba(255, 176, 110, 0.40) 0%, rgba(120, 132, 170, 0.30) 42%, rgba(18, 24, 36, 0.50) 100%);
+  background-color: #1d2536;
   width: 300px;
   height: 190px;
   top: -29px;
@@ -1013,6 +1127,30 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
   top: -29px;
   transform: rotateX(-90deg) translateZ(66px);
 }
+
+/* In daylight the plinth is frosted white glass: same planes, same light
+   direction, pale body. */
+[data-theme="light"] .ped__face {
+  background-color: #eef2f8;
+  border-color: rgba(15, 23, 42, 0.08);
+}
+[data-theme="light"] .ped__face--front { color: #e8731c; text-shadow: 0 6px 18px rgba(245, 134, 51, 0.30); }
+[data-theme="light"] .ped__face--front,
+[data-theme="light"] .ped__face--back {
+  --face: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(203, 212, 228, 0.70) 100%);
+}
+[data-theme="light"] .ped__face--left,
+[data-theme="light"] .ped__face--right {
+  --face: linear-gradient(180deg, rgba(240, 244, 250, 0.90) 0%, rgba(176, 188, 208, 0.80) 100%);
+}
+[data-theme="light"] .ped__face--top {
+  --face: linear-gradient(158deg, rgba(255, 255, 255, 1) 0%, rgba(255, 236, 218, 0.80) 45%, rgba(214, 222, 236, 0.80) 100%);
+  background-color: #ffffff;
+}
+[data-theme="light"] .ped__face--bottom {
+  --face: linear-gradient(180deg, rgba(148, 163, 184, 0.55), rgba(100, 116, 139, 0.65));
+}
+
 /* The cube's contact shadow, painted onto the plinth's top face so it lies in
    the same plane and takes the same perspective the face does. */
 .ped__shadow {
@@ -1026,6 +1164,9 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
   background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.62) 0%, rgba(0, 0, 0, 0.28) 46%, transparent 72%);
   filter: blur(8px);
   animation: contact 7s ease-in-out infinite;
+}
+[data-theme="light"] .ped__shadow {
+  background: radial-gradient(ellipse at center, rgba(15, 23, 42, 0.28) 0%, rgba(15, 23, 42, 0.10) 46%, transparent 72%);
 }
 
 /* --- the cube: 100 on a side, so every face is pushed out by 50. */
@@ -1054,13 +1195,13 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
   width: 100px;
   height: 100px;
   border: 1px solid rgba(255, 186, 130, 0.55);
-  border-radius: 8px;
-  /* Glass with a hot inner rim. The faces are translucent enough to see the
-     far side of the cube through, which is what sells it as one solid object
-     rather than six squares that happen to be arranged in a box. */
-  background: linear-gradient(150deg, rgba(255, 173, 112, 0.26) 0%, rgba(245, 134, 51, 0.10) 45%, rgba(120, 52, 8, 0.20) 100%);
-  box-shadow: inset 0 0 20px rgba(245, 134, 51, 0.42), inset 0 1px 0 rgba(255, 226, 198, 0.50),
-    0 0 18px rgba(245, 134, 51, 0.16);
+  border-radius: 10px;
+  /* Glass with a hot inner rim, and a violet cast on the shaded side. The
+     faces are translucent enough to see the far side of the cube through,
+     which is what sells it as one solid object. */
+  background: linear-gradient(150deg, rgba(255, 173, 112, 0.28) 0%, rgba(245, 134, 51, 0.10) 45%, rgba(124, 108, 255, 0.18) 100%);
+  box-shadow: inset 0 0 22px rgba(245, 134, 51, 0.42), inset 0 1px 0 rgba(255, 226, 198, 0.50),
+    0 0 20px rgba(245, 134, 51, 0.18);
 }
 .cube__face--front { transform: translateZ(50px); }
 .cube__face--back { transform: rotateY(180deg) translateZ(50px); }
@@ -1071,13 +1212,8 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
 /* What is suspended inside the box: the hospital mark, backlit by a filament.
 
    The pair sits at z=0 as a SIBLING of .cube (see Login.jsx), so it is never
-   rotated - the glass turns around it. That is deliberate: an emblem parented
-   to the cube would turn edge-on twice per revolution and vanish, and the point
-   of putting a logo in here is that it can be read.
-
-   Both halves are needed. The mark alone on a translucent face has nothing
-   behind it and reads as a sticker; the filament alone was the old abstract
-   glow. Backlit, the mark is the thing the lantern is lit FOR. */
+   rotated - the glass turns around it. An emblem parented to the cube would
+   turn edge-on twice per revolution and vanish. */
 .cube__mark {
   position: absolute;
   left: 50%;
@@ -1089,10 +1225,8 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
   place-items: center;
   pointer-events: none;
 }
-/* The filament, as a RING rather than a disc. A centre-hot glow puts its
-   brightest point exactly where the emblem is and washes the petals out; pushed
-   out to the rim it lights the glass around the mark and leaves dark behind it,
-   which is the contrast the orange petals need. */
+/* The filament, as a RING rather than a disc, so the brightest point is
+   around the emblem rather than on it and the petals keep their contrast. */
 .cube__core {
   position: absolute;
   left: 50%;
@@ -1105,10 +1239,6 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
   filter: blur(10px);
   animation: pulse 4.5s ease-in-out infinite;
 }
-/* The mark itself, lit from within the lantern rather than printed on it: the
-   brightness/saturate lift is the light falling ON it, and the two drop-shadows
-   are the light coming OFF it - a tight warm one for the halo tight to the
-   petals, a wide one for the spill onto the glass. */
 .cube__emblem {
   position: relative;
   filter: saturate(1.16) contrast(1.06)
@@ -1149,31 +1279,74 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
   gap: 48px;
   align-items: center;
 }
+.login__aside { animation: rise-left 0.8s var(--ease-out) both; }
 .login__pitch { margin-top: -14px; }
 .login__pitch h2 {
   margin: 0 0 10px;
-  font-size: 30px;
-  line-height: 1.18;
+  font-size: 32px;
+  line-height: 1.16;
   font-weight: 700;
   letter-spacing: -0.03em;
 }
 .login__pitch p { margin: 0; color: var(--text-2); max-width: 42ch; font-size: 14px; }
-.login__pitch .accent { color: var(--brand-700); }
-[data-theme="light"] .login__pitch .accent { color: var(--brand-600); }
+/* The accent phrase: the brand gradient running slowly through the words. */
+.login__pitch .accent {
+  background: var(--grad-accent);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: gradient-pan 5s ease-in-out infinite alternate;
+}
 
 .login__panel {
+  position: relative;
+  isolation: isolate;
   width: 100%;
   max-width: 420px;
   justify-self: center;
   padding: 36px 32px;
   background-color: var(--surface);
+  -webkit-backdrop-filter: var(--glass);
+  backdrop-filter: var(--glass);
   border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  box-shadow: var(--lip), 0 9px 0 -1px var(--edge), var(--shadow-3);
+  border-radius: calc(var(--r-lg) + 4px);
+  box-shadow: var(--lip), var(--shadow-3);
+  animation: rise 0.7s 0.1s var(--ease-out) both;
+}
+/* A light that circles the panel's border. A conic gradient turned by an
+   animated angle, masked down to a 1px ring so only the edge is lit. */
+.login__panel::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  padding: 1px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--spin), transparent 0deg 200deg, rgba(245, 134, 51, 0.95) 270deg,
+    rgba(139, 123, 255, 0.85) 320deg, transparent 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  animation: orbit 6s linear infinite;
+  pointer-events: none;
 }
 .login__brand { display: grid; place-items: center; margin-bottom: 8px; }
-.login__brand img { border-radius: 12px; box-shadow: 0 2px 0 rgba(255, 226, 195, 0.16), 0 10px 24px rgba(0, 0, 0, 0.50); }
-.login__title { margin: 14px 0 0; font-size: 20px; font-weight: 700; text-align: center; letter-spacing: -0.02em; }
+.login__brand img {
+  filter: drop-shadow(0 8px 22px rgba(245, 134, 51, 0.45));
+  animation: float 6s ease-in-out infinite;
+}
+.login__title {
+  margin: 14px 0 0;
+  font-size: 21px;
+  font-weight: 700;
+  text-align: center;
+  letter-spacing: -0.02em;
+  background: var(--grad-title);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
 .login__subtitle { margin: 4px 0 26px; text-align: center; color: var(--muted); font-size: 13px; }
 
 /* The stage is decoration. Below the breakpoint the form takes the whole
@@ -1329,7 +1502,7 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   content: '';
   flex: 1;
   height: 1px;
-  background: linear-gradient(90deg, var(--border-strong), transparent);
+  background: linear-gradient(90deg, var(--brand-200), var(--border-strong) 25%, transparent);
 }
 
 /* --- the report slots ----------------------------------------------------
@@ -1394,7 +1567,7 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
      more contrast than --border-strong to read as an edge at all - at the
      token value the box looks like a panel with a smudge round it rather than
      like something cut open and waiting to be filled. */
-  --drop-edge: rgba(255, 226, 195, 0.26);
+  --drop-edge: rgba(148, 163, 194, 0.34);
   position: relative;
   display: grid;
   align-content: center;
@@ -1412,7 +1585,7 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   transition: border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease,
     transform 0.2s ease;
 }
-[data-theme="light"] .drop { --drop-edge: rgba(120, 96, 62, 0.40); }
+[data-theme="light"] .drop { --drop-edge: rgba(100, 116, 139, 0.40); }
 
 /* Everything painted inside the box is decoration: the click has to reach the
    input stretched underneath it, not stop on the label it lands over. The
@@ -1433,9 +1606,10 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .drop:hover {
   border-color: var(--brand);
-  box-shadow: 0 0 0 1px var(--brand-100), 0 10px 26px rgba(6, 3, 1, 0.30);
+  background-color: var(--surface-3);
+  box-shadow: 0 0 0 4px var(--brand-50), var(--shadow-2);
+  transform: translateY(-2px);
 }
-[data-theme="light"] .drop:hover { box-shadow: 0 0 0 1px var(--brand-100), var(--shadow-2); }
 .drop:focus-within { border-color: var(--brand); box-shadow: var(--ring); }
 
 /* Dragging over it: the dashes close up into a solid edge and the box takes
@@ -1445,7 +1619,8 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   border-style: solid;
   border-color: var(--brand);
   background-color: var(--brand-100);
-  box-shadow: 0 0 0 3px var(--brand-100), 0 12px 30px rgba(6, 3, 1, 0.34);
+  box-shadow: 0 0 0 5px var(--brand-100), var(--glow-brand);
+  transform: scale(1.015);
 }
 
 .drop--filled {
@@ -1576,7 +1751,8 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   bottom: 0;
   width: 38%;
   border-radius: inherit;
-  background: linear-gradient(90deg, transparent, var(--brand-600), var(--brand), transparent);
+  background: linear-gradient(90deg, transparent, var(--brand-600), var(--brand) 55%, var(--accent), transparent);
+  box-shadow: 0 0 12px var(--brand-200);
   animation: progress-sweep 1.25s ease-in-out infinite;
 }
 @keyframes progress-sweep {
@@ -1601,6 +1777,13 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   margin-bottom: 22px;
   perspective: 1200px;
 }
+/* A row with only one or two cards on it: sized to the card rather than to the
+   row, so a lone figure does not stretch the width of the workspace. */
+.cards--few {
+  grid-template-columns: repeat(auto-fit, minmax(230px, 300px));
+  justify-content: start;
+}
+
 .stat {
   --stat-tint: transparent;
   --stat-key: var(--border-strong);
@@ -1614,36 +1797,73 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   background-color: var(--surface);
   font: inherit;
   color: inherit;
-  transform-style: preserve-3d;
-  box-shadow: var(--lip), inset 0 0 0 200px var(--stat-tint),
-    0 var(--edge-h) 0 -1px var(--edge), var(--shadow-2);
-  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.3, 1), box-shadow 0.28s ease,
-    border-color 0.28s ease;
+  /* A stacking context of its own, so the sheen below can sit at z-index -1:
+     above the card's tinted face, beneath its text. */
+  isolation: isolate;
+  box-shadow: var(--lip), inset 0 0 0 200px var(--stat-tint), var(--shadow-2);
+  transition: transform 0.4s var(--ease-out), box-shadow 0.35s ease, border-color 0.35s ease;
 }
-/* The status key, inlaid down the left edge of the pour and lit from within. */
+/* The status key, inlaid down the left edge and lit from within. */
 .stat::before {
   content: "";
   position: absolute;
   left: 0;
   top: 14px;
   bottom: 14px;
-  width: 5px;
-  border-radius: 0 5px 5px 0;
+  width: 4px;
+  border-radius: 0 4px 4px 0;
   background: var(--stat-key);
   box-shadow: 0 0 14px var(--stat-key);
   opacity: 0.9;
+  transition: top 0.35s var(--ease-out), bottom 0.35s var(--ease-out);
+}
+/* Two layers: a glow in the card's own status colour bleeding in from the top
+   right, and a band of light parked off the left edge that crosses the card
+   on hover. The band only transitions on the way in, so leaving the card
+   snaps it back out of sight rather than sweeping it back. */
+.stat::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(110deg, transparent 42%, rgba(255, 255, 255, 0.09) 50%, transparent 58%),
+    radial-gradient(160px 110px at 100% 0%, var(--stat-key), transparent 72%);
+  background-size: 260% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-position: 100% 0, 0 0;
+  opacity: 0.32;
+  transition: opacity 0.35s ease;
+}
+[data-theme="light"] .stat::after {
+  background:
+    linear-gradient(110deg, transparent 42%, rgba(255, 255, 255, 0.75) 50%, transparent 58%),
+    radial-gradient(160px 110px at 100% 0%, var(--stat-key), transparent 72%);
+  background-size: 260% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-position: 100% 0, 0 0;
+  opacity: 0.14;
 }
 .stat:hover {
   transform: translateY(-5px) rotateX(5deg);
-  box-shadow: var(--lip), inset 0 0 0 200px var(--stat-tint),
-    0 12px 0 -1px var(--edge), var(--shadow-3);
+  border-color: var(--border-strong);
+  box-shadow: var(--lip), inset 0 0 0 200px var(--stat-tint), var(--shadow-3);
 }
+.stat:hover::after {
+  background-position: 0% 0, 0 0;
+  opacity: 0.55;
+  transition: opacity 0.35s ease, background-position 0.9s var(--ease-out);
+}
+[data-theme="light"] .stat:hover::after { opacity: 0.26; }
+.stat:hover::before { top: 8px; bottom: 8px; }
 .stat:active { transform: translateY(-1px) rotateX(2deg); }
 .stat.is-active {
   border-color: var(--stat-key);
-  box-shadow: var(--ring), var(--lip), inset 0 0 0 200px var(--stat-tint),
-    0 var(--edge-h) 0 -1px var(--edge), var(--shadow-2);
+  box-shadow: 0 0 0 1px var(--stat-key), var(--lip), inset 0 0 0 200px var(--stat-tint),
+    0 16px 36px -14px color-mix(in srgb, var(--stat-key) 60%, transparent);
 }
+.stat.is-active::before { animation: key-glow 2.4s ease-in-out infinite; }
 .stat__label { font-weight: 600; font-size: 12.5px; color: var(--muted); }
 .stat__value { font-size: 28px; font-weight: 700; line-height: 1.25; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .stat__amount { font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -1791,19 +2011,19 @@ select.stage-filter { width: auto; min-width: 150px; }
   top: 0;
   z-index: 2;
   padding: 12px 14px;
-  --face: linear-gradient(180deg, rgba(110, 88, 66, 0.30) 0%, rgba(30, 23, 16, 0.34) 100%);
-  background-color: var(--surface-3);
+  --face: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(0, 0, 0, 0.10) 100%);
+  background-color: var(--table-head-bg);
   color: var(--text-2);
   text-align: left;
-  font-size: 11.5px;
+  font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.07em;
   border-bottom: 1px solid var(--border-strong);
-  box-shadow: inset 0 1px 0 rgba(255, 226, 195, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 [data-theme="light"] .table th {
-  --face: linear-gradient(180deg, rgba(255, 255, 255, 0.80) 0%, rgba(196, 176, 146, 0.16) 100%);
+  --face: linear-gradient(180deg, rgba(255, 255, 255, 0.80) 0%, rgba(226, 232, 242, 0.40) 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.90);
 }
 
@@ -1935,6 +2155,16 @@ select.stage-filter { width: auto; min-width: 150px; }
 }
 .table--pinned-select .table__pin--grn {
   left: calc(var(--select-pin-w) + var(--division-pin-w));
+}
+/* The Action column, held against the RIGHT edge instead (the CSD queue): the
+   controls a row is worked with stay in reach however far it has been scrolled
+   sideways. Same sticky cell and opaque fills as the left pins above; only the
+   edge it holds and the side its seam is drawn on change. */
+.table__pin--action {
+  left: auto;
+  right: 0;
+  border-right: none;
+  border-left: 1px solid var(--border);
 }
 .table tbody tr:nth-child(even) .table__pin { background-color: var(--table-bg-alt); }
 .table tbody tr:hover .table__pin { background-color: var(--table-bg-hover); }
@@ -2343,10 +2573,113 @@ select.pager__size-input { width: auto; padding: 6px 8px 6px 10px; font-size: 13
    Motion
    ========================================================================== */
 
-.page-transition { animation: page-in 0.26s ease both; }
-@keyframes page-in {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: none; }
+/* The page arrives in order: each top-level block rises a beat after the one
+   above it, so the eye is led from the head row down to the table.
+
+   `backwards`, not `both`, on everything that also moves on hover. A fill that
+   outlives the animation keeps holding `transform`, and an animated value beats
+   an ordinary declaration -- it would silently cancel the stat cards' lift. */
+.page-transition { animation: page-in 0.35s ease both; }
+.page-transition > * { animation: rise 0.55s var(--ease-out) backwards; }
+.page-transition > :nth-child(2) { animation-delay: 0.05s; }
+.page-transition > :nth-child(3) { animation-delay: 0.10s; }
+.page-transition > :nth-child(4) { animation-delay: 0.15s; }
+.page-transition > :nth-child(5) { animation-delay: 0.20s; }
+.page-transition > :nth-child(n + 6) { animation-delay: 0.25s; }
+
+.cards > .stat { animation: rise 0.6s var(--ease-out) backwards; }
+.cards > .stat:nth-child(2) { animation-delay: 0.06s; }
+.cards > .stat:nth-child(3) { animation-delay: 0.12s; }
+.cards > .stat:nth-child(4) { animation-delay: 0.18s; }
+.cards > .stat:nth-child(5) { animation-delay: 0.24s; }
+.cards > .stat:nth-child(6) { animation-delay: 0.30s; }
+.cards > .stat:nth-child(n + 7) { animation-delay: 0.36s; }
+
+/* Rows fade in down the first screenful. Opacity only: a transform on a row
+   would briefly make it the containing block for its sticky pinned cells. */
+.table tbody tr { animation: fade-in 0.4s ease backwards; }
+.table tbody tr:nth-child(2) { animation-delay: 0.02s; }
+.table tbody tr:nth-child(3) { animation-delay: 0.04s; }
+.table tbody tr:nth-child(4) { animation-delay: 0.06s; }
+.table tbody tr:nth-child(5) { animation-delay: 0.08s; }
+.table tbody tr:nth-child(6) { animation-delay: 0.10s; }
+.table tbody tr:nth-child(7) { animation-delay: 0.12s; }
+.table tbody tr:nth-child(8) { animation-delay: 0.14s; }
+.table tbody tr:nth-child(9) { animation-delay: 0.16s; }
+.table tbody tr:nth-child(10) { animation-delay: 0.18s; }
+.table tbody tr:nth-child(n + 11) { animation-delay: 0.2s; }
+
+/* The rail's links slide in once, when the shell mounts. They are keyed by
+   route, so navigating does not replay it. */
+.sidenav .nav-item { animation: slide-in 0.5s var(--ease-out) backwards; }
+.nav-group__list .nav-item:nth-child(2) { animation-delay: 0.04s; }
+.nav-group__list .nav-item:nth-child(3) { animation-delay: 0.08s; }
+.nav-group__list .nav-item:nth-child(4) { animation-delay: 0.12s; }
+.nav-group__list .nav-item:nth-child(5) { animation-delay: 0.16s; }
+.nav-group__list .nav-item:nth-child(6) { animation-delay: 0.20s; }
+.nav-group__list .nav-item:nth-child(7) { animation-delay: 0.24s; }
+.nav-group__list .nav-item:nth-child(n + 8) { animation-delay: 0.28s; }
+.sidenav__loose .nav-item { animation-delay: 0.3s; }
+.sidenav__loose .nav-item:nth-child(n + 2) { animation-delay: 0.34s; }
+
+/* Upload: the target bobs while a file is held over it, and the glyph pops
+   when a workbook lands. */
+.drop--filled .drop__glyph { animation: pop 0.5s var(--ease-spring) both; }
+.drop--over .drop__glyph { animation: bob 0.9s ease-in-out infinite; }
+.readydots--1 i:first-child, .readydots--2 i { animation: pop 0.45s var(--ease-spring) both; }
+
+.view-radios__option { transition: background-color 0.25s ease, color 0.25s ease; }
+.choice input:checked { animation: pop 0.35s var(--ease-spring); }
+
+/* The theme switch. theme.js wraps the change in a view transition and grows
+   the new theme out of the toggle as a circle; these turn off the browser's
+   default cross-fade so only that reveal plays. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* The angle the login panel's border light travels round. Registered so the
+   browser can interpolate it: an unregistered custom property only flips
+   between keyframes. */
+@property --spin {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes page-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } }
+@keyframes rise-left { from { opacity: 0; transform: translateX(-28px); } }
+@keyframes slide-in { from { opacity: 0; transform: translateX(-10px); } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes title-in { from { opacity: 0; transform: translateY(6px); filter: blur(4px); } }
+@keyframes alert-in { from { opacity: 0; transform: translateY(-6px); } }
+@keyframes marker-in { from { opacity: 0; transform: scaleY(0); } }
+@keyframes toggle-spin { from { opacity: 0; transform: rotate(-120deg) scale(0.4); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes orbit { to { --spin: 360deg; } }
+@keyframes gradient-pan { to { background-position: 100% center; } }
+/* The tile is 200% wide and its ends are transparent, so moving it exactly one
+   tile width loops without a seam. */
+@keyframes hairline { from { background-position: 0 0; } to { background-position: 200% 0; } }
+@keyframes breathe {
+  0%, 100% { opacity: 0.75; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+@keyframes key-glow {
+  0%, 100% { opacity: 0.95; }
+  50% { opacity: 0.5; }
+}
+@keyframes bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+@keyframes pop {
+  0% { transform: scale(0.6); }
+  60% { transform: scale(1.14); }
+  100% { transform: scale(1); }
 }
 
 /* The scene keeps its geometry when motion is turned down - only the movement
@@ -2548,9 +2881,10 @@ select.spans__select { width: auto; min-width: 150px; }
      transform, so this resolves against the viewport. */
   position: fixed;
   inset: 0;
-  background: rgba(8, 5, 3, 0.55);
-  backdrop-filter: blur(2px);
-  animation: sheet-fade 0.18s ease;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+  animation: sheet-fade 0.25s ease;
 }
 
 /* The same slab every other panel in the app is: a lit chamfer, an extruded
@@ -2570,8 +2904,8 @@ select.spans__select { width: auto; min-width: 150px; }
   background-color: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
-  box-shadow: var(--lip), 0 var(--edge-h) 0 -1px var(--edge), 0 26px 70px rgba(0, 0, 0, 0.5);
-  animation: sheet-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: var(--lip), var(--shadow-3);
+  animation: sheet-in 0.42s var(--ease-out);
 }
 .sheet__panel--narrow { width: min(440px, 100%); }
 
@@ -2658,8 +2992,8 @@ select.spans__select { width: auto; min-width: 150px; }
    edge it came from, and scaling up from just under full size reads as the
    panel coming forward off the page. */
 @keyframes sheet-in {
-  from { transform: scale(0.97) translateY(8px); opacity: 0; }
-  to { transform: none; opacity: 1; }
+  from { transform: translateY(18px) scale(0.95); opacity: 0; filter: blur(4px); }
+  to { transform: none; opacity: 1; filter: none; }
 }
 @keyframes sheet-fade {
   from { opacity: 0; }

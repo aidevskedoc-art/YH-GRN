@@ -7,6 +7,7 @@
  * the two never disagree.
  */
 import { useCallback, useEffect, useState } from 'react';
+import { flushSync } from 'react-dom';
 
 const KEY = 'yh.grn.theme';
 
@@ -21,7 +22,7 @@ function apply(mode) {
   // index.html's pre-paint block for the same reason - change one, change both.
   document
     .querySelector('meta[name="theme-color"]')
-    ?.setAttribute('content', mode === 'light' ? '#ece3d3' : '#130e0a');
+    ?.setAttribute('content', mode === 'light' ? '#f3f5fa' : '#0a0d14');
 }
 
 export function useTheme() {
@@ -37,7 +38,45 @@ export function useTheme() {
     }
   }, [mode]);
 
-  const toggle = useCallback(() => setMode((m) => (m === 'dark' ? 'light' : 'dark')), []);
+  /**
+   * Where the browser supports view transitions, the new theme grows out of
+   * the control that was pressed as an expanding circle. The DOM has to be in
+   * its final state by the time the callback returns, which is why the change
+   * is applied directly and the state update is flushed synchronously.
+   * Anywhere else, or with reduced motion on, the theme simply switches.
+   */
+  const toggle = useCallback((event) => {
+    const next = current() === 'dark' ? 'light' : 'dark';
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (!document.startViewTransition || reduce) {
+      setMode(next);
+      return;
+    }
+
+    // A keyboard press still has a target to grow from; only a call with no
+    // event at all falls back to the top centre of the window.
+    const rect = event?.currentTarget?.getBoundingClientRect?.();
+    const x = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
+    const y = rect ? rect.top + rect.height / 2 : 0;
+    const radius = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+
+    const transition = document.startViewTransition(() => {
+      apply(next);
+      flushSync(() => setMode(next));
+    });
+
+    transition.ready
+      .then(() => {
+        document.documentElement.animate(
+          { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+          { duration: 600, easing: 'cubic-bezier(0.22, 1, 0.36, 1)', pseudoElement: '::view-transition-new(root)' },
+        );
+      })
+      .catch(() => {
+        // Skipped transitions reject here; the theme has already been applied.
+      });
+  }, []);
 
   return { mode, toggle };
 }

@@ -76,6 +76,12 @@ export const IconChevronRight = (p) => (
   </Icon>
 );
 
+export const IconChevronDown = (p) => (
+  <Icon {...p}>
+    <path d="M5 9l7 7 7-7" />
+  </Icon>
+);
+
 export const IconSun = (p) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="4" />
@@ -264,5 +270,25 @@ export const IconBank = (p) => (
     <path d="M14 10v8" />
     <path d="M18 10v8" />
     <path d="M3 21h18" />
+  </Icon>
+);
+
+/* An open eye: the password is being shown. */
+export const IconEye = (p) => (
+  <Icon {...p}>
+    <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" />
+    <circle cx="12" cy="12" r="3" />
+  </Icon>
+);
+
+/* The same eye struck through: the password is hidden. The lid is drawn as two
+   arcs broken by the stroke rather than one closed shape, so the glyph still
+   reads as an eye at 17px where a solid outline would fill in. */
+export const IconEyeOff = (p) => (
+  <Icon {...p}>
+    <path d="M10.7 5.1A10.6 10.6 0 0 1 12 5c6.4 0 10 7 10 7a18.6 18.6 0 0 1-3.2 4.1" />
+    <path d="M6.6 6.6A18.4 18.4 0 0 0 2 12s3.6 7 10 7a10.3 10.3 0 0 0 4.4-.95" />
+    <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    <path d="m3 3 18 18" />
   </Icon>
 );

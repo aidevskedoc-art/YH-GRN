@@ -774,8 +774,21 @@ function chequeFilter(chequeNo, params) {
  * than an error, and pinning the two together here would make the rows query
  * lie about which of its filters did the narrowing.
  */
+/**
+ * The other side of that filter: every GRN the register DOES place at a desk.
+ *
+ * Its own value rather than a list of desks, because the desks are whatever
+ * the uploaded register happens to name -- the one thing that can be said
+ * without reading them is that the bucket for the ones it cannot place is not
+ * among them. See NOT_IN_BPAD.
+ */
+const IN_BPAD = '__in_bpad__';
+
 function pendingDeptFilter(dept, params) {
   if (!dept) return null;
+  // No parameter to bind: the value is this file's own sentinel, not a desk
+  // name off the request.
+  if (dept === IN_BPAD) return `${PENDING_DEPT} <> '${NOT_IN_BPAD}'`;
   params.push(dept);
   return `${PENDING_DEPT} = $${params.length}`;
 }

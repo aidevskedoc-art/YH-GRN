@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { LogoMark } from '../components/Brand.jsx';
+import PasswordField from '../components/PasswordField.jsx';
 
 /**
  * The stage: a glass cube turning above a cast-concrete plinth, lit by the
@@ -122,17 +123,13 @@ export default function Login() {
             />
           </label>
 
-          <label className="field">
-            <span className="field__label">Password</span>
-            <input
-              className="field__input"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              required
-            />
-          </label>
+          <PasswordField
+            label="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
 
           {error && <div className="alert alert--error">{error}</div>}
 

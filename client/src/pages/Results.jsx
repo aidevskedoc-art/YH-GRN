@@ -74,10 +74,12 @@ const TABS = [
   // that the view is chosen from a dropdown: the dropdown says which one view
   // is showing and has room for one number at a time, so a count worth seeing
   // beside the others has to be a card to be seen at all.
+   { status: BPAD, label: 'BPAD', hint: 'Entries in the register', countKey: 'bpadRegister' },
+   ACCOUNTS_TAB,
   { status: 'PENDING', label: 'Pending GRNS', hint: 'Not yet in accounts' },
   // Imported, not spelled out here: the Accounts Department screen offers the same
   // two views and must label them identically.
-  ACCOUNTS_TAB,
+  
   // After Accounts, because it is the same question asked of a different
   // register: the ageing report says a GRN reached accounts, and BPAD says
   // which desk it is sitting on and how long it has been there.
@@ -89,7 +91,7 @@ const TABS = [
   // rows than the register holds records; the gap is stated in the tab's own
   // banner. The card asks "how many records are in BPAD", so it answers with
   // the records that are in BPAD.
-  { status: BPAD, label: 'BPAD', hint: 'Entries in the register', countKey: 'bpadRegister' },
+ 
   TURNAROUND_TAB,
 ];
 
@@ -151,12 +153,26 @@ const MATCH_FILTERS = [
  * outstanding -- and the figure a reader is usually chasing is the one it ends
  * on rather than one buried mid-row.
  *
- * Both views that show all four read this, so they cannot drift apart. The
- * cost of spelling it out is that a fifth card would have to be added here as
- * well as to TABS; that is the right way round, now that the order is a
- * decision rather than a consequence of how the views happen to be listed.
+ * The GRNS SPAN view alone reads this now -- Total GRNS has its own row
+ * below. Accounts stays on it there because that is the population the ageing
+ * is measured over (see TURNAROUND_SCOPE), so its card is what says what the
+ * day counts are counting.
  */
 const BUCKET_CARDS = [ALL_GRNS, BPAD, VALID, 'PENDING'];
+
+/**
+ * Total GRNS' own row: the whole population, the half still outstanding, then
+ * the register that says where those bills are sitting.
+ *
+ * Accounts is deliberately not on it. That half has a view of its own with a
+ * row of its own -- the cheque pair, the CSD stages and the Accounts Queue --
+ * and its count is still on the View dropdown beside its option, so nothing
+ * became unreachable by dropping the card here.
+ *
+ * Pending comes before BPAD because it is the question BPAD answers: how many
+ * have not reached accounts, then where the register says each one stopped.
+ */
+const TOTAL_ROW = [ALL_GRNS, MISSING, BPAD, 'PENDING'];
 
 /**
  * Which cards each view shows.
@@ -179,9 +195,9 @@ const BUCKET_CARDS = [ALL_GRNS, BPAD, VALID, 'PENDING'];
  * became unreachable, and each row now describes one population from end to
  * end.
  *
- * Total GRNS and Turnaround keep all four, having nothing of their own to add:
- * Total GRNS is the whole population and the other counts are how it splits,
- * and Turnaround measures one of those populations rather than dividing one.
+ * Total GRNS keeps the counts that split it -- itself, Pending and BPAD (see
+ * TOTAL_ROW) -- and Turnaround keeps all four, measuring one of those
+ * populations rather than dividing one.
  *
  * The two rows are not the same shape behind the count, and deliberately not.
  * Pending's five desks ARE its breakdown: they divide the figure beside them
@@ -212,7 +228,7 @@ const BUCKET_CARDS = [ALL_GRNS, BPAD, VALID, 'PENDING'];
  * anything else that navigates.
  */
 const CARDS_FOR = {
-  [ALL_GRNS]: BUCKET_CARDS,
+  [ALL_GRNS]: TOTAL_ROW,
   // Its own count only -- the desk breakdown appended at render time is the
   // rest of this row. See the note above.
   PENDING: ['PENDING'],
@@ -239,6 +255,10 @@ const CARD_BY_ID = Object.fromEntries([
   ...CSD_CARDS.map((card) => [card.stage, { kind: 'csd', ...card }]),
   ...CHEQUE_CARDS.map((card) => [card.progress, { kind: 'progress', ...card }]),
   [ACCOUNTS_QUEUE_CARD.progress, { kind: 'progress', ...ACCOUNTS_QUEUE_CARD }],
+  // The GRNs the register has no entry for -- still at the GRN store rather
+  // than pending at a desk. Filed under the register's own filter value, and
+  // named here so the card and its sheet in the workbook cannot drift apart.
+  [MISSING, { kind: 'missing', label: 'Pending GRNs at GRN Store' }],
 ]);
 
 /**
@@ -710,7 +730,12 @@ export default function Results() {
   // the Accounts view would put on screen, from the same call, so the figures
   // standing over them should be the same too.
   const cards = [
-    ...(CARDS_FOR[rowStatus] ?? []).map((id) => CARD_BY_ID[id]).filter(Boolean),
+    ...(CARDS_FOR[rowStatus] ?? [])
+      .map((id) => CARD_BY_ID[id])
+      .filter(Boolean)
+      // Nothing in the register yet: a Not in BPAD card would report a zero
+      // about a file nobody has uploaded. Same suppression the BPAD row makes.
+      .filter((card) => card.kind !== 'missing' || summary?.bpad?.count > 0),
     // The BPAD view's whole row, built here rather than in CARDS_FOR because
     // it is the register's own data: whatever desks the uploaded file happens
     // to name, and whether it knew each GRN at all.
@@ -727,12 +752,13 @@ export default function Results() {
     // answer a question nobody asked.
     //
     // Headed by the BPAD count card itself, the way Pending and Accounts lead
-    // with their own count: pressing it clears the desk or Not in BPAD filter
-    // and shows every row again -- see rowHead.
+    // with their own count: pressing it clears the desk filter -- and the Not
+    // in BPAD one, which this row no longer carries a card for; that card
+    // stands on the Total GRNS row instead (see TOTAL_ROW) and arrives here
+    // with its filter already set. See rowHead.
     ...(status === BPAD && summary?.bpad?.count > 0
       ? [
           CARD_BY_ID[BPAD],
-          { kind: 'missing' },
           ...departments.map((d) => ({ kind: 'dept', ...d })),
         ]
       : []),
@@ -750,10 +776,60 @@ export default function Results() {
     // pending GRNs at all, where a row of zeroes would be reporting on an
     // empty table. They sum to the Pending card exactly -- see
     // pendingDepartments in routes/results.js.
-    ...(rowStatus === 'PENDING' && summary?.PENDING?.count > 0
-      ? (summary.pendingDepartments ?? []).map((d) => ({ kind: 'pendingDept', ...d }))
+    //
+    // Suppressed with no register uploaded as well: the breakdown is the
+    // register's answer, and without one every pending GRN falls into its
+    // "cannot place this" bucket -- one card repeating the count beside it.
+    ...(rowStatus === 'PENDING' && summary?.PENDING?.count > 0 && summary?.bpad?.count > 0
+      ? (summary.pendingDepartments ?? [])
+          // Not the register's "cannot place this" bucket: those are the GRNs
+          // still at the GRN store, and they have their own card on the Total
+          // GRNS row. Leaving it off here is also what makes these desks sum
+          // to the Pending figure beside them -- see bucketFigure.
+          .filter((d) => d.dept !== NOT_IN_BPAD)
+          .map((d) => ({ kind: 'pendingDept', ...d }))
       : []),
   ];
+  /**
+   * What a count card prints. Everything reads its own bucket off the summary,
+   * except Pending once a BPAD register has been uploaded.
+   *
+   * The register places every pending bill at a desk, and the ones it has no
+   * entry for are not pending anywhere in that process -- they are the GRNs
+   * still at the GRN store, counted by their own card on the Total GRNS row.
+   * So with a register on file the Pending figure is the bills the register
+   * actually places (175 of 183 here), and without one it is the whole bucket,
+   * there being nothing to tell the two apart.
+   *
+   * Summed from the desk breakdown the summary already carries, so it is the
+   * same scope -- same search, same branch -- as the figure it is taken from.
+   */
+  const bucketFigure = (card) => {
+    // `summary` is null until the first load lands, and these run before it
+    // -- the export's sheet list is built on every render, not only once the
+    // cards are on screen.
+    const own = summary?.[card.countKey ?? card.status] ?? { count: 0, amount: 0 };
+    if (card.status !== 'PENDING' || !(summary?.bpad?.count > 0)) return own;
+    const placed = (summary?.pendingDepartments ?? []).filter((d) => d.dept !== NOT_IN_BPAD);
+    if (placed.length === 0) return own;
+    return placed.reduce(
+      (sum, d) => ({ count: sum.count + d.count, amount: sum.amount + (d.amount ?? 0) }),
+      { count: 0, amount: 0 },
+    );
+  };
+
+  /**
+   * What a count card is called. Only Pending changes with the data: with a
+   * BPAD register on file its figure is the bills that register places at a
+   * desk (see bucketFigure), so the card says where they are pending rather
+   * than leaving the reader to work out why it is not the whole bucket.
+   * Without a register it is every pending GRN, and the plain name is right.
+   */
+  const bucketLabel = (card) => {
+    if (card.status !== 'PENDING') return card.label;
+    return summary?.bpad?.count > 0 ? 'Pending GRNs at BPAD' : 'Pending GRNs';
+  };
+
   // Which bucket the view is about, for the one card that gets the ring. On
   // Turnaround that is the population being measured rather than the view's
   // own name -- see TURNAROUND_SCOPE.
@@ -780,7 +856,15 @@ export default function Results() {
    * tooltip promises a sheet per card and has to stop promising it where there
    * is only the one.
    */
-  const exportSheets = sectionSheets(section, cards);
+  const exportSheets = sectionSheets(section, cards, {
+    // The sheets are named after the cards they were taken off -- Pending
+    // reads "Pending GRNs at BPAD" once a register is uploaded, and the GRN
+    // store card has a name of its own.
+    labelFor: (card) => (card.kind === 'bucket' ? bucketLabel(card) : card.label),
+    // ...and with a register on file the Pending sheets hold the bills it
+    // places, which is the figure that card carries.
+    pendingInBpad: summary?.bpad?.count > 0,
+  });
 
   /**
    * The sheets above, as one workbook.
@@ -836,6 +920,11 @@ export default function Results() {
     if (card.kind !== 'bucket' || card.status !== rowStatus) return null;
     if (rowStatus === 'PENDING') {
       return { on: Boolean(pendingDept), noun: 'pending GRN', clear: () => selectPendingDept('') };
+    }
+    if (rowStatus === ALL_GRNS) {
+      // The one card beside it that narrows this row -- Pending GRNs at GRN
+      // Store -- sets `pendingDept`, so clearing that is "all of them" here.
+      return { on: Boolean(pendingDept), noun: 'GRN', clear: () => selectPendingDept('') };
     }
     if (rowStatus === VALID) {
       // The cheque pair and the four CSD stages all set `progress`, so that one
@@ -985,7 +1074,10 @@ export default function Results() {
       )}
 
       {summary && cards.length > 0 && (
-        <div className="cards">
+        /* A row of one or two -- Pending with no register uploaded -- keeps the
+           cards their own size rather than stretching them across the width the
+           four-card rows need. See .cards--few. */
+        <div className={`cards${cards.length < 3 ? ' cards--few' : ''}`}>
           {cards.map((card) =>
             card.kind === 'missing' ? (
               /* The GRNs the register had no entry for -- in practice goods
@@ -995,21 +1087,30 @@ export default function Results() {
               <button
                 key="missing"
                 type="button"
-                className={`card stat stat--missing ${register === MISSING ? 'is-active' : ''}`}
-                onClick={() => selectRegister(register === MISSING ? '' : MISSING)}
-                aria-pressed={register === MISSING}
+                className={`card stat stat--missing ${
+                  pendingDept === NOT_IN_BPAD ? 'is-active' : ''
+                }`}
+                /* It narrows the table below rather than going anywhere: the
+                   register's "no entry for this GRN" is the same question the
+                   rows' own desk filter answers with NOT_IN_BPAD (see
+                   PENDING_DEPT in routes/results.js), so pressing it filters
+                   the view showing, and pressing it again clears it. */
+                onClick={() =>
+                  selectPendingDept(pendingDept === NOT_IN_BPAD ? '' : NOT_IN_BPAD)
+                }
+                aria-pressed={pendingDept === NOT_IN_BPAD}
                 title={
-                  register === MISSING
+                  pendingDept === NOT_IN_BPAD
                     ? 'Showing only the GRNs with no register entry — press again for every row'
                     : 'Show only the GRNs the BPAD register has no entry for'
                 }
               >
-                <div className="stat__label">Not in BPAD</div>
+                <div className="stat__label">{card.label}</div>
                 <div className="stat__value">
                   {(summary.bpadMissing?.count ?? 0).toLocaleString('en-IN')}
                 </div>
                 <div className="stat__amount">₹ {formatAmount(summary.bpadMissing?.amount ?? 0)}</div>
-                <div className="stat__hint">No entry in the register</div>
+                <div className="stat__hint">GRNs Not Finalized</div>
               </button>
             ) : card.kind === 'dept' ? (
               <button
@@ -1020,11 +1121,13 @@ export default function Results() {
                 aria-pressed={dept === card.dept}
                 title={
                   dept === card.dept
-                    ? `Showing ${card.dept} only — press again for every department`
-                    : `Show only the bills pending with ${card.dept}`
+                    ? `Showing ${deptLabel(card.dept)} only — press again for every department`
+                    : `Show only the bills pending with ${deptLabel(card.dept)}`
                 }
               >
-                <div className="stat__label">{card.dept}</div>
+                {/* Title case rather than the register's capitals -- see
+                    deptLabel. The filter still uses the stored value. */}
+                <div className="stat__label">{deptLabel(card.dept)}</div>
                 <div className="stat__value">{card.count.toLocaleString('en-IN')}</div>
                 <div className="stat__amount">₹ {formatAmount(card.amount ?? 0)}</div>
                 <div className="stat__hint">Pending with this desk</div>
@@ -1163,13 +1266,11 @@ export default function Results() {
                 aria-pressed={bucketActive(card)}
                 title={bucketTitle(card)}
               >
-                <div className="stat__label">{card.label}</div>
+                <div className="stat__label">{bucketLabel(card)}</div>
                 <div className="stat__value">
-                  {(summary[card.countKey ?? card.status]?.count ?? 0).toLocaleString('en-IN')}
+                  {(bucketFigure(card).count ?? 0).toLocaleString('en-IN')}
                 </div>
-                <div className="stat__amount">
-                  ₹ {formatAmount(summary[card.countKey ?? card.status]?.amount ?? 0)}
-                </div>
+                <div className="stat__amount">₹ {formatAmount(bucketFigure(card).amount ?? 0)}</div>
                 <div className="stat__hint">{card.hint}</div>
               </button>
             ),
@@ -1206,7 +1307,7 @@ export default function Results() {
               <option value="">All departments</option>
               {departments.map((d) => (
                 <option key={d.dept} value={d.dept}>
-                  {d.dept} ({d.count.toLocaleString('en-IN')})
+                  {deptLabel(d.dept)} ({d.count.toLocaleString('en-IN')})
                 </option>
               ))}
               {/* A department chosen before the upload changed under it would
@@ -1214,7 +1315,7 @@ export default function Results() {
                   table, which reads as the table having gone wrong. Keep it
                   selectable until it is changed. */}
               {dept && !departments.some((d) => d.dept === dept) && (
-                <option value={dept}>{dept}</option>
+                <option value={dept}>{deptLabel(dept)}</option>
               )}
             </select>
           ) : status === ALL_GRNS ? (

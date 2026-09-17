@@ -6,6 +6,7 @@ import { BrandLockup } from './components/Brand.jsx';
 import {
   IconActivity,
   IconBank,
+  IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
   IconDepartment,
@@ -23,6 +24,10 @@ import {
 import { useTheme, initials } from './theme.js';
 
 const COLLAPSE_KEY = 'yh.grn.nav.collapsed';
+const GROUP_KEY = 'yh.grn.nav.group';
+
+/** The one dropdown every rail link sits under. */
+const NAV_GROUP = 'GRN Reco';
 
 /** Matches the drawer breakpoint in styles.css - keep the two in step. */
 const NARROW = '(max-width: 940px)';
@@ -56,9 +61,33 @@ const NAV = [
   // an upload or file, and changing an administrator account, stay with the
   // administrator role on the server.
   { to: '/uploads', label: 'Uploaded files', icon: IconSheet, end: true, screen: 'uploads' },
-  { to: '/users', label: 'User management', icon: IconUsers, end: true, screen: 'users' },
-  { to: '/logs', label: 'Activity logs', icon: IconActivity, end: true, screen: 'logs' },
+  // `outside` keeps an entry out of the GRN Reco dropdown and standing on its
+  // own below it. These two administer the tool rather than run a
+  // reconciliation through it, so they are not what the group collects -- and
+  // they are the two an administrator reaches for from any screen, which is a
+  // poor fit for a panel that can be shut.
+  { to: '/users', label: 'User management', icon: IconUsers, end: true, screen: 'users', outside: true },
+  { to: '/logs', label: 'Activity logs', icon: IconActivity, end: true, screen: 'logs', outside: true },
 ];
+
+/**
+ * One link in the rail. The same in the dropdown and out of it -- an entry
+ * should not look like a different kind of thing for having been moved.
+ */
+function RailLink({ item, collapsed }) {
+  const { to, label, icon: Glyph, end } = item;
+  return (
+    <NavLink
+      to={to}
+      end={end}
+      className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+      title={collapsed ? label : undefined}
+    >
+      <Glyph size={18} />
+      <span className="nav-label">{label}</span>
+    </NavLink>
+  );
+}
 
 /** Title and breadcrumb for the top bar, derived from the active route. */
 function pageTitle(pathname) {
@@ -91,6 +120,15 @@ export default function AppShell() {
     }
   });
   const [drawer, setDrawer] = useState(false);
+  // The links' dropdown. Open on a first visit -- a rail that starts empty
+  // gives a new account nothing to aim at -- and remembered after that.
+  const [groupOpen, setGroupOpen] = useState(() => {
+    try {
+      return localStorage.getItem(GROUP_KEY) !== '0';
+    } catch {
+      return true;
+    }
+  });
   const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
   const [batchCount, setBatchCount] = useState(0);
 
@@ -110,6 +148,14 @@ export default function AppShell() {
       /* see theme.js - not worth failing over */
     }
   }, [collapsed]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(GROUP_KEY, groupOpen ? '1' : '0');
+    } catch {
+      /* see theme.js - not worth failing over */
+    }
+  }, [groupOpen]);
 
   // Tapping a link on a phone should leave the drawer behind.
   useEffect(() => setDrawer(false), [location.pathname]);
@@ -149,6 +195,18 @@ export default function AppShell() {
   const drawerLabel = drawer ? 'Close menu' : 'Open menu';
   const themeLabel = mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
 
+  /**
+   * The icons-only rail hides every label, the dropdown's own included, so
+   * there would be nothing left to click to get the links back. It therefore
+   * forces the group open and drops the toggle (see the collapsed block in
+   * styles.css) -- the remembered state is left untouched, and comes back the
+   * moment the rail is expanded again. Scoped to the docked layout because
+   * below the breakpoint the rail is a drawer and shows its labels regardless.
+   */
+  const railOnly = collapsed && !narrow;
+  const navOpen = railOnly || groupOpen;
+  const groupLabel = navOpen ? `Hide ${NAV_GROUP} links` : `Show ${NAV_GROUP} links`;
+
   const { title, crumb } = pageTitle(location.pathname);
 
   // What this account may actually open. Recomputed rather than memoised: it is
@@ -159,6 +217,8 @@ export default function AppShell() {
     if (item.screen) return can(item.screen);
     return true;
   });
+  const grouped = nav.filter((item) => !item.outside);
+  const loose = nav.filter((item) => item.outside);
 
   return (
     <div className={`app-shell${collapsed ? ' collapsed' : ''}${drawer ? ' drawer-open' : ''}`}>
@@ -168,20 +228,52 @@ export default function AppShell() {
         </div>
 
         <nav className="sidenav">
-          <div className="nav-section">Workspace</div>
-          {nav.map(({ to, label, icon: Glyph, end, badge }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-              title={collapsed ? label : undefined}
-            >
-              <Glyph size={18} />
-              <span className="nav-label">{label}</span>
-              {/* {badge && batchCount > 0 && <span className="nav-count">{batchCount}</span>} */}
-            </NavLink>
-          ))}
+          {/* Suppressed outright when the group would be empty, rather than
+              left as a control that opens onto nothing: an account holding
+              only the two screens below has no reconciliation links to show. */}
+          {grouped.length > 0 && (
+            <>
+              {/* What was a caption over the links is now the control that
+                  shows them, so it is a real button rather than a styled div:
+                  it has to be reachable by keyboard and to say which state it
+                  is in. */}
+              <button
+                type="button"
+                className={`nav-group${navOpen ? ' is-open' : ''}`}
+                onClick={() => setGroupOpen((v) => !v)}
+                aria-expanded={navOpen}
+                aria-controls="sidenav-links"
+                title={groupLabel}
+              >
+                <span className="nav-group__label">{NAV_GROUP}</span>
+                <IconChevronDown size={14} className="nav-group__caret" />
+              </button>
+
+              {/* Kept mounted and clipped rather than unmounted, so opening and
+                  closing can be animated. `inert` is what keeps the closed
+                  links out of the tab order and off the accessibility tree -
+                  clipping alone would leave them both, invisible and still
+                  focusable. */}
+              <div className="nav-group__items" id="sidenav-links" inert={!navOpen || undefined}>
+                <div className="nav-group__list">
+                  {grouped.map((item) => (
+                    <RailLink key={item.to} item={item} collapsed={collapsed} />
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Outside the dropdown, and below it: always on show, whether the
+              group is open or shut. The rule above them is dropped when there
+              is no group left to be separated from. */}
+          {loose.length > 0 && (
+            <div className={`sidenav__loose${grouped.length > 0 ? ' has-rule' : ''}`}>
+              {loose.map((item) => (
+                <RailLink key={item.to} item={item} collapsed={collapsed} />
+              ))}
+            </div>
+          )}
         </nav>
 
         <div className="sidebar-foot">
@@ -241,7 +333,9 @@ export default function AppShell() {
             </button>
           )}
 
-          <div className="topbar-title">
+          {/* Keyed by title so the heading re-mounts, and plays its entrance,
+              when the route changes it. */}
+          <div className="topbar-title" key={title}>
             <h1>{title}</h1>
             {crumb && <div className="crumb">{crumb}</div>}
           </div>
@@ -249,7 +343,7 @@ export default function AppShell() {
           <div className="topbar-actions">
             <button
               type="button"
-              className="icon-btn ghost"
+              className="icon-btn ghost theme-toggle"
               onClick={toggleTheme}
               title={themeLabel}
               aria-label={themeLabel}

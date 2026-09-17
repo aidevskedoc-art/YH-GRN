@@ -1071,7 +1071,10 @@ export default function Csd() {
                     {STAGE_DATES.map((d) => (
                       <th key={d.key}>{d.label}</th>
                     ))}
-                    <th>Action</th>
+                    {/* Pinned to the right edge, so the stage picker and Sent
+                        back stay in reach however far the row is scrolled --
+                        see .table__pin--action in styles.css. */}
+                    <th className="table__pin table__pin--action">Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1210,7 +1213,7 @@ export default function Csd() {
                           )}
                         </td>
                       ))}
-                      <td>
+                      <td className="table__pin table__pin--action">
                         <div className="row-actions">
                           <StagePicker
                             row={row}

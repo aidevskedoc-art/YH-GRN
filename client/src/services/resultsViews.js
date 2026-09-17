@@ -67,6 +67,14 @@ export const BPAD = 'BPAD';
 export const MISSING = 'missing';
 
 /**
+ * Its opposite: the rows the register does have an entry for, which is what
+ * the BPAD card counts (see bpadRegister in routes/results.js). The BPAD view
+ * itself lists every GRN in scope and says so in its own banner, so only the
+ * card's sheet carries this -- see cardSheet.
+ */
+export const IN_REGISTER = 'in';
+
+/**
  * The bucket the Pending breakdown puts the GRNs it cannot place in -- the
  * register has no entry for them at all, or it has one with Pending With
  * Dept. left blank. Both mean the same to whoever is reading the card, so
@@ -76,6 +84,14 @@ export const MISSING = 'missing';
  * because the card hands it straight back as the filter value.
  */
 export const NOT_IN_BPAD = '__not_in_bpad__';
+
+/**
+ * The other side of it: every GRN the register DOES place at a desk, which is
+ * what the Pending figure counts once a register has been uploaded (see
+ * bucketFigure in Results.jsx). Spelled as the server spells it -- IN_BPAD in
+ * routes/results.js -- because it travels as the same `dept` filter value.
+ */
+export const IN_BPAD = '__in_bpad__';
 
 /**
  * A desk's name the way a label should read, not the way the register stores
@@ -484,7 +500,17 @@ function cardSheet(card) {
   switch (card.kind) {
     // A view of its own, whole -- so no narrowing, and its own report title.
     case 'bucket':
-      return { status: card.status, sheetName: card.label, title: titleForStatus(card.status) };
+      return {
+        status: card.status,
+        sheetName: card.label,
+        title: titleForStatus(card.status),
+        // Except BPAD, whose card counts the register's entries while the view
+        // lists every GRN in scope, the ones it has no entry for included. The
+        // sheet holds what the card says it does; the view's own workbook still
+        // gets the whole tab, since that card is the section there and is
+        // dropped for it below.
+        ...(card.status === BPAD ? { register: IN_REGISTER } : {}),
+      };
     // Both read the Status column, which already knows the four stages and the
     // two cheque answers by name -- see PROGRESS in routes/results.js.
     case 'csd':
@@ -498,9 +524,13 @@ function cardSheet(card) {
     // The register's own two questions: which desk, and whether it knew the
     // GRN at all.
     case 'dept':
-      return narrowedSheet(BPAD, card.dept, { dept: card.dept });
+      return narrowedSheet(BPAD, deptLabel(card.dept), { dept: card.dept });
+    // The GRNs the register has no entry for. Its card stands on the Total
+    // GRNS row and narrows those rows by the desk filter's own sentinel, so
+    // the sheet is that section's rows narrowed the same way -- not the
+    // register's table, which is a different population.
     case 'missing':
-      return narrowedSheet(BPAD, deptLabel(NOT_IN_BPAD), { register: MISSING });
+      return narrowedSheet(ALL_GRNS, deptLabel(NOT_IN_BPAD), { dept: NOT_IN_BPAD });
     default:
       return null;
   }
@@ -529,13 +559,52 @@ function cardSheet(card) {
  * counts on them, under a file named for the ageing report, which is three
  * reports nobody asked for and one that does not say what the name says.
  */
-export function sectionSheets(tab, cards) {
+export function sectionSheets(tab, cards, options = {}) {
+  /*
+   * `labelFor` is the page's own wording for a card, where the card on screen
+   * is named something the declaration alone does not know -- Pending reads
+   * "Pending GRNs at BPAD" once a register is uploaded, and the GRN store card
+   * has a name of its own. A sheet named differently from the card it was
+   * taken off is a sheet somebody has to match up by hand.
+   *
+   * `pendingInBpad` is that same register: with one on file, the Pending
+   * figure counts the bills it places, so the Pending sheets carry the filter
+   * that selects them and hold the rows the card claims.
+   */
+  const { labelFor, pendingInBpad = false } = options;
+  const rename = (sheet, card) => {
+    const label = labelFor?.(card);
+    if (!label || label === sheet.sheetName) return sheet;
+    return {
+      ...sheet,
+      sheetName: label,
+      // A card's sheet says which card it is above its headers; the section's
+      // own sheet carries the plain report title and keeps it.
+      title: sheet.title === titleForStatus(sheet.status) ? sheet.title : `${titleForStatus(sheet.status)} — ${label}`,
+    };
+  };
+  const placed = (sheet) =>
+    pendingInBpad && sheet.status === 'PENDING' && !sheet.dept ? { ...sheet, dept: IN_BPAD } : sheet;
+
+  const ownCard = { kind: 'bucket', ...tab };
   const own = { status: tab.status, sheetName: tab.label, title: titleForStatus(tab.status) };
   if (tab.status === TURNAROUND) return [own];
   const rest = (cards ?? [])
-    .map(cardSheet)
+    .map((card) => {
+      const sheet = cardSheet(card);
+      return sheet ? { sheet, card } : null;
+    })
     .filter(Boolean)
     // The section itself, again: same status and nothing narrowing it.
-    .filter((sheet) => !(sheet.status === own.status && !sheet.progress && !sheet.dept && !sheet.register));
-  return [own, ...rest];
+    // The section itself, again: a count card for the view showing IS that
+    // view, whatever narrowing its sheet carries elsewhere.
+    .filter(
+      ({ sheet, card }) =>
+        !(
+          sheet.status === own.status &&
+          (card.kind === 'bucket' || (!sheet.progress && !sheet.dept && !sheet.register))
+        ),
+    )
+    .map(({ sheet, card }) => placed(rename(sheet, card)));
+  return [placed(rename(own, ownCard)), ...rest];
 }

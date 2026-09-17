@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client.js';
 import Sheet from '../components/Sheet.jsx';
+import PasswordField from '../components/PasswordField.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { IconKey, IconPencil, IconPlus, IconShield, IconTrash, IconUsers } from '../components/icons.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
@@ -216,19 +217,15 @@ function UserForm({
           </label>
 
           {!editing && (
-            <label className="field">
-              <span className="field__label">Password</span>
-              <input
-                className="field__input"
-                type="password"
-                value={form.password}
-                onChange={(e) => set({ password: e.target.value })}
-                autoComplete="new-password"
-                minLength={6}
-                required
-              />
-              <span className="field__hint">At least 6 characters. It can be reset later.</span>
-            </label>
+            <PasswordField
+              label="Password"
+              hint="At least 6 characters. It can be reset later."
+              value={form.password}
+              onChange={(e) => set({ password: e.target.value })}
+              autoComplete="new-password"
+              minLength={6}
+              required
+            />
           )}
 
           <div className="field">
@@ -354,20 +351,16 @@ function PasswordForm({ user, saving, error, onSave, onClose }) {
 
         <div className="sheet__body">
           {error && <div className="alert alert--error">{error}</div>}
-          <label className="field">
-            <span className="field__label">New password</span>
-            <input
-              className="field__input"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="new-password"
-              minLength={6}
-              required
-              autoFocus
-            />
-            <span className="field__hint">At least 6 characters.</span>
-          </label>
+          <PasswordField
+            label="New password"
+            hint="At least 6 characters."
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            minLength={6}
+            required
+            autoFocus
+          />
           <p className="field__hint">
             Any session they already have open keeps working until its token expires. To cut one
             short, deactivate the account and activate it again.

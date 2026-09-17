@@ -942,7 +942,6 @@ const LOG_COLUMNS = [
   { key: 'target', label: 'Target' },
   { key: 'summary', label: 'Summary' },
   { key: 'detailText', label: 'Details' },
-  { key: 'ip', label: 'IP address' },
 ];
 
 /**
