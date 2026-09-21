@@ -321,13 +321,24 @@ const PROGRESS = {
    * ageing entry exactly when it is one of the Accounts ones, carrying the
    * clause here is what makes the two counts sum to the Accounts figure the
    * cards sit under rather than overshoot it by every pending row on file.
+   *
+   * "Blank" is spelled out as `IS NULL OR = ''` rather than as
+   * COALESCE(col, '') = '', and that is for the planner, not for the reader.
+   * The two mean the same thing, but the planner has no statistics for a
+   * COALESCE expression and guesses it matches almost nothing -- for Not
+   * prepared it put the three together at one row out of 4,770 where the
+   * truth was 2,328. Believing that, it chose a nested loop that re-ran the
+   * whole every-upload dedup (DEDUPED_RESULTS) once per ageing row, and
+   * pressing the card took three seconds a query instead of thirty
+   * milliseconds. Written against the bare columns it reads their real
+   * null and blank counts and hash-joins instead.
    */
   CHEQUE_PREPARED:
-    `a.id IS NOT NULL AND (COALESCE(a.cheque_no, '') <> ''` +
-    ` OR a.chq_date IS NOT NULL OR COALESCE(a.payment_doc_no, '') <> '')`,
+    `a.id IS NOT NULL AND ((a.cheque_no IS NOT NULL AND a.cheque_no <> '')` +
+    ` OR a.chq_date IS NOT NULL OR (a.payment_doc_no IS NOT NULL AND a.payment_doc_no <> ''))`,
   CHEQUE_NOT_PREPARED:
-    `a.id IS NOT NULL AND COALESCE(a.cheque_no, '') = ''` +
-    ` AND a.chq_date IS NULL AND COALESCE(a.payment_doc_no, '') = ''`,
+    `a.id IS NOT NULL AND (a.cheque_no IS NULL OR a.cheque_no = '')` +
+    ` AND a.chq_date IS NULL AND (a.payment_doc_no IS NULL OR a.payment_doc_no = '')`,
   QUEUED: "c.stage = 'QUEUED'",
   RECEIVED: "c.stage = 'RECEIVED'",
   APPROVED: "c.stage = 'APPROVED'",
@@ -345,7 +356,17 @@ const PROGRESS = {
   PURCHASE_DEPT: "c.forwarded_to = 'VENDOR' AND c.forwarded_route = 'PURCHASE_DEPT'",
   OTHERS: "c.forwarded_to = 'OTHERS'",
   RECORDS: 'rd.id IS NOT NULL',
-  NOT_SENT: `c.id IS NULL AND rd.id IS NULL AND ${CHEQUE_CLEARED_ON} IS NULL`,
+  // "Sent nowhere" as NOT EXISTS rather than as `c.id IS NULL AND rd.id IS
+  // NULL` over the LEFT JOINs, which is the same thing -- both are joined on
+  // dpr_no_key, UNIQUE on both tables -- but not to the planner. It reads the
+  // null rate of c.id off csd_dispatches itself, where an id is never null,
+  // and so estimated one row out of 5,563 where the truth was 3,420; the plan
+  // it built on that re-ran DEDUPED_RESULTS once per GRN and took ten seconds
+  // a query. NOT EXISTS is planned as an anti-join, which it counts properly.
+  NOT_SENT:
+    'NOT EXISTS (SELECT 1 FROM csd_dispatches cx WHERE cx.dpr_no_key = g.dpr_no_key)' +
+    ' AND NOT EXISTS (SELECT 1 FROM record_dispatches rx WHERE rx.dpr_no_key = g.dpr_no_key)' +
+    ` AND ${CHEQUE_CLEARED_ON} IS NULL`,
 };
 
 const PROGRESS_KEYS = Object.keys(PROGRESS);

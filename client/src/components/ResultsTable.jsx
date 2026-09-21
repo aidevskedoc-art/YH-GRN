@@ -461,8 +461,8 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, grouped = fal
    * the rows that were stuck with no action at all while the whole picker was
    * disabled for want of a cheque.
    *
-   * So the picker opens on every row that has reached accounts, and says per
-   * option what is and is not available. `groupNote` is dropped from a
+   * So the picker opens on every row that has reached accounts, and offers
+   * only the destinations the row can take. `groupNote` is dropped from a
    * no-cheque row's wording because there is no group: chequePrepared is false
    * only when all three cheque columns are empty, the cheque number among
    * them, so chequeGroup has nothing to gather it by and files the one row.
@@ -482,28 +482,23 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, grouped = fal
       title={`Send GRN ${row.dprNo} ${where}${groupNote}`}
     >
       <option value="">Send to…</option>
-      {/* Two reasons this one can be shut, and it says which.
- 
-          No cheque prepared: there is nothing to hand over yet. It is the row
-          that is not ready, and the ageing report's next upload may well make
-          it so.
+      {/* Two reasons this one is not offered, handled differently.
+
+          No cheque prepared: the option is left out altogether. There is
+          nothing to hand over yet, so the row's only move is Records; the
+          ageing report's next upload fills the cheque in and brings it back.
 
           No access: an account holding none of the CS Department, Results or
           Accounts screens cannot hand a GRN over -- see canHandToCsd, and
           CSD_HANDOVER in routes/csd.js. It is the account that cannot, not the
-          row.
-
-          Either way the option stays, disabled, rather than being dropped: the
-          row still reads as one that COULD go to CSD, and says plainly why it
-          is not going there now. Records needs neither -- it is gated on the
-          results screen, which anyone looking at this table already has. */}
-      <option value={SEND_CSD} disabled={!canCsd || !chequeReady}>
-        {!canCsd
-          ? 'Send to CSD — no access'
-          : !chequeReady
-            ? 'Send to CSD — no cheque yet'
-            : 'Send to CSD'}
-      </option>
+          row, so the option stays, disabled, and says why. Records needs
+          neither -- it is gated on the results screen, which anyone looking at
+          this table already has. */}
+      {chequeReady && (
+        <option value={SEND_CSD} disabled={!canCsd}>
+          {canCsd ? 'Send to CSD' : 'Send to CSD — no access'}
+        </option>
+      )}
       <option value={SEND_RECORDS}>Send to Records</option>
     </select>
   );

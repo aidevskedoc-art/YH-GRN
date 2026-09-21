@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -34,6 +34,7 @@ import {
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import { expandCheques, resultsChequeBills } from '../services/chequeGroups.js';
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
+import TableStage from '../components/TableStage.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
 import BpadView from '../components/BpadView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
@@ -413,12 +414,20 @@ export default function Results() {
   // the layout and the filter decides the population.
   const rowStatus = status === ALL_GRNS && matchFilter ? matchFilter : status;
 
+  // Which rows request is the latest. Pressing Cheque prepared and then Cheque
+  // not prepared puts two requests in flight, and they need not land in the
+  // order they were sent -- without this, the slower first answer would arrive
+  // last and fill the table with the rows of the card no longer lit.
+  const rowsRequest = useRef(0);
+
   const loadRows = useCallback(() => {
     if (!batchId) return;
     // Neither Turnaround nor BPAD is a reconciliation status -- /results would
     // reject either as an unknown filter. Both tabs fetch their own data, in
     // TurnaroundView and BpadView.
     if (status === TURNAROUND || status === BPAD) return;
+    const ticket = ++rowsRequest.current;
+    const latest = () => ticket === rowsRequest.current;
     setLoading(true);
     api
       .results(batchId, {
@@ -431,9 +440,9 @@ export default function Results() {
         dept: pendingDept,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
       })
-      .then(setData)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
+      .then((next) => latest() && setData(next))
+      .catch((err) => latest() && setError(err.message))
+      .finally(() => latest() && setLoading(false));
   }, [batchId, status, rowStatus, page, pageSize, q, progress, location, pendingDept, byCheque]);
 
   useEffect(loadRows, [loadRows]);
@@ -1495,16 +1504,22 @@ export default function Results() {
       ) : (
         data && (
           <>
-            <ResultsTable
-              rows={data.rows}
-              status={status}
-              batchId={batchId}
-              onSent={loadRows}
-              multiMode={multiMode}
-              selected={selected}
-              onToggleRow={toggleSelectRow}
-              accountsView={status === VALID ? accountsView : undefined}
-            />
+            {/* The rows on screen stay put while the next ones load, under a
+                veil that says so -- pressing a card used to leave the old
+                table sitting there unchanged until the new one arrived, which
+                reads as the press not having taken. See .table-stage. */}
+            <TableStage loading={loading}>
+              <ResultsTable
+                rows={data.rows}
+                status={status}
+                batchId={batchId}
+                onSent={loadRows}
+                multiMode={multiMode}
+                selected={selected}
+                onToggleRow={toggleSelectRow}
+                accountsView={status === VALID ? accountsView : undefined}
+              />
+            </TableStage>
             <div className="pager">
               <span className="pager__info">
                 {data.total === 0
