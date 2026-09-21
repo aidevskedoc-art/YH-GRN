@@ -300,6 +300,23 @@ const CHEQUE_COLUMNS = `
    defined as the absence of the others: it is what the column says when there
    is nothing else to say.
    -------------------------------------------------------------------------- */
+
+/*
+ * None of the three cheque columns filled in -- see CHEQUE_PREPARED below.
+ *
+ * "Blank" is spelled out as `IS NULL OR = ''` rather than as
+ * COALESCE(col, '') = '', and that is for the planner, not for the reader. The
+ * two mean the same thing, but the planner has no statistics for a COALESCE
+ * expression and guesses it matches almost nothing -- one row out of 4,770
+ * where the truth was 2,328. Believing that, it chose a nested loop that re-ran
+ * the whole every-upload dedup (DEDUPED_RESULTS) once per ageing row, and the
+ * filter took seconds a query instead of milliseconds. Written against the bare
+ * columns it reads their real null and blank counts and hash-joins instead.
+ */
+const NO_CHEQUE =
+  `(a.cheque_no IS NULL OR a.cheque_no = '') AND a.chq_date IS NULL` +
+  ` AND (a.payment_doc_no IS NULL OR a.payment_doc_no = '')`;
+
 const PROGRESS = {
   CLEARED: `${CHEQUE_CLEARED_ON} IS NOT NULL`,
   /*
@@ -315,30 +332,32 @@ const PROGRESS = {
    * Not the same question as CLEARED above, which is the bank's answer on a
    * cheque that already exists. Prepared is this side of the counter.
    *
-   * `a.id IS NOT NULL` on BOTH halves, so a pending GRN falls in neither. It
-   * has no ageing entry at all, so "no cheque prepared" would be true of it
-   * for a reason that has nothing to do with cheques -- and since a row has an
-   * ageing entry exactly when it is one of the Accounts ones, carrying the
-   * clause here is what makes the two counts sum to the Accounts figure the
-   * cards sit under rather than overshoot it by every pending row on file.
+   * A bill with no cheque is one of two things, and PayableAmount says which.
+   * Zero or under a rupee -- the report leaves it blank when a bill nets to
+   * nothing, and PAYABLE_AMOUNT reads that blank as the zero it is -- there is
+   * nothing left to pay, so no cheque is ever coming and the bill is Payment
+   * not required. Otherwise it is waiting on one, which is what Cheque not
+   * prepared means. So the three split the Accounts rows between them with
+   * nothing counted twice. A bill that does have a cheque stays Prepared
+   * whatever its payable says: the cheque exists, and that is the thing CSD
+   * are handed.
    *
-   * "Blank" is spelled out as `IS NULL OR = ''` rather than as
-   * COALESCE(col, '') = '', and that is for the planner, not for the reader.
-   * The two mean the same thing, but the planner has no statistics for a
-   * COALESCE expression and guesses it matches almost nothing -- for Not
-   * prepared it put the three together at one row out of 4,770 where the
-   * truth was 2,328. Believing that, it chose a nested loop that re-ran the
-   * whole every-upload dedup (DEDUPED_RESULTS) once per ageing row, and
-   * pressing the card took three seconds a query instead of thirty
-   * milliseconds. Written against the bare columns it reads their real
-   * null and blank counts and hash-joins instead.
+   * `a.id IS NOT NULL` on all three, so a pending GRN falls in none. It has no
+   * ageing entry at all, so "no cheque prepared" would be true of it for a
+   * reason that has nothing to do with cheques -- and since a row has an
+   * ageing entry exactly when it is one of the Accounts ones, carrying the
+   * clause here is what makes the three counts sum to the Accounts figure the
+   * cards sit under rather than overshoot it by every pending row on file.
    */
   CHEQUE_PREPARED:
-    `a.id IS NOT NULL AND ((a.cheque_no IS NOT NULL AND a.cheque_no <> '')` +
-    ` OR a.chq_date IS NOT NULL OR (a.payment_doc_no IS NOT NULL AND a.payment_doc_no <> ''))`,
-  CHEQUE_NOT_PREPARED:
-    `a.id IS NOT NULL AND (a.cheque_no IS NULL OR a.cheque_no = '')` +
-    ` AND a.chq_date IS NULL AND (a.payment_doc_no IS NULL OR a.payment_doc_no = '')`,
+    `a.id IS NOT NULL AND (COALESCE(a.cheque_no, '') <> ''` +
+    ` OR a.chq_date IS NOT NULL OR COALESCE(a.payment_doc_no, '') <> '')`,
+  // A PayableAmount with no figure at all fails `>= 1` as well, so it lands in
+  // the next one rather than in neither.
+  CHEQUE_NOT_PREPARED: `a.id IS NOT NULL AND ${NO_CHEQUE} AND ${PAYABLE_AMOUNT} >= 1`,
+  PAYMENT_NOT_REQUIRED:
+    `a.id IS NOT NULL AND ${NO_CHEQUE}` +
+    ` AND (${PAYABLE_AMOUNT} IS NULL OR ${PAYABLE_AMOUNT} < 1)`,
   QUEUED: "c.stage = 'QUEUED'",
   RECEIVED: "c.stage = 'RECEIVED'",
   APPROVED: "c.stage = 'APPROVED'",
@@ -356,17 +375,7 @@ const PROGRESS = {
   PURCHASE_DEPT: "c.forwarded_to = 'VENDOR' AND c.forwarded_route = 'PURCHASE_DEPT'",
   OTHERS: "c.forwarded_to = 'OTHERS'",
   RECORDS: 'rd.id IS NOT NULL',
-  // "Sent nowhere" as NOT EXISTS rather than as `c.id IS NULL AND rd.id IS
-  // NULL` over the LEFT JOINs, which is the same thing -- both are joined on
-  // dpr_no_key, UNIQUE on both tables -- but not to the planner. It reads the
-  // null rate of c.id off csd_dispatches itself, where an id is never null,
-  // and so estimated one row out of 5,563 where the truth was 3,420; the plan
-  // it built on that re-ran DEDUPED_RESULTS once per GRN and took ten seconds
-  // a query. NOT EXISTS is planned as an anti-join, which it counts properly.
-  NOT_SENT:
-    'NOT EXISTS (SELECT 1 FROM csd_dispatches cx WHERE cx.dpr_no_key = g.dpr_no_key)' +
-    ' AND NOT EXISTS (SELECT 1 FROM record_dispatches rx WHERE rx.dpr_no_key = g.dpr_no_key)' +
-    ` AND ${CHEQUE_CLEARED_ON} IS NULL`,
+  NOT_SENT: `c.id IS NULL AND rd.id IS NULL AND ${CHEQUE_CLEARED_ON} IS NULL`,
 };
 
 const PROGRESS_KEYS = Object.keys(PROGRESS);

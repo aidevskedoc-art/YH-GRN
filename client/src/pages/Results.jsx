@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -34,7 +34,6 @@ import {
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import { expandCheques, resultsChequeBills } from '../services/chequeGroups.js';
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
-import TableStage from '../components/TableStage.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
 import BpadView from '../components/BpadView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
@@ -414,20 +413,12 @@ export default function Results() {
   // the layout and the filter decides the population.
   const rowStatus = status === ALL_GRNS && matchFilter ? matchFilter : status;
 
-  // Which rows request is the latest. Pressing Cheque prepared and then Cheque
-  // not prepared puts two requests in flight, and they need not land in the
-  // order they were sent -- without this, the slower first answer would arrive
-  // last and fill the table with the rows of the card no longer lit.
-  const rowsRequest = useRef(0);
-
   const loadRows = useCallback(() => {
     if (!batchId) return;
     // Neither Turnaround nor BPAD is a reconciliation status -- /results would
     // reject either as an unknown filter. Both tabs fetch their own data, in
     // TurnaroundView and BpadView.
     if (status === TURNAROUND || status === BPAD) return;
-    const ticket = ++rowsRequest.current;
-    const latest = () => ticket === rowsRequest.current;
     setLoading(true);
     api
       .results(batchId, {
@@ -440,9 +431,9 @@ export default function Results() {
         dept: pendingDept,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
       })
-      .then((next) => latest() && setData(next))
-      .catch((err) => latest() && setError(err.message))
-      .finally(() => latest() && setLoading(false));
+      .then(setData)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
   }, [batchId, status, rowStatus, page, pageSize, q, progress, location, pendingDept, byCheque]);
 
   useEffect(loadRows, [loadRows]);
@@ -622,6 +613,12 @@ export default function Results() {
     // the old rows under the new columns until the reload lands would show a
     // broken table.
     if (accountsView === ACCOUNTS_CHEQUE_VIEW && (next === VALID) !== (status === VALID)) setData(null);
+    // BPAD and Turnaround fetch their own rows, so what is held here is still
+    // whatever view came before them. Leaving one for Accounts -- which the
+    // BPAD view's Accounts card does -- would otherwise draw that older view's
+    // rows under the Accounts layout until the reload lands, which reads as
+    // the page having filtered rather than moved.
+    if (status === BPAD || status === TURNAROUND) setData(null);
     setStatus(next);
     setPage(1);
     // These values only ever appear on a GRN that reached accounts, so carrying
@@ -769,8 +766,8 @@ export default function Results() {
     ...(status === BPAD && summary?.bpad?.count > 0
       ? [
           CARD_BY_ID[BPAD],
-          // Accounts is the one desk this system has a screen of its own for,
-          // so its card leaves for that view instead of filtering the register
+          // Accounts is the one desk this page has a section of its own for,
+          // so its card opens that section instead of filtering the register
           // to it -- see the deptAccounts branch in the row below. Split here
           // rather than tested at render time so the export knows about it too
           // (cardSheet in resultsViews.js).
@@ -1129,15 +1126,17 @@ export default function Results() {
               </button>
             ) : card.kind === 'deptAccounts' ? (
               /* The register's Accounts desk -- the bills it says are sitting
-                 with accounts. Alone among the desks, this system has a screen
-                 for that: the Accounts view lists the GRNs the ageing report
-                 picked up, which is the next thing a reader looking at this
-                 figure wants.
+                 with accounts. Alone among the desks, this page has a section
+                 of its own for that: the Accounts view, which lists the GRNs
+                 the ageing report picked up and is the next thing a reader
+                 looking at this figure wants.
 
-                 So it goes there instead of narrowing the register's table to
-                 the desk. The narrowing is not lost -- the Department dropdown
-                 in the toolbar below still offers Accounts, and the export
-                 still takes its sheet off this card's own count.
+                 So pressing the card opens that section -- exactly what
+                 choosing Accounts in the View dropdown does -- instead of
+                 narrowing the register's table to the desk. The narrowing is
+                 not lost: the Department dropdown in the toolbar below still
+                 offers Accounts as a filter, and the export still takes its
+                 sheet off this card's own count.
 
                  It is not a toggle, so no `aria-pressed`: a press leaves this
                  row entirely, and a pressed state on a control that is never
@@ -1149,7 +1148,7 @@ export default function Results() {
                 type="button"
                 className="card stat stat--valid stat--go"
                 onClick={() => selectStatus(VALID)}
-                title="Open the Accounts view — the GRNs the ageing report picked up"
+                title="Open the Accounts section — the same as choosing Accounts in the View dropdown"
               >
                 <IconArrowRight size={15} className="stat__go" />
                 <div className="stat__label">{deptLabel(card.dept)}</div>
@@ -1504,22 +1503,16 @@ export default function Results() {
       ) : (
         data && (
           <>
-            {/* The rows on screen stay put while the next ones load, under a
-                veil that says so -- pressing a card used to leave the old
-                table sitting there unchanged until the new one arrived, which
-                reads as the press not having taken. See .table-stage. */}
-            <TableStage loading={loading}>
-              <ResultsTable
-                rows={data.rows}
-                status={status}
-                batchId={batchId}
-                onSent={loadRows}
-                multiMode={multiMode}
-                selected={selected}
-                onToggleRow={toggleSelectRow}
-                accountsView={status === VALID ? accountsView : undefined}
-              />
-            </TableStage>
+            <ResultsTable
+              rows={data.rows}
+              status={status}
+              batchId={batchId}
+              onSent={loadRows}
+              multiMode={multiMode}
+              selected={selected}
+              onToggleRow={toggleSelectRow}
+              accountsView={status === VALID ? accountsView : undefined}
+            />
             <div className="pager">
               <span className="pager__info">
                 {data.total === 0

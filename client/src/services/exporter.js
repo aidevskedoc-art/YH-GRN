@@ -20,7 +20,7 @@
  */
 import { api } from '../api/client.js';
 import { CHECKPOINTS, STAGE_KEYS, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
-import { chequePrepared } from './cheque.js';
+import { chequePrepared, paymentNotRequired } from './cheque.js';
 
 /*
  * The GRNs / Cheques switch's two values. Spelled here rather than imported
@@ -104,7 +104,8 @@ const MATCHED_COLUMNS = [
   // mirror the table.
   { key: 'paymentDocNo', label: 'PaymentDocNo' },
   // Whether a cheque has been drawn up at all, which is the three columns
-  // above read as one answer -- the same rule the Cheque Prepared cards count
+  // above read as one answer -- or, with none drawn up and nothing left to
+  // pay, that none is needed. The same three answers the cheque cards count
   // by (see CHEQUE_PREPARED in routes/results.js). Derived rather than stored,
   // so it lives in toCell below.
   //
@@ -530,7 +531,10 @@ function toCell(row, column) {
   if (column.key === 'chequePrepared') {
     const prepared = chequePrepared(row);
     if (prepared === null) return null;
-    return prepared ? 'Prepared' : 'Not prepared';
+    if (prepared) return 'Prepared';
+    // The same three answers as the cards, so a sheet taken off Payment Not
+    // Required does not read "Not prepared" all the way down.
+    return paymentNotRequired(row) ? 'Payment not required' : 'Not prepared';
   }
   if (column.key === 'stage') {
     // The CSD queue's own row shape names these fields `accountsStage` and

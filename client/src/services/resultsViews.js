@@ -136,14 +136,18 @@ export function deptLabel(dept) {
  * file that starts writing "Accounts Dept." keeps working with no edit here.
  *
  * Anchored at the start, so a desk that merely mentions accounts further along
- * its name is not swept in with it.
+ * its name is not swept in with it; and no letter may follow, so the word has
+ * to end there. That end is a lookahead rather than `\b` on purpose: a `\b`
+ * here was once saved into this file as a literal backspace character, which
+ * matched nothing at all and quietly turned the Accounts card into a plain
+ * filter card.
  *
  * It is the one desk this system has a screen of its own for, which is what
  * the card on the BPAD row does with the answer -- see the deptAccounts card
  * in Results.jsx.
  */
 export function isAccountsDept(dept) {
-  return typeof dept === 'string' && /^accounts/i.test(dept.trim());
+  return typeof dept === 'string' && /^accounts(?![a-z])/i.test(dept.trim());
 }
 
 /** The Accounts view, as the view dropdown and the export sheet name it. */
@@ -207,22 +211,20 @@ export const CSD_CARDS = [
 ];
 
 /**
- * Whether a cheque has been drawn up, as two cards at the end of the Accounts
- * row.
- *
- * Behind the CSD four because that is the order it happens in: a bill goes
- * through the handover, then a cheque gets cut for it. The two halves are
- * exhaustive over that row -- every Accounts GRN is in exactly one -- so they
- * sum to the Accounts count, which the CSD four do not.
+ * Where each Accounts bill stands on its cheque, as three cards following the
+ * Accounts count: a cheque drawn up, one still to come, or none needed at all
+ * because there is nothing left to pay (a PayableAmount of zero or under a
+ * rupee). The three are exhaustive over that row -- every Accounts GRN is in
+ * exactly one -- so they sum to the Accounts count, which the CSD four do not.
+ * See CHEQUE_PREPARED in routes/results.js for where the lines are drawn.
  *
  * They read a `progress` key rather than a CSD stage, so `kind: 'progress'`
  * where the CSD cards are `kind: 'csd'`. Both set the same filter, which is
  * what keeps every card on this row mutually exclusive.
  *
- * Neutral, where the CSD four run warn / info / ok / danger. There is no fifth
- * and sixth colour left in that ladder, and borrowing two of it would put the
- * same amber on "awaiting CSD" and "no cheque yet" -- two unrelated answers
- * side by side.
+ * Neutral, where the CSD four run warn / info / ok / danger. There are no
+ * colours left in that ladder, and borrowing from it would put the same amber
+ * on "awaiting CSD" and "no cheque yet" -- two unrelated answers side by side.
  */
 export const CHEQUE_CARDS = [
   {
@@ -252,13 +254,20 @@ export const CHEQUE_CARDS = [
     label: 'Cheque Not Prepared',
     hint: 'None of the three yet',
   },
+  // The bills no cheque is coming for: nothing left to pay. Beside Cheque Not
+  // Prepared because it is the other half of what that card used to count.
+  {
+    progress: 'PAYMENT_NOT_REQUIRED',
+    label: 'Payment Not Required',
+    hint: 'Payable ₹0 or under ₹1',
+  },
 ];
 
 /**
  * The Accounts Queue: GRNs CSD has handed back that Accounts has not received
  * yet -- the rows whose Action column still reads Queued. The next thing
- * Accounts has to do, so it gets a card of its own, beside Cheque Not Prepared
- * (see ACCOUNTS_ROW).
+ * Accounts has to do, so it gets a card of its own, right after the cheque
+ * cards (see ACCOUNTS_ROW).
  *
  * A `progress` card like the cheque pair, reading RETURNED_BY_CSD (see PROGRESS
  * in routes/results.js), so pressing it narrows the table the same way the
@@ -302,15 +311,15 @@ export function csdCardFigures(card, summary, byCheque) {
  * it is settled here rather than composed twice.
  *
  * It reads as the work goes, from the outside in. The count leads: how many
- * GRNs are in accounts at all. Then whether a cheque has been drawn up for
- * each, which is the first thing that has to happen and is exhaustive over the
- * row -- the two halves sum back to the count standing over them. Then how far
- * through the CSD handover the ones with a cheque have got, which is the part
- * of the row that moves day to day.
+ * GRNs are in accounts at all. Then where each stands on its cheque -- drawn
+ * up, still to come, or not needed -- which is the first thing that has to
+ * happen and is exhaustive over the row: the three sum back to the count
+ * standing over them. Then how far through the CSD handover the ones with a
+ * cheque have got, which is the part of the row that moves day to day.
  *
  * The count used to be left off, on the reasoning that a figure standing over
  * cards that do not sum to it invites the arithmetic anyway -- and the CSD four
- * do not sum to it. What changed is the order: the two cards that DO sum to it
+ * do not sum to it. What changed is the order: the cards that DO sum to it
  * now sit directly under it, so the row answers the arithmetic it invites
  * before the CSD stages, which are a different question, are reached. The
  * count is also what the Accounts card has to be pressable for -- it is the
@@ -318,11 +327,10 @@ export function csdCardFigures(card, summary, byCheque) {
  * over its desks.
  *
  * Entries are the ids CARD_BY_ID files each card under on either page -- a
- * reconciliation status for the count, a `progress` key for the cheque pair
+ * reconciliation status for the count, a `progress` key for the cheque cards
  * and the Accounts Queue, a CSD stage for the four.
  *
- * The Accounts Queue sits right after the cheque pair, beside Cheque Not
- * Prepared, ahead of the CSD four.
+ * The Accounts Queue sits right after the cheque cards, ahead of the CSD four.
  */
 export const ACCOUNTS_ROW = [
   VALID,
@@ -369,6 +377,7 @@ export const PROGRESS_LABELS = {
   // than recorded here -- see CHEQUE_PREPARED in routes/results.js.
   CHEQUE_PREPARED: 'Cheque prepared',
   CHEQUE_NOT_PREPARED: 'Cheque not prepared',
+  PAYMENT_NOT_REQUIRED: 'Payment not required',
   CLEARED: 'Cheque cleared',
 };
 
@@ -543,8 +552,8 @@ function cardSheet(card) {
     // The register's own two questions: which desk, and whether it knew the
     // GRN at all.
     //
-    // The Accounts desk is the same sheet as any other. Its card leaves for
-    // the Accounts view rather than narrowing the table, but the sheet reports
+    // The Accounts desk is the same sheet as any other. Its card opens the
+    // Accounts section rather than narrowing the table, but the sheet reports
     // what the card COUNTS -- the register rows sitting at that desk -- and
     // that is unchanged by where pressing it goes.
     case 'dept':

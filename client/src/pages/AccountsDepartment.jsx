@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -25,7 +25,6 @@ import {
   sectionSheets,
 } from '../services/resultsViews.js';
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
-import TableStage from '../components/TableStage.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
@@ -212,17 +211,10 @@ export default function AccountsDepartment() {
       .catch((err) => setError(err.message));
   }, [batchId, q, location]);
 
-  // Which rows request is the latest -- see the same guard on the results
-  // screen. Two cards pressed in quick succession put two requests in flight,
-  // and only the second one's answer belongs in the table.
-  const rowsRequest = useRef(0);
-
   const loadRows = useCallback(() => {
     // The ageing view is not a reconciliation status -- /results would reject
     // it as an unknown filter. It fetches its own rows, in TurnaroundView.
     if (status === TURNAROUND) return;
-    const ticket = ++rowsRequest.current;
-    const latest = () => ticket === rowsRequest.current;
     setLoading(true);
     api
       .results(batchId, {
@@ -234,9 +226,9 @@ export default function AccountsDepartment() {
         location,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
       })
-      .then((next) => latest() && setData(next))
-      .catch((err) => latest() && setError(err.message))
-      .finally(() => latest() && setLoading(false));
+      .then(setData)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
   }, [batchId, status, page, pageSize, q, progress, location, byCheque]);
 
   useEffect(loadRows, [loadRows]);
@@ -807,20 +799,16 @@ export default function AccountsDepartment() {
       ) : (
         data && (
           <>
-            {/* The rows on screen stay, veiled, while the next ones load --
-                see TableStage. */}
-            <TableStage loading={loading}>
-              <ResultsTable
-                rows={data.rows}
-                status={status}
-                batchId={batchId}
-                onSent={loadRows}
-                multiMode={multiMode}
-                selected={selected}
-                onToggleRow={toggleSelectRow}
-                accountsView={accountsView}
-              />
-            </TableStage>
+            <ResultsTable
+              rows={data.rows}
+              status={status}
+              batchId={batchId}
+              onSent={loadRows}
+              multiMode={multiMode}
+              selected={selected}
+              onToggleRow={toggleSelectRow}
+              accountsView={accountsView}
+            />
             <div className="pager">
               <span className="pager__info">
                 {data.total === 0

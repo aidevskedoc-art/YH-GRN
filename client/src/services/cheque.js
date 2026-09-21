@@ -29,3 +29,21 @@ export function chequePrepared(row) {
   if (row.status === 'PENDING') return null;
   return Boolean(row.chequeNo || row.chqDate || row.paymentDocNo);
 }
+
+/**
+ * Whether a bill with no cheque needs none: its PayableAmount is zero or under
+ * a rupee (or has no figure at all), so there is nothing left to pay. Word for
+ * word the rule PAYMENT_NOT_REQUIRED counts by in routes/results.js -- which is
+ * also why a bill that does have a cheque is never this, whatever its payable
+ * says.
+ *
+ * Null where chequePrepared is null, for the same reason.
+ *
+ * @returns {boolean|null}
+ */
+export function paymentNotRequired(row) {
+  const prepared = chequePrepared(row);
+  if (prepared === null) return null;
+  if (prepared) return false;
+  return row.payableAmount == null || Number(row.payableAmount) < 1;
+}

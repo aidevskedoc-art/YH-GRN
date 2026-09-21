@@ -993,55 +993,6 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
 /* The same message as .empty, but as a row inside the table so the header and
    the table's own frame stay on the page. */
 .table__empty { padding: 44px; text-align: center; color: var(--muted); }
-
-/* --- a table reloading under its own rows --------------------------------
-
-   The rows already on screen stay while the next ones load (see TableStage):
-   dimmed, under a veil that takes the clicks, with a small badge carrying the
-   same spinner as .loading. The dimming and the badge wait a beat before they
-   show, so an answer that comes back quickly swaps the rows without a flash;
-   the veil itself is there at once, because a row about to be replaced should
-   not be clickable even for that beat.
-
-   No stacking context of its own on purpose. The veil's z-index only has to
-   clear the sticky header and pinned cells (2-4), and isolating the stage
-   would trap the table's own dialogs inside it, underneath the top bar. */
-.table-stage { position: relative; }
-.table-stage > .table-wrap { transition: opacity 0.2s var(--ease-out); }
-.table-stage.is-loading > .table-wrap { opacity: 0.5; transition-delay: 0.15s; }
-.table-stage__veil {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: progress;
-}
-.table-stage__badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 16px 9px 12px;
-  border-radius: 999px;
-  background-color: var(--surface);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-2);
-  color: var(--text-2);
-  font-size: 13px;
-  font-weight: 600;
-  animation: fade-in 0.2s var(--ease-out) 0.15s both;
-}
-.table-stage__badge::before {
-  content: "";
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: conic-gradient(from 0deg, transparent 0 15%, var(--brand) 70%, var(--accent) 100%);
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2.5px));
-  mask: radial-gradient(farthest-side, transparent calc(100% - 2.5px), #000 calc(100% - 2.5px));
-  animation: spin 0.8s linear infinite;
-}
 .empty--page {
   background-color: var(--surface);
   border: 1px solid var(--border);
@@ -1941,10 +1892,10 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 .stat--dept { --stat-key: var(--border-strong); }
 
 /* The one desk card that goes somewhere: Accounts, which opens the Accounts
-   view rather than narrowing the register to itself. It takes that view's
-   tone, so the card and the screen it leads to are the same colour, and an
-   arrow says it leaves -- the row's other cards toggle in place, and a card
-   that quietly did something else would be found out by pressing it. */
+   section rather than narrowing the register to itself. It takes that
+   section's tone, so the card and the view it leads to are the same colour,
+   and an arrow says it leaves -- the row's other cards toggle in place, and a
+   card that quietly did something else would be found out by pressing it. */
 .stat--go .stat__go {
   position: absolute;
   top: 14px;
