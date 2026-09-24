@@ -5,6 +5,7 @@ import { formatAmount, formatAmountOrDash, formatDate } from './ResultsTable.jsx
 import SpanPicker from './SpanPicker.jsx';
 import { CHECKPOINTS, spanDays, spanId, spanLabel, stageLabel, totalDays } from '../services/stages.js';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
+import MsmeCells from './MsmeCells.jsx';
 
 const int = (n) => (n === null || n === undefined ? '' : Number(n).toLocaleString('en-IN'));
 
@@ -46,7 +47,7 @@ function Days({ value }) {
   return <span className={value < 0 ? 'table__neg' : undefined}>{value}</span>;
 }
 
-export default function TurnaroundView({ batchId, q, location, spans = [], onSpansChange }) {
+export default function TurnaroundView({ batchId, q, location, msme, spans = [], onSpansChange }) {
   const { isAdmin } = useAuth();
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
@@ -70,7 +71,7 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
   // the upload or the search starts again from the first page.
   useEffect(() => {
     setPage(1);
-  }, [batchId, q, location]);
+  }, [batchId, q, location, msme]);
 
   // Anything that fetches a different set of rows closes the editor. The draft
   // is held against a row that is about to leave the screen, and carrying it
@@ -78,17 +79,17 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
   useEffect(() => {
     setEditingRow(null);
     setDraft({});
-  }, [batchId, q, location, page]);
+  }, [batchId, q, location, msme, page]);
 
   const load = useCallback(() => {
     if (!batchId) return;
     setLoading(true);
     api
-      .turnaround(batchId, { page, pageSize, q, location })
+      .turnaround(batchId, { page, pageSize, q, location, msme })
       .then(setData)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [batchId, page, pageSize, q, location]);
+  }, [batchId, page, pageSize, q, location, msme]);
 
   useEffect(load, [load]);
 
@@ -191,8 +192,10 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
   // Thirteen fixed columns, a day count per stage or span, the row total where
   // there is one, then the dates -- the same width the two header rows span
   // between them.
+  // Fifteen Particulars: the thirteen identifiers and amounts, and MSME No and
+  // MSME Status beside the vendor.
   const columnCount =
-    13 + dayColumns.length + (custom ? 0 : 1) + dateColumns.length + (isAdmin ? 1 : 0);
+    15 + dayColumns.length + (custom ? 0 : 1) + dateColumns.length + (isAdmin ? 1 : 0);
 
   // An upload made before the stage dates were captured has rows but no dates.
   // Guarded on isEmpty: with nothing in scope every stage is empty too, and
@@ -246,7 +249,7 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
         <table className="table">
           <thead>
             <tr>
-              <th className="table__group" colSpan="13">Particulars</th>
+              <th className="table__group" colSpan="15">Particulars</th>
               <th className="table__group" colSpan={dayColumns.length + (custom ? 0 : 1)}>
                 Days taken
               </th>
@@ -274,6 +277,10 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
                   results and CSD tables column for column so the three
                   screens read the same way. */}
               <th>Vendor Code</th>
+              {/* The vendor's MSME registration off the HIS vendor master, as
+                  on every GRN table -- see MsmeCells. */}
+              <th>MSME No</th>
+              <th>MSME Status</th>
               {/* The ageing report's own amount breakdown, ahead of
                   PayableAmount -- the same four columns and the same order as
                   the CSD and Valid GRNs tabs. */}
@@ -340,6 +347,7 @@ export default function TurnaroundView({ batchId, q, location, spans = [], onSpa
                 <td className="table__mono">
                   {row.vendorCode || <span className="table__miss">&mdash;</span>}
                 </td>
+                <MsmeCells row={row} />
                 <td className="table__num">{formatAmountOrDash(row.netAmt)}</td>
                 <td className="table__num">{formatAmountOrDash(row.adjPurReturn)}</td>
                 <td className="table__num">{formatAmountOrDash(row.adjustedJv)}</td>

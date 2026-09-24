@@ -11,6 +11,7 @@ import AccountsDepartment from './pages/AccountsDepartment.jsx';
 import Users from './pages/Users.jsx';
 import Config from './pages/Config.jsx';
 import Logs from './pages/Logs.jsx';
+import MsmeReco from './pages/MsmeReco.jsx';
 
 export default function App() {
   return (
@@ -108,6 +109,17 @@ export default function App() {
           element={
             <ProtectedRoute screen="config">
               <Config />
+            </ProtectedRoute>
+          }
+        />
+        {/* The HIS vendor master against the Accounts vendor list -- the MSME
+            dropdown's one screen, with its own grant (see
+            server/src/routes/msmeReco.js). */}
+        <Route
+          path="/msme-reco"
+          element={
+            <ProtectedRoute screen="msme-reco">
+              <MsmeReco />
             </ProtectedRoute>
           }
         />

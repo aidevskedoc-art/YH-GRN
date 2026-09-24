@@ -750,7 +750,9 @@ code, .mono {
 
 /* min-width:0 so a wide child (the table, the tab strip) can never push the
    page wider than the shell column it sits in. */
-.page { padding: 24px; max-width: 1720px; width: 100%; min-width: 0; margin: 0 auto; flex: 1; }
+/* --page-pad is the padding as a value a page can read back -- the upload page
+   subtracts it to fit itself to the window (see .upload-page). */
+.page { --page-pad: 24px; padding: var(--page-pad); max-width: 1720px; width: 100%; min-width: 0; margin: 0 auto; flex: 1; }
 
 /* Mobile: sidebar becomes an overlay drawer. */
 @media (max-width: 940px) {
@@ -777,7 +779,7 @@ code, .mono {
     box-shadow: none;
     animation: fade-in 0.25s ease both;
   }
-  .page { padding: 16px; }
+  .page { --page-pad: 16px; }
   .topbar { padding: 0 14px; }
   .new-run .btn-label { display: none; }
 }
@@ -1762,6 +1764,172 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 
 .alert--icon { display: flex; align-items: flex-start; gap: 10px; margin: 18px 0 0; }
 .alert--icon svg { flex: none; margin-top: 1px; }
+/* A message can quote a filename with no spaces in it ("is not an Excel
+   workbook"), which would otherwise run straight out past the alert's edge. */
+.alert--icon > span { min-width: 0; overflow-wrap: anywhere; }
+
+/* --- the upload page fits the window ----------------------------------------
+
+   Everything this page asks for is on one screen. Below 1420px the four slots
+   stack two by two, and at 210px a box the stack alone ran past a laptop's
+   window: the button landed under the fold on every screen from 1400x800 down
+   to 1280x720. So the page is held to the height the window has left under the
+   top bar, and inside it only the slots give -- the rule, the status line, the
+   error and the progress bar keep their size, and the button keeps its place.
+
+   Each slot is a size container (dropslot), and what is inside steps down as
+   its height does: the example filename goes first, then the glyph shrinks and
+   the hint keeps to two lines, then one, then the glyph goes. A box says as much
+   as it has room for rather than spilling out of its own border. At rest a slot
+   asks for the height it always had (contain-intrinsic-block-size), so a window
+   with room lays the page out exactly as before, and a tall one does not
+   stretch the boxes into pillars.
+
+   Only where four slots can share a screen at a usable size: two across or more
+   (wider than 680px) and a window at least 520px tall -- room for two rows with
+   a title and a hint in each. Below either the page scrolls as it did, and the
+   closing row sticks to the foot of the window instead (further down), so the
+   button is in reach without scrolling to it.
+
+   Written as ranges, and the fallback as their exact complement, on purpose:
+   Windows display scaling gives the viewport fractional CSS sizes, and a
+   min-height: 520px / max-height: 519px pair leaves a window 519.2px tall
+   matching neither -- the old layout, with the button below the fold again.
+   -------------------------------------------------------------------------- */
+@media (width > 680px) and (height >= 520px) {
+  .upload-page {
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - var(--topbar-h) - 2 * var(--page-pad));
+    max-height: calc(100dvh - var(--topbar-h) - 2 * var(--page-pad));
+  }
+  .upload-page .upload {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 20px 24px 18px;
+  }
+  /* First thing in the card, so the card's padding is the space above it. */
+  .upload-page .upload__rule { margin: 0 0 12px; }
+  /* The one part that gives. No grow: with room to spare the boxes keep their
+     own height rather than stretching to fill the window. */
+  .upload-page .drops {
+    flex: 0 1 auto;
+    min-height: 0;
+    grid-auto-rows: minmax(0, 1fr);
+  }
+  .upload-page .dropslot {
+    container: dropslot / size;
+    /* A caption and a 235px box -- what a slot asks for when the window has
+       room, and a few px more than its fullest contents need (254px, below),
+       so the resting layout never sits on a step's edge. Size containment
+       keeps the contents from asking for it themselves. */
+    contain-intrinsic-block-size: 262px;
+    min-height: 0;
+  }
+  .upload-page .drop { min-height: 0; }
+  /* Never squeezed. The title clips its own overflow, and an overflow-clipping
+     grid item's minimum is zero -- so in a box a few px short it was pressed
+     flat, losing its descenders ("Draq & drop"). One line of it is the floor. */
+  .upload-page .drop__title { min-height: 1.5em; }
+  /* Bounded, so a wider font (Poppins leads the stack) cannot add a line the
+     steps below did not budget for: the hint stops at three lines, the example
+     filename at one. */
+  .upload-page .drop__hint {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
+  }
+  .upload-page .drop__eg {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .upload-page .alert--icon,
+  .upload-page .progress { flex: none; margin-top: 14px; }
+  .upload-page .upload__foot { flex: none; margin-top: 16px; padding-top: 14px; }
+}
+
+/* A slot's contents, stepped down by the height it was given. Only ever
+   matches on the upload page in the layout above -- nothing else names a
+   dropslot container.
+
+   Each step takes over while the one above it still has about 4px to spare,
+   worked from what the contents really measure: a 27px caption, a 2px border,
+   3px between rows, a 22.5px title and 18.1px hint lines. What each step
+   needs, caption included -- full with the example: 254; without it: 228;
+   44px glyph and two hint lines: 174; 34px glyph and one line: 140; no glyph:
+   97; no hint: 76; the last, tightest step: 57.
+
+   Every rule here is scoped to .upload-page like the block above, and that is
+   load-bearing, not tidiness: the block's `.upload-page .drop__hint` outranks a
+   bare `.drop__hint`, so an unscoped step could never re-clamp or hide it. */
+@container dropslot (max-height: 257px) {
+  .upload-page .drop__eg { display: none; }
+}
+@container dropslot (max-height: 231px) {
+  .upload-page .drop { padding: 14px 16px; }
+  .upload-page .drop__glyph { width: 44px; height: 44px; margin-bottom: 8px; border-radius: 13px; }
+  .upload-page .drop__glyph svg { width: 21px; height: 21px; }
+  .upload-page .drop__hint { -webkit-line-clamp: 2; line-clamp: 2; }
+}
+@container dropslot (max-height: 177px) {
+  .upload-page .drop { padding: 12px 14px; }
+  .upload-page .drop__glyph { width: 34px; height: 34px; margin-bottom: 6px; border-radius: 10px; }
+  .upload-page .drop__glyph svg { width: 17px; height: 17px; }
+  .upload-page .drop__hint { -webkit-line-clamp: 1; line-clamp: 1; }
+}
+/* Without the glyph the name rises to the box's middle, level with the
+   remove button in its top corner -- so a filled box keeps its name clear of
+   it, on both sides so it stays centred. */
+@container dropslot (max-height: 143px) {
+  .upload-page .drop__glyph { display: none; }
+  .upload-page .drop--filled { padding-inline: 44px; }
+}
+@container dropslot (max-height: 100px) {
+  .upload-page .drop__hint { display: none; }
+}
+/* The tightest: a box can be barely taller than one line here (34px with all
+   four files in, a long server error and a window 520px tall), so the remove
+   button leaves its corner -- 9px down and 27px tall, it would hang out of the
+   box -- and sits a little smaller on the box's middle instead. */
+@container dropslot (max-height: 79px) {
+  .upload-page .drop { padding-block: 4px; }
+  .upload-page .drop__title { font-size: 13px; }
+  .upload-page .drop__clear { top: 50%; transform: translateY(-50%); width: 24px; height: 24px; }
+}
+
+/* Phones and very short windows, where the page still scrolls: the closing row
+   rides along the foot of the window, so the button is on screen however far
+   down the slots have been scrolled. It bleeds to the card's edges and wears
+   the card's colour -- over an opaque base, because --surface itself is
+   translucent and the captions sliding under it would show through. The exact
+   complement of the fit query above, so every window gets one or the other. */
+@media (width <= 680px), (height < 520px) {
+  .upload-page .upload__foot {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    margin: 18px -26px 0;
+    padding: 12px 26px;
+    background-color: var(--bg);
+    background-image: linear-gradient(var(--surface), var(--surface));
+    box-shadow: 0 -12px 20px -16px rgba(0, 0, 0, 0.45);
+  }
+}
+
+/* Narrower than 788px the status line and the button stop fitting on one row
+   -- the line's longest wording ("Choose the GRN report, the ageing report…")
+   needs the width -- and the button, wrapped under it, sat against the card's
+   left edge. There it is centred instead. The line takes a row of its own at
+   every wording below this width, so the button does not hop between beside
+   the text and under it as the wording changes length. */
+@media (width < 788px) {
+  .upload-page .upload__ready { flex-basis: 100%; }
+  .upload-page .upload__foot { justify-content: center; }
+}
 
 
 /* --- summary tiles, which double as the status tabs.
@@ -3116,5 +3284,212 @@ select.spans__select { width: auto; min-width: 150px; }
     max-height: calc(100dvh - 28px);
   }
   .sheet__head, .sheet__body, .sheet__foot { padding-left: 18px; padding-right: 18px; }
+}
+
+/* --- a second dropdown in the rail ----------------------------------------- */
+
+/* Where one group's links end and the next group's caption begins. The gap is
+   the whole separation -- no rule -- because both captions already read as
+   headings. */
+.sidenav .nav-group__items + .nav-group { margin-top: 10px; }
+
+/* ==========================================================================
+   HIS vs FOCUS Reco (pages/MsmeReco.jsx)
+   ========================================================================== */
+
+.msme-upload { margin-bottom: 22px; }
+
+/* Two slots rather than the GRN upload's four, so two across at every width
+   the four-across grid would have allowed, and one on a phone. Its own media
+   rule because a later single-class rule would otherwise outrank .drops' own
+   narrow-screen one. */
+.drops--two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 680px) { .drops--two { grid-template-columns: minmax(0, 1fr); } }
+
+/* Which run is on screen, what it read, and -- for an administrator -- the way
+   to remove it. One line while it fits; the meta drops under the picker when
+   it does not. */
+.msme-runbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-bottom: 18px;
+}
+.msme-runbar__pick { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
+.msme-runbar__pick > span { color: var(--muted); font-size: 12.5px; font-weight: 600; }
+.msme-runbar__pick select { max-width: min(560px, 100%); text-overflow: ellipsis; }
+.msme-runbar__meta { color: var(--muted); font-size: 12.5px; }
+.msme-runbar__delete { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
+
+/* Mismatches by field: a chip per compared field, with its count. Pressing
+   one narrows the table to the vendors that disagree on it. Scoped under the
+   row so it outranks the global button rules, hover included. */
+.msme-fields {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -6px 0 18px;
+}
+.msme-fields__label {
+  margin-right: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.msme-fields .msme-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 600;
+  box-shadow: none;
+}
+.msme-fields .msme-chip:hover:not(:disabled) { border-color: var(--danger-line); background: var(--surface-3); color: var(--danger); }
+.msme-fields .msme-chip.is-active,
+.msme-fields .msme-chip.is-active:hover:not(:disabled) {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.msme-fields .msme-chip:disabled { opacity: 0.45; cursor: default; }
+.msme-chip__n { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+.msme-legend { margin: 0; color: var(--muted); font-size: 12.5px; }
+.msme-legend strong { color: var(--text-2); font-weight: 650; }
+
+/* Rows from the previous request stay up, dimmed, while the next one loads --
+   the table does not blink empty on every card press. */
+.table-wrap.is-loading { opacity: 0.6; transition: opacity 0.2s ease; }
+
+/* --- the table, laid out like its Excel export
+   The export's columns and two header rows -- a band naming each field over
+   its HIS and FOCUS columns -- in the app's own header, the same one every
+   other table and the Turnaround tab's grouped band wear, in either theme.
+   Besides the layout it adds gridlines and a flag the plain export does not
+   carry: a value that disagrees with its pair in pale red with bold dark-red
+   type. The dark theme takes its own danger tokens for the flag. */
+.msme-table {
+  --xl-flag-bg: var(--danger-soft);
+  --xl-flag-ink: var(--danger);
+}
+[data-theme="light"] .msme-table {
+  --xl-flag-bg: #fde2e1;
+  --xl-flag-ink: #9b1c1c;
+}
+
+/* The columns that belong to no field span both header rows; seated at the
+   foot of the pair, level with the column labels beside them. */
+.table.msme-table th.msme-table__lead { vertical-align: middle; }
+.table.msme-table th.msme-table__side { min-width: 120px; white-space: normal; line-height: 1.35; }
+.table.msme-table th.msme-table__remarks { min-width: 240px; }
+/* The rule .table__group draws between two bands, drawn on every band --
+   the first one follows Status, not another band -- and carried down through
+   the column labels to where each pair begins. */
+.table.msme-table th.msme-table__band,
+.table.msme-table th.msme-table__side:not(.msme-table__side--acc) { border-left: 1px solid var(--border-strong); text-align: center; }
+
+/* Gridlines on every cell, as the sheet has them, with a heavier rule where
+   one field's pair ends and the next begins. */
+.table.msme-table td { border-right: 1px solid var(--border); }
+.table.msme-table td.msme-cell:not(.msme-cell--acc) { border-left: 1px solid var(--border-strong); }
+
+/* Names wrap; codes and numbers stay on one line. */
+.table.msme-table td.msme-cell--wide {
+  min-width: 180px;
+  max-width: 260px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A value that disagrees with its pair. Its own fill, so a hovered or banded
+   row does not wash it out. */
+.table.msme-table td.is-flagged {
+  background-color: var(--xl-flag-bg);
+  color: var(--xl-flag-ink);
+  font-weight: 700;
+}
+
+/* --- what stays put when the table scrolls sideways
+   Vendor Code, Status and the Vendor Name pair hold the left edge; everything
+   else travels under them. Warehouse, between Code and Status, slides under
+   too -- pinning it as well would spend another column of a laptop screen on
+   something nobody scrolls back to find.
+
+   A sticky `left` is a fixed offset, not "after the previous pinned cell", so
+   each of these columns is held to a fixed width and each offset is the sum of
+   the widths before it (border-box, so padding and gridlines are inside them).
+   The header's pinned cells come from the same rules, the Vendor Name band
+   included, and .table__pin supplies the rest: the stacking, and opaque fills
+   that follow the row's banding and hover. */
+.msme-table {
+  --pin-code-w: 130px;
+  --pin-status-w: 130px;
+  --pin-name-w: 200px;
+}
+.table.msme-table th.msme-pin--code,
+.table.msme-table td.msme-pin--code {
+  left: 0;
+  width: var(--pin-code-w);
+  min-width: var(--pin-code-w);
+  max-width: var(--pin-code-w);
+}
+.table.msme-table th.msme-pin--status,
+.table.msme-table td.msme-pin--status {
+  left: var(--pin-code-w);
+  width: var(--pin-status-w);
+  min-width: var(--pin-status-w);
+  max-width: var(--pin-status-w);
+}
+.table.msme-table th.msme-pin--band { left: calc(var(--pin-code-w) + var(--pin-status-w)); }
+.table.msme-table th.msme-pin--his-name,
+.table.msme-table td.msme-pin--his-name {
+  left: calc(var(--pin-code-w) + var(--pin-status-w));
+  width: var(--pin-name-w);
+  min-width: var(--pin-name-w);
+  max-width: var(--pin-name-w);
+}
+.table.msme-table th.msme-pin--acc-name,
+.table.msme-table td.msme-pin--acc-name {
+  left: calc(var(--pin-code-w) + var(--pin-status-w) + var(--pin-name-w));
+  width: var(--pin-name-w);
+  min-width: var(--pin-name-w);
+  max-width: var(--pin-name-w);
+  /* The seam between what is held and what is moving. */
+  border-right: 1px solid var(--border-strong);
+}
+/* A flagged name while pinned: the flag laid over the row's own opaque fill,
+   since the dark theme's flag is translucent and the columns scrolling under
+   it would show through. Specific enough to beat .table__pin's banding and
+   hover fills. */
+.table.msme-table tbody td.table__pin.is-flagged {
+  background-color: var(--table-bg);
+  background-image: linear-gradient(var(--xl-flag-bg), var(--xl-flag-bg));
+}
+/* Four held columns are 660px; below a wide window that is most of the table,
+   so the name pair lets go and only Vendor Code and Status stay. `left: auto`
+   keeps the header cells sticky to the top while dropping the sideways hold. */
+@media (max-width: 1280px) {
+  .table.msme-table th.msme-pin--band,
+  .table.msme-table th.msme-pin--his-name,
+  .table.msme-table td.msme-pin--his-name,
+  .table.msme-table th.msme-pin--acc-name,
+  .table.msme-table td.msme-pin--acc-name { left: auto; }
+}
+
+.msme-table .msme-remarks {
+  min-width: 240px;
+  max-width: 380px;
+  white-space: normal;
+  font-size: 12.5px;
+  line-height: 1.45;
 }
 

@@ -11,6 +11,7 @@ import { resultsRouter, ageingRouter, recordsRouter, accountsReturnsRouter } fro
 import { csdRouter } from './routes/csd.js';
 import { configRouter } from './routes/config.js';
 import { logsRouter } from './routes/logs.js';
+import { msmeRecoRouter } from './routes/msmeReco.js';
 import { purgeOldLogs } from './services/activityLog.js';
 import { errorHandler } from './middleware/error.js';
 
@@ -54,6 +55,9 @@ app.use('/api/batches', batchesRouter);
 // Who did what, for the Activity logs screen. Administrator-only, enforced
 // inside the router.
 app.use('/api/logs', logsRouter);
+// The HIS vendor master against the Accounts vendor list. Its own resource:
+// it reads neither GRN report and belongs to no batch.
+app.use('/api/msme-reco', msmeRecoRouter);
 
 // Serve the built client if it exists, so `npm start` alone runs the whole app.
 const clientDist = path.join(config.rootDir, 'client', 'dist');

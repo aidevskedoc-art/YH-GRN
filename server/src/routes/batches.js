@@ -173,7 +173,6 @@ function bpadRowsForGrns(registerRows, identities) {
       vendorCode: id.vendorCode,
       vendorCodeKey: id.vendorCodeKey,
       vendorName: id.vendorName,
-      vendorCategory: null,
       invNo: id.invNo,
       invDate: id.invDate,
       grnNo: id.grnNo,

@@ -16,6 +16,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { exportCsd } from '../services/exporter.js';
 import LocationFilter from '../components/LocationFilter.jsx';
+import MsmeFilter from '../components/MsmeFilter.jsx';
 import {
   formatAmount,
   formatAmountOrDash,
@@ -29,6 +30,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import Sheet from '../components/Sheet.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
+import MsmeCells from '../components/MsmeCells.jsx';
 import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, leadFigures } from '../services/resultsViews.js';
 import { csdChequeHandovers, expandCheques } from '../services/chequeGroups.js';
 
@@ -172,12 +174,12 @@ const STAGE_DATES = [
 
 /**
  * The header row below, counted, for either view: Division, the pinned GRN No
- * (Cheque No on Cheque view), Vendor, Vendor Code and Status on both; GRN view
- * adds GRN Date, Bill No, Bill Date, Focus doc_no and the five amounts; Cheque
- * view adds Cheque Date, Cheque Amount, PaymentDocNo and Account No. Then one
- * per stage date, then Action.
+ * (Cheque No on Cheque view), Vendor, Vendor Code, MSME No, MSME Status and
+ * Status on both; GRN view adds GRN Date, Bill No, Bill Date, Focus doc_no and
+ * the five amounts; Cheque view adds Cheque Date, Cheque Amount, PaymentDocNo
+ * and Account No. Then one per stage date, then Action.
  */
-const columnCount = (byCheque) => 5 + (byCheque ? 4 : 9) + STAGE_DATES.length + 1;
+const columnCount = (byCheque) => 7 + (byCheque ? 4 : 9) + STAGE_DATES.length + 1;
 
 /**
  * The two matched statuses, spelled for a reader. A GRN reaches CSD from either
@@ -381,6 +383,9 @@ export default function Csd() {
   // linked to from the results page's cards and is worth bookmarking, where a
   // location is a view somebody adjusts while reading this screen.
   const [location, setLocation] = useState('');
+  // 'MSME', 'NON_MSME', or '' for every vendor -- the MSME dropdown. Counted
+  // inside like Location, for the same reason. See MsmeFilter.jsx.
+  const [msme, setMsme] = useState('');
 
   // How the queue is read: a row per GRN, or a row per cheque with its
   // handovers' PayableAmount summed -- the same switch the Accounts views
@@ -412,7 +417,7 @@ export default function Csd() {
   // the browser's Back button.
   useEffect(() => {
     setPage(1);
-  }, [stage, location, csdView]);
+  }, [stage, location, msme, csdView]);
 
   // A ticked row belongs to the page it was ticked on -- changing any of the
   // page's own inputs invalidates the selection rather than carrying it,
@@ -420,16 +425,16 @@ export default function Csd() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [page, pageSize, q, stage, location, csdView]);
+  }, [page, pageSize, q, stage, location, msme, csdView]);
 
   const load = useCallback(() => {
     setLoading(true);
     api
-      .listCsd({ page, pageSize, q, stage, location, view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined })
+      .listCsd({ page, pageSize, q, stage, location, msme, view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined })
       .then(setData)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [page, pageSize, q, stage, location, byCheque]);
+  }, [page, pageSize, q, stage, location, msme, byCheque]);
 
   /** Switch the queue between a row per GRN and a row per cheque. */
   function selectCsdView(next) {
@@ -642,7 +647,7 @@ export default function Csd() {
     setExporting(true);
     setError('');
     try {
-      await exportCsd(q, stage, location, csdView);
+      await exportCsd(q, stage, location, csdView, msme);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -803,12 +808,14 @@ export default function Csd() {
   // the whole page with "nothing sent yet" -- losing the search box along with
   // it, and saying something plainly untrue about the queue.
   //
-  // The location filter is counted inside the same way and so is guarded the
-  // same way: a branch nothing has been sent from yet is not an empty queue.
+  // The location and MSME filters are counted inside the same way and so are
+  // guarded the same way: a branch nothing has been sent from yet is not an
+  // empty queue, and nor is an MSME choice no handover matches.
   const queueEmpty =
     data &&
     !q &&
     !location &&
+    !msme &&
     Object.values(data.stages ?? {}).every((bucket) => (bucket?.count ?? 0) === 0);
   if (!loading && queueEmpty) {
     return (
@@ -907,6 +914,9 @@ export default function Csd() {
           otherwise empty. */}
       <div className="toolbar">
         <div className="toolbar__actions">
+          {/* MSME or Non-MSME vendors -- first, ahead of the stage dropdown,
+              since it narrows the cards and the export as well as the rows. */}
+          <MsmeFilter value={msme} onChange={setMsme} />
           {/* Every stage, not just the four the cards count -- Moved to
               accounts has no card here (see STAGES) but is still a stage a
               row can be filtered to. Either control sets the filter and both
@@ -1032,6 +1042,11 @@ export default function Csd() {
                     {/* The code used to sit under the name, where it could not
                         be read down the column. */}
                     <th>Vendor Code</th>
+                    {/* The vendor's MSME registration off the HIS vendor master,
+                        read live rather than copied onto the handover -- see
+                        MsmeCells. On both views: it is about the vendor. */}
+                    <th>MSME No</th>
+                    <th>MSME Status</th>
                     {!byCheque && (
                       <>
                         <th>Focus doc_no</th>
@@ -1130,6 +1145,7 @@ export default function Csd() {
                       <td className="table__mono">
                         {row.vendorCode || <span className="table__miss">&mdash;</span>}
                       </td>
+                      <MsmeCells row={row} />
                       {!byCheque && (
                         <>
                           <td className="table__mono">{row.ageingGrnNo}</td>

@@ -606,7 +606,6 @@ CREATE TABLE IF NOT EXISTS bpad_records (
   -- a stored column is worth the few bytes it costs.
   vendor_code_key        TEXT,
   vendor_name            TEXT,
-  vendor_category        TEXT,
   inv_no                 TEXT,
   inv_date               DATE,
   grn_no                 TEXT,
@@ -638,6 +637,10 @@ CREATE TABLE IF NOT EXISTS bpad_records (
 ALTER TABLE bpad_records DROP COLUMN IF EXISTS query_ageing;
 ALTER TABLE bpad_records DROP COLUMN IF EXISTS ageing;
 ALTER TABLE bpad_records DROP COLUMN IF EXISTS grn_age;
+
+-- The register's Vendor Category went the same way: it is no longer read,
+-- shown or exported, so an installation that stored it stops carrying it.
+ALTER TABLE bpad_records DROP COLUMN IF EXISTS vendor_category;
 
 -- Whether the register actually had an entry for this GRN.
 --
@@ -838,3 +841,86 @@ UPDATE users
    SET screens = array_append(screens, 'uploads')
  WHERE 'upload' = ANY(screens)
    AND NOT EXISTS (SELECT 1 FROM users u2 WHERE 'uploads' = ANY(u2.screens));
+
+-- --------------------------------------------------------------------------
+-- HIS vs FOCUS Reco (named msme_reco here, which is what it began as): the
+-- HIS vendor master held against the Accounts (FOCUS) vendor list.
+--
+-- One run per pair of files uploaded, and one row per vendor master row:
+-- found in Accounts (MATCHED or MISMATCH) or not (NOT_IN_ACCOUNTS). Accounts
+-- codes the vendor master lacks (NOT_IN_HIS) are counted on the run and not
+-- stored as rows. The matching itself is services/msmeReco.js; this only keeps
+-- its answer, so a run can be reopened without uploading the two files again.
+--
+-- The compared values are stored cleaned -- trimmed, and a placeholder such as
+-- "NA" or "-" stored as NULL -- in his_/acc_ pairs named after the reco's
+-- field keys (drugLicence -> his_drug_licence). mismatch_fields lists the keys
+-- of the pairs that disagree, which is what the per-field filter reads.
+--
+-- The counts on the run are the reco's summary at the time it ran, kept for
+-- the run selector; the screen's own cards are counted from the rows.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS msme_reco_runs (
+  id                    SERIAL PRIMARY KEY,
+  vendor_file_name      TEXT NOT NULL,
+  vendor_sheet_name     TEXT,
+  account_file_name     TEXT NOT NULL,
+  vendor_row_count      INTEGER NOT NULL DEFAULT 0,
+  account_row_count     INTEGER NOT NULL DEFAULT 0,
+  matched_count         INTEGER NOT NULL DEFAULT 0,
+  mismatch_count        INTEGER NOT NULL DEFAULT 0,
+  not_in_accounts_count INTEGER NOT NULL DEFAULT 0,
+  not_in_his_count      INTEGER NOT NULL DEFAULT 0,
+  uploaded_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  uploaded_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS msme_reco_rows (
+  id                   SERIAL PRIMARY KEY,
+  run_id               INTEGER NOT NULL REFERENCES msme_reco_runs(id) ON DELETE CASCADE,
+  -- The order the reco produced: the vendor master's own order, then the
+  -- Accounts list's for the codes only it carries.
+  seq                  INTEGER NOT NULL,
+  status               TEXT NOT NULL
+                         CHECK (status IN ('MATCHED', 'MISMATCH', 'NOT_IN_ACCOUNTS', 'NOT_IN_HIS')),
+  vendor_code          TEXT NOT NULL,
+  acc_code             TEXT,
+  his_row_no           INTEGER,
+  acc_row_no           INTEGER,
+  warehouse            TEXT,
+  his_status           TEXT,
+  his_name             TEXT,
+  acc_name             TEXT,
+  his_pan              TEXT,
+  acc_pan              TEXT,
+  his_gst              TEXT,
+  acc_gst              TEXT,
+  his_drug_licence     TEXT,
+  acc_drug_licence     TEXT,
+  his_msme_no          TEXT,
+  acc_msme_no          TEXT,
+  his_msme_type        TEXT,
+  acc_msme_type        TEXT,
+  his_msme_activity    TEXT,
+  acc_msme_activity    TEXT,
+  his_bank_account_no  TEXT,
+  acc_bank_account_no  TEXT,
+  his_ifsc             TEXT,
+  acc_ifsc             TEXT,
+  his_payee_name       TEXT,
+  acc_payee_name       TEXT,
+  mismatch_fields      TEXT[] NOT NULL DEFAULT '{}',
+  remarks              TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_msme_rows_run_status ON msme_reco_rows (run_id, status, seq);
+CREATE INDEX IF NOT EXISTS idx_msme_rows_run_seq ON msme_reco_rows (run_id, seq);
+-- A GRN's vendor, looked up in the latest run by code for the MSME No and
+-- MSME Status columns on the results screen -- see VENDOR_MSME_NO in
+-- routes/results.js, whose WHERE and ORDER BY this matches.
+CREATE INDEX IF NOT EXISTS idx_msme_rows_run_vendor ON msme_reco_rows (run_id, upper(btrim(vendor_code)), seq);
+
+-- Runs stored before the Accounts-only codes stopped being kept still carry a
+-- row for each -- about 29,000 per run. The count on the run already records
+-- them, so the rows go. Idempotent: once cleared, nothing matches.
+DELETE FROM msme_reco_rows WHERE status = 'NOT_IN_HIS';

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
 import { formatAmountOrDash, formatDate } from './ResultsTable.jsx';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
+import MsmeCells from './MsmeCells.jsx';
 
 /**
  * Where every GRN in this upload stands in the BPAD register.
@@ -38,7 +39,7 @@ function DateText({ value }) {
   return value ? formatDate(value) : <span className="table__miss">&mdash;</span>;
 }
 
-export default function BpadView({ batchId, q, location, dept, register, onDepartments }) {
+export default function BpadView({ batchId, q, location, msme, dept, register, onDepartments }) {
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = usePageSize();
@@ -49,13 +50,13 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
   // the upload, the search or the department starts again from the first page.
   useEffect(() => {
     setPage(1);
-  }, [batchId, q, location, dept, register]);
+  }, [batchId, q, location, msme, dept, register]);
 
   const load = useCallback(() => {
     if (!batchId) return;
     setLoading(true);
     api
-      .bpad(batchId, { page, pageSize, q, location, dept, register })
+      .bpad(batchId, { page, pageSize, q, location, msme, dept, register })
       .then((next) => {
         setData(next);
         // The departments the register knows about, handed up to the page that
@@ -67,7 +68,7 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [batchId, page, pageSize, q, location, dept, register, onDepartments]);
+  }, [batchId, page, pageSize, q, location, msme, dept, register, onDepartments]);
 
   useEffect(load, [load]);
 
@@ -85,7 +86,7 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
    * no department: with any of them set, an empty table is the ordinary answer
    * and the pager below already says so.
    */
-  if (total === 0 && !q && !location && !dept && !register) {
+  if (total === 0 && !q && !location && !msme && !dept && !register) {
     return (
       <div className="alert alert--info">
         <strong>No BPAD register has been matched to this upload yet.</strong> Upload BPAD.xlsx on
@@ -126,7 +127,13 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
               <th>WareHouse</th>
               <th>Vendor Code</th>
               <th>Vendor Name</th>
-              <th>Vendor Category</th>
+              {/* Not the register's own: the vendor's MSME registration off the
+                  HIS vendor master, beside the vendor as on every GRN table --
+                  see MsmeCells. */}
+              <th>MSME No</th>
+              <th>MSME Status</th>
+              {/* The register's Vendor Category used to follow. It is no
+                  longer read, stored or exported. */}
               <th>Inv.No.</th>
               <th>Inv Date</th>
               <th>GRN No</th>
@@ -158,7 +165,7 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
                 the page from jumping as a search is typed. */}
             {rows.length === 0 && (
               <tr>
-                <td className="table__empty" colSpan={19}>
+                <td className="table__empty" colSpan={20}>
                   Matches not found
                 </td>
               </tr>
@@ -179,9 +186,7 @@ export default function BpadView({ batchId, q, location, dept, register, onDepar
                 </td>
                 <td>{row.vendorCode}</td>
                 <td>{row.vendorName}</td>
-                <td>
-                  <Text value={row.vendorCategory} />
-                </td>
+                <MsmeCells row={row} />
                 <td>
                   <Text value={row.invNo} />
                 </td>

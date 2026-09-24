@@ -427,16 +427,17 @@ function bpadDate(value) {
 /**
  * Parse the BPAD register, keeping only the rows `keep` accepts.
  *
- * Columns: Sl.No., Location, WareHouse, Vendor Code, Vendor Name, Vendor
- * Category, Inv.No., Inv Date, GRN No, GRN Date, GRN Amount, PO Number, PO
- * Date, Pending With Dept., BPAD Received Date., Accounts Received Date.,
- * Pending With User/Status, Pend.Reason/Pend Dept.
+ * Columns: Sl.No., Location, WareHouse, Vendor Code, Vendor Name, Inv.No.,
+ * Inv Date, GRN No, GRN Date, GRN Amount, PO Number, PO Date, Pending With
+ * Dept., BPAD Received Date., Accounts Received Date., Pending With
+ * User/Status, Pend.Reason/Pend Dept.
  *
  * The sheet also carries QueryAgeing, Ageing and GRN Age. They are read past
  * rather than read: the register derives all three from dates it also carries,
  * so a stored copy goes stale the moment the register is exported again. A
  * sheet that still has those columns parses exactly as before -- headers are
- * looked up by name, so unread ones cost nothing.
+ * looked up by name, so unread ones cost nothing. Vendor Category is read past
+ * too: nothing on the BPAD tab or in its export uses it.
  *
  * `Accounts Received Date.` carries a carriage return inside the label on the
  * source sheet; headerToken folds every run of whitespace to one space, so it
@@ -485,7 +486,6 @@ export function readBpadReport(buffer, { keep = () => true } = {}) {
       vendorCode,
       vendorCodeKey,
       vendorName: toText(get('VENDOR NAME')),
-      vendorCategory: toText(get('VENDOR CATEGORY')),
       invNo: toText(get('INV.NO.', 'INV NO')),
       invDate: bpadDate(get('INV DATE')),
       grnNo,
@@ -510,4 +510,161 @@ export function readBpadReport(buffer, { keep = () => true } = {}) {
   if (scanned === 0) throw new ExcelFormatError('The BPAD register contains no data rows.');
 
   return { sheetName, headerRow: headerIdx + 1, headers, rows, scanned };
+}
+
+/* ==========================================================================
+   The MSME reco's two masters: the HIS vendor master and the Accounts vendor
+   list (the "010Account" export).
+
+   Both are read in two halves -- a buffer reader that picks the sheet, and a
+   grid reader that turns rows into records -- so the matching can be checked
+   against a grid built any other way, without SheetJS in the loop.
+   ========================================================================== */
+
+/** The HIS vendor master's own tight, underscored column names. */
+const VENDOR_MASTER_SIGNATURE = ['VENDOR_CODE', 'VENDOR_NAME', 'PAN_NO'];
+
+/*
+ * The Accounts list's display header. It is row 4 of the export: a title, a
+ * group band ("General", "Details", "GST", "Bank Details") and a row of the
+ * system's internal names (sCode, sName, PANNo) sit above it. The internal
+ * names cannot claim the signature -- "SCODE" is not "CODE" -- so the row found
+ * is always the one a person reads.
+ */
+const ACCOUNT_MASTER_SIGNATURE = ['CODE', 'NAME', 'PAN NO', 'GSTIN'];
+
+/**
+ * A sheet's first HEADER_SEARCH_LIMIT rows only -- enough to find a header on,
+ * without building every row of a sheet that may turn out not to be wanted.
+ */
+function headGrid(sheet) {
+  if (!sheet?.['!ref']) return [];
+  const range = XLSX.utils.decode_range(sheet['!ref']);
+  range.e.r = Math.min(range.e.r, range.s.r + HEADER_SEARCH_LIMIT - 1);
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, blankrows: true, defval: null, range });
+}
+
+function fullGrid(sheet) {
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, blankrows: true, defval: null });
+}
+
+/**
+ * The vendor master's records, from a grid whose header row is known or found.
+ *
+ * Keyed by the source's own meaning rather than by what each is compared
+ * with: which Accounts column a field is held against is the reco's decision
+ * (see FIELDS in services/msmeReco.js), not the parser's.
+ */
+export function vendorMasterFromGrid(grid) {
+  const headerIdx = findHeaderRow(grid, VENDOR_MASTER_SIGNATURE, true);
+  if (headerIdx === -1) {
+    throw new ExcelFormatError(
+      'This does not look like the HIS vendor master - could not find a header row containing VENDOR_CODE, VENDOR_NAME and PAN_NO.',
+    );
+  }
+
+  const headers = (grid[headerIdx] || []).map((h) => toText(h)).filter(Boolean);
+  const index = indexHeaders(grid[headerIdx], true);
+  const rows = [];
+
+  for (let i = headerIdx + 1; i < grid.length; i += 1) {
+    const get = makeGetter(grid[i] || [], index);
+    const vendorCode = toText(get('VENDOR_CODE'));
+    if (!vendorCode) continue;
+
+    rows.push({
+      sourceRowNo: i + 1,
+      vendorCode,
+      warehouse: toText(get('WAREHOUSE')),
+      status: toText(get('STATUS')),
+      vendorName: toText(get('VENDOR_NAME')),
+      panNo: toText(get('PAN_NO')),
+      gstNumber: toText(get('GST_NUMBER')),
+      drugLicenceNo: toText(get('DRUG_LICENCE_NO')),
+      msmeNumber: toText(get('MSME_NUMBER')),
+      enterpriseType: toText(get('ENTERPRISE_TYPE')),
+      enterpriseActivity: toText(get('ENTERPRISE_ACTIVITY')),
+      bankName: toText(get('BANK_NAME')),
+      bankAccountNo: toText(get('BANK_ACCOUNT_NO')),
+      ifsc: toText(get('IFSC')),
+      payeeName: toText(get('PAYEE_NAME')),
+    });
+  }
+
+  if (rows.length === 0) throw new ExcelFormatError('The HIS vendor master contains no vendor rows.');
+
+  return { headerRow: headerIdx + 1, headers, rows };
+}
+
+/** The Accounts vendor list's records, from a grid. */
+export function accountMasterFromGrid(grid) {
+  const headerIdx = findHeaderRow(grid, ACCOUNT_MASTER_SIGNATURE, false);
+  if (headerIdx === -1) {
+    throw new ExcelFormatError(
+      'This does not look like the Accounts vendor list - could not find a header row containing Code, Name, PAN No and GSTIN.',
+    );
+  }
+
+  const headers = (grid[headerIdx] || []).map((h) => toText(h)).filter(Boolean);
+  const index = indexHeaders(grid[headerIdx], false);
+  const rows = [];
+
+  for (let i = headerIdx + 1; i < grid.length; i += 1) {
+    const get = makeGetter(grid[i] || [], index);
+    const code = toText(get('CODE'));
+    if (!code) continue;
+
+    rows.push({
+      sourceRowNo: i + 1,
+      code,
+      name: toText(get('NAME')),
+      accountType: toText(get('ACCOUNT TYPE')),
+      panNo: toText(get('PAN NO')),
+      gstin: toText(get('GSTIN')),
+      drugLicenceNo: toText(get('DRUG LICENCE NO')),
+      msmeRegNo: toText(get('MSME REG NO')),
+      msmeType: toText(get('MSME TYPE')),
+      msmeActivity: toText(get('MSME ACTIVITY')),
+      bankAccountName: toText(get('BANK ACCOUNT NAME')),
+      bankAccountNumber: toText(get('BANK ACCOUNT NUMBER')),
+      bankName: toText(get('BANK NAME')),
+      bankIfscCode: toText(get('BANK IFSC CODE')),
+    });
+  }
+
+  if (rows.length === 0) throw new ExcelFormatError('The Accounts vendor list contains no rows.');
+
+  return { headerRow: headerIdx + 1, headers, rows };
+}
+
+/**
+ * Parse the HIS vendor master ("00. VendorMasterReport from HIS").
+ *
+ * The export carries two sheets with the same columns: "All", every vendor
+ * ever set up including the INACTIVE ones, and "Active", the vendors still in
+ * use. The reco is about the vendors being paid, so "Active" is read when the
+ * workbook has one; otherwise the first sheet carrying the header is. Which
+ * one was read is returned, so the screen can say so rather than leave the
+ * count to be puzzled over.
+ */
+export function readVendorMaster(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false, cellNF: false });
+  const candidates = workbook.SheetNames.filter(
+    (name) => findHeaderRow(headGrid(workbook.Sheets[name]), VENDOR_MASTER_SIGNATURE, true) !== -1,
+  );
+
+  if (candidates.length === 0) {
+    throw new ExcelFormatError(
+      'This does not look like the HIS vendor master - no sheet has a header row containing VENDOR_CODE, VENDOR_NAME and PAN_NO.',
+    );
+  }
+
+  const sheetName = candidates.find((name) => name.trim().toUpperCase() === 'ACTIVE') ?? candidates[0];
+  return { sheetName, ...vendorMasterFromGrid(fullGrid(workbook.Sheets[sheetName])) };
+}
+
+/** Parse the Accounts vendor list ("02. 010Account"). One sheet. */
+export function readAccountMaster(buffer) {
+  const { sheetName, grid } = readGrid(buffer);
+  return { sheetName, ...accountMasterFromGrid(grid) };
 }

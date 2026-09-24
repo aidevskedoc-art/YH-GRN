@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
 import { api } from './api/client.js';
@@ -9,6 +9,7 @@ import {
   IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
+  IconCompare,
   IconDepartment,
   IconLogout,
   IconMenu,
@@ -24,10 +25,28 @@ import {
 import { useTheme, initials } from './theme.js';
 
 const COLLAPSE_KEY = 'yh.grn.nav.collapsed';
-const GROUP_KEY = 'yh.grn.nav.group';
 
-/** The one dropdown every rail link sits under. */
-const NAV_GROUP = 'GRN Reco';
+/**
+ * The rail's dropdowns, in the order they stand. Every link that is not
+ * `outside` names one of these as its `group`.
+ *
+ * Each remembers whether it was left open under its own key. The GRN group
+ * keeps the key it has always had, so nobody's choice is reset by the second
+ * group arriving.
+ */
+const NAV_GROUPS = [
+  { key: 'grn', label: 'GRN Reco', storageKey: 'yh.grn.nav.group' },
+  { key: 'msme', label: 'Vendor Reco', storageKey: 'yh.grn.nav.group.msme' },
+];
+
+/** Open on a first visit -- a rail that starts empty gives a new account nothing to aim at. */
+function readGroupOpen(storageKey) {
+  try {
+    return localStorage.getItem(storageKey) !== '0';
+  } catch {
+    return true;
+  }
+}
 
 /** Matches the drawer breakpoint in styles.css - keep the two in step. */
 const NARROW = '(max-width: 940px)';
@@ -41,29 +60,49 @@ const NARROW = '(max-width: 940px)';
  * link to a screen you cannot open is not information, it is a dead end.
  */
 const NAV = [
-  { to: '/upload', label: 'New uploads', icon: IconUpload, end: true, screen: 'upload' },
+  { to: '/upload', label: 'New uploads', icon: IconUpload, end: true, screen: 'upload', group: 'grn' },
   // end:false so /results/:batchId keeps the entry highlighted.
-  { to: '/results', label: 'Results', icon: IconReport, end: false, badge: true, screen: 'results' },
-    {
+  {
+    to: '/results',
+    label: 'Results',
+    icon: IconReport,
+    end: false,
+    badge: true,
+    screen: 'results',
+    group: 'grn',
+  },
+  // The results screen's Accounts and PR-to-Bank views on their own. After
+  // Results rather than beside it: an admin sees both, and the fuller screen
+  // should come first for anyone who holds it.
+  {
     to: '/accounts-department',
     label: 'Accounts',
     icon: IconBank,
     end: true,
     screen: 'accounts-department',
+    group: 'grn',
   },
-  { to: '/csd', label: 'CS Department', icon: IconDepartment, end: true, screen: 'csd' },
-  // The results screen's Accounts and PR-to-Bank views on their own. After
-  // Results rather than beside it: an admin sees both, and the fuller screen
-  // should come first for anyone who holds it.
-
-  { to: '/config', label: 'Configuration', icon: IconSliders, end: true, screen: 'config' },
+  { to: '/csd', label: 'CS Department', icon: IconDepartment, end: true, screen: 'csd', group: 'grn' },
+  { to: '/config', label: 'Configuration', icon: IconSliders, end: true, screen: 'config', group: 'grn' },
   // Every entry below is its own tick box on User management now -- deleting
   // an upload or file, and changing an administrator account, stay with the
   // administrator role on the server.
-  { to: '/uploads', label: 'Uploaded files', icon: IconSheet, end: true, screen: 'uploads' },
-  // `outside` keeps an entry out of the GRN Reco dropdown and standing on its
-  // own below it. These two administer the tool rather than run a
-  // reconciliation through it, so they are not what the group collects -- and
+  { to: '/uploads', label: 'Uploaded files', icon: IconSheet, end: true, screen: 'uploads', group: 'grn' },
+  // The HIS vendor master against the Accounts vendor list. A dropdown of its
+  // own rather than a sixth GRN link: it reads neither GRN report, and a
+  // screen for chasing vendor master data does not belong under a heading
+  // about GRNs.
+  {
+    to: '/msme-reco',
+    label: 'HIS vs FOCUS Reco',
+    icon: IconCompare,
+    end: true,
+    screen: 'msme-reco',
+    group: 'msme',
+  },
+  // `outside` keeps an entry out of every dropdown and standing on its own
+  // below them. These two administer the tool rather than run a
+  // reconciliation through it, so they are not what the groups collect -- and
   // they are the two an administrator reaches for from any screen, which is a
   // poor fit for a panel that can be shut.
   { to: '/users', label: 'User management', icon: IconUsers, end: true, screen: 'users', outside: true },
@@ -101,6 +140,9 @@ function pageTitle(pathname) {
   if (pathname.startsWith('/accounts-department')) {
     return { title: 'Accounts Department', crumb: 'Accounts / In accounts and ageing' };
   }
+  if (pathname.startsWith('/msme-reco')) {
+    return { title: 'HIS vs FOCUS Reco', crumb: 'Vendor Reco / HIS vendor master vs FOCUS' };
+  }
   if (pathname.startsWith('/users')) return { title: 'User management', crumb: 'Admin / Accounts' };
   if (pathname.startsWith('/logs')) return { title: 'Activity logs', crumb: 'Admin / Monitoring' };
   return { title: 'GRN Reconciliation', crumb: '' };
@@ -120,15 +162,11 @@ export default function AppShell() {
     }
   });
   const [drawer, setDrawer] = useState(false);
-  // The links' dropdown. Open on a first visit -- a rail that starts empty
-  // gives a new account nothing to aim at -- and remembered after that.
-  const [groupOpen, setGroupOpen] = useState(() => {
-    try {
-      return localStorage.getItem(GROUP_KEY) !== '0';
-    } catch {
-      return true;
-    }
-  });
+  // Each dropdown's open state, by group key -- remembered per group, so
+  // shutting one leaves the other as it was.
+  const [groupOpen, setGroupOpen] = useState(() =>
+    Object.fromEntries(NAV_GROUPS.map((g) => [g.key, readGroupOpen(g.storageKey)])),
+  );
   const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
   const [batchCount, setBatchCount] = useState(0);
 
@@ -151,7 +189,7 @@ export default function AppShell() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(GROUP_KEY, groupOpen ? '1' : '0');
+      for (const g of NAV_GROUPS) localStorage.setItem(g.storageKey, groupOpen[g.key] ? '1' : '0');
     } catch {
       /* see theme.js - not worth failing over */
     }
@@ -196,28 +234,32 @@ export default function AppShell() {
   const themeLabel = mode === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
 
   /**
-   * The icons-only rail hides every label, the dropdown's own included, so
+   * The icons-only rail hides every label, the dropdowns' own included, so
    * there would be nothing left to click to get the links back. It therefore
-   * forces the group open and drops the toggle (see the collapsed block in
+   * forces every group open and drops the toggles (see the collapsed block in
    * styles.css) -- the remembered state is left untouched, and comes back the
    * moment the rail is expanded again. Scoped to the docked layout because
    * below the breakpoint the rail is a drawer and shows its labels regardless.
    */
   const railOnly = collapsed && !narrow;
-  const navOpen = railOnly || groupOpen;
-  const groupLabel = navOpen ? `Hide ${NAV_GROUP} links` : `Show ${NAV_GROUP} links`;
 
   const { title, crumb } = pageTitle(location.pathname);
 
   // What this account may actually open. Recomputed rather than memoised: it is
-  // four comparisons over a list of four, and it has to follow a role change
-  // taking effect on the next /me.
+  // a handful of comparisons over a short list, and it has to follow a role
+  // change taking effect on the next /me.
   const nav = NAV.filter((item) => {
     if (item.adminOnly) return isAdmin;
     if (item.screen) return can(item.screen);
     return true;
   });
-  const grouped = nav.filter((item) => !item.outside);
+  // A group this account holds nothing in is left out entirely, rather than
+  // drawn as a control that opens onto nothing.
+  const groups = NAV_GROUPS.map((g) => ({
+    ...g,
+    items: nav.filter((item) => !item.outside && item.group === g.key),
+    open: railOnly || Boolean(groupOpen[g.key]),
+  })).filter((g) => g.items.length > 0);
   const loose = nav.filter((item) => item.outside);
 
   return (
@@ -228,24 +270,20 @@ export default function AppShell() {
         </div>
 
         <nav className="sidenav">
-          {/* Suppressed outright when the group would be empty, rather than
-              left as a control that opens onto nothing: an account holding
-              only the two screens below has no reconciliation links to show. */}
-          {grouped.length > 0 && (
-            <>
-              {/* What was a caption over the links is now the control that
-                  shows them, so it is a real button rather than a styled div:
-                  it has to be reachable by keyboard and to say which state it
-                  is in. */}
+          {groups.map((g) => (
+            <Fragment key={g.key}>
+              {/* The caption over a group's links is the control that shows
+                  them, so it is a real button rather than a styled div: it has
+                  to be reachable by keyboard and to say which state it is in. */}
               <button
                 type="button"
-                className={`nav-group${navOpen ? ' is-open' : ''}`}
-                onClick={() => setGroupOpen((v) => !v)}
-                aria-expanded={navOpen}
-                aria-controls="sidenav-links"
-                title={groupLabel}
+                className={`nav-group${g.open ? ' is-open' : ''}`}
+                onClick={() => setGroupOpen((all) => ({ ...all, [g.key]: !all[g.key] }))}
+                aria-expanded={g.open}
+                aria-controls={`sidenav-links-${g.key}`}
+                title={g.open ? `Hide ${g.label} links` : `Show ${g.label} links`}
               >
-                <span className="nav-group__label">{NAV_GROUP}</span>
+                <span className="nav-group__label">{g.label}</span>
                 <IconChevronDown size={14} className="nav-group__caret" />
               </button>
 
@@ -254,21 +292,21 @@ export default function AppShell() {
                   links out of the tab order and off the accessibility tree -
                   clipping alone would leave them both, invisible and still
                   focusable. */}
-              <div className="nav-group__items" id="sidenav-links" inert={!navOpen || undefined}>
+              <div className="nav-group__items" id={`sidenav-links-${g.key}`} inert={!g.open || undefined}>
                 <div className="nav-group__list">
-                  {grouped.map((item) => (
+                  {g.items.map((item) => (
                     <RailLink key={item.to} item={item} collapsed={collapsed} />
                   ))}
                 </div>
               </div>
-            </>
-          )}
+            </Fragment>
+          ))}
 
-          {/* Outside the dropdown, and below it: always on show, whether the
-              group is open or shut. The rule above them is dropped when there
-              is no group left to be separated from. */}
+          {/* Outside the dropdowns, and below them: always on show, whether
+              the groups are open or shut. The rule above them is dropped when
+              there is no group left to be separated from. */}
           {loose.length > 0 && (
-            <div className={`sidenav__loose${grouped.length > 0 ? ' has-rule' : ''}`}>
+            <div className={`sidenav__loose${groups.length > 0 ? ' has-rule' : ''}`}>
               {loose.map((item) => (
                 <RailLink key={item.to} item={item} collapsed={collapsed} />
               ))}
@@ -353,8 +391,12 @@ export default function AppShell() {
 
             {/* Also gated on the grant, not just the current route: for an
                 account without Uploads the button would land on a screen the
-                router immediately redirects away from. */}
-            {can('upload') && !location.pathname.startsWith('/upload') && (
+                router immediately redirects away from. Not on the HIS vs FOCUS
+                Reco screen either: it is a GRN reconciliation this starts, and
+                that screen has its own New reco button. */}
+            {can('upload') &&
+              !location.pathname.startsWith('/upload') &&
+              !location.pathname.startsWith('/msme-reco') && (
               <button
                 type="button"
                 className="primary new-run"

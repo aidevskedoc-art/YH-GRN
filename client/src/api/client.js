@@ -157,10 +157,13 @@ export const api = {
   uploadBatch: (formData) => request('/batches', { method: 'POST', body: formData, isForm: true }),
 
   /** `q` is the search box: vendor name, GRN number or bill number, either side. */
-  summary: (id, { q, location } = {}) => {
+  summary: (id, { q, location, msme } = {}) => {
     const params = new URLSearchParams();
     if (q) params.set('q', q);
     if (location) params.set('location', location);
+    // 'MSME' or 'NON_MSME' -- the MSME dropdown, a scope like Location. See
+    // MsmeFilter.jsx.
+    if (msme) params.set('msme', msme);
     return request(`/batches/${id}/summary?${params}`);
   },
   /**
@@ -173,12 +176,13 @@ export const api = {
    * the counts beside the filter options -- because it is a scope rather than a
    * question about a row.
    */
-  results: (id, { status, page = 1, pageSize = 50, q, progress, location, dept, chequeNo, view } = {}) => {
+  results: (id, { status, page = 1, pageSize = 50, q, progress, location, msme, dept, chequeNo, view } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (status) params.set('status', status);
     if (q) params.set('q', q);
     if (progress) params.set('progress', progress);
     if (location) params.set('location', location);
+    if (msme) params.set('msme', msme);
     // One BPAD desk, set by the breakdown cards under the Pending view -- the
     // register's answer for where each pending bill stopped. Spelled the same
     // as the BPAD tab's own `dept` below, because it is the same column.
@@ -209,10 +213,11 @@ export const api = {
    * the GRNs the register had no entry for, which is what the Not in BPAD card
    * asks for.
    */
-  bpad: (id, { page = 1, pageSize = 50, q, location, dept, register } = {}) => {
+  bpad: (id, { page = 1, pageSize = 50, q, location, msme, dept, register } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (location) params.set('location', location);
+    if (msme) params.set('msme', msme);
     if (dept) params.set('dept', dept);
     if (register) params.set('register', register);
     return request(`/batches/${id}/bpad?${params}`);
@@ -220,10 +225,11 @@ export const api = {
 
   /** Per-stage day counts for the Turnaround tab. Statistics cover every row in
    *  scope; only `rows` is paginated. */
-  turnaround: (id, { page = 1, pageSize = 50, q, location } = {}) => {
+  turnaround: (id, { page = 1, pageSize = 50, q, location, msme } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (location) params.set('location', location);
+    if (msme) params.set('msme', msme);
     return request(`/batches/${id}/turnaround?${params}`);
   },
 
@@ -245,13 +251,14 @@ export const api = {
    * Those counts follow `q` but not `stage` -- they are how a stage is picked.
    * `all` drops the pagination, for export.
    */
-  listCsd: ({ page = 1, pageSize = 20, q, stage, location, all, chequeNo, view } = {}) => {
+  listCsd: ({ page = 1, pageSize = 20, q, stage, location, msme, all, chequeNo, view } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (stage) params.set('stage', stage);
-    // Like `q` and unlike `stage`, this one narrows the counts as well: see the
+    // Like `q` and unlike `stage`, these two narrow the counts as well: see the
     // note on LOCATION_FILTER in routes/csd.js.
     if (location) params.set('location', location);
+    if (msme) params.set('msme', msme);
     if (all) params.set('all', '1');
     // One cheque's handovers, matched exactly rather than searched for. The
     // Action column asks for this before it moves anything, so that a stage
@@ -348,6 +355,36 @@ export const api = {
 
   deleteBranch: (id) => request(`/config/branches/${id}`, { method: 'DELETE' }),
 
+  /* --- MSME reco -----------------------------------------------------------
+     The HIS vendor master against the Accounts vendor list. A run is both
+     files reconciled and stored; the screen reads its rows from the API
+     rather than from the files. */
+
+  /** Every run, newest first, plus the list of compared fields. */
+  listMsmeRuns: () => request('/msme-reco/runs'),
+
+  /** Upload both masters (`vendorFile`, `accountFile`) and store the reco. */
+  runMsmeReco: (formData) => request('/msme-reco/runs', { method: 'POST', body: formData, isForm: true }),
+
+  /**
+   * One run's rows -- every vendor master row; Accounts-only codes are counted
+   * on the run, not stored. `view` is a card: ALL (the default), MATCHED,
+   * MISMATCH or NOT_IN_ACCOUNTS;
+   * `field` narrows to the rows whose `field` pair disagrees; `q` is the search
+   * box. `all` drops the paging, for the export.
+   */
+  msmeRows: (id, { view, field, q, page = 1, pageSize = 20, all } = {}) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (view) params.set('view', view);
+    if (field) params.set('field', field);
+    if (q) params.set('q', q);
+    if (all) params.set('all', '1');
+    return request(`/msme-reco/runs/${id}/rows?${params}`);
+  },
+
+  /** Remove a run and its rows. Administrator-only at the API. */
+  deleteMsmeRun: (id) => request(`/msme-reco/runs/${id}`, { method: 'DELETE' }),
+
   /**
    * Every row for one sheet, unpaginated -- the input to
    * services/exporter.js.
@@ -358,7 +395,7 @@ export const api = {
    * the cheque pair), `dept` one BPAD desk, `register` the 'missing' rows.
    * Anything left out narrows nothing.
    */
-  exportRows: (id, status, { q, progress, location, dept, register, view } = {}) => {
+  exportRows: (id, status, { q, progress, location, msme, dept, register, view } = {}) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     // 'cheque' for the Accounts view's Cheque view sheet -- see chequeRows.
@@ -366,6 +403,7 @@ export const api = {
     if (q) params.set('q', q);
     if (progress) params.set('progress', progress);
     if (location) params.set('location', location);
+    if (msme) params.set('msme', msme);
     if (dept) params.set('dept', dept);
     if (register) params.set('register', register);
     return request(`/batches/${id}/export?${params}`);

@@ -30,6 +30,20 @@ import { chequePrepared, paymentNotRequired } from './cheque.js';
 const ACCOUNTS_GRN_VIEW = 'grn';
 const ACCOUNTS_CHEQUE_VIEW = 'cheque';
 
+/**
+ * The vendor's MSME registration off the HIS vendor master, beside the vendor
+ * on every GRN sheet as on every GRN table -- see services/vendorMsme.js on the
+ * server. Text: an Udyam number is an identifier. A blank status is a vendor
+ * the vendor master has no row for, which is not the same as Non-MSME.
+ *
+ * `group` is for the ageing sheet, whose header carries a band over its
+ * columns; every other sheet ignores it.
+ */
+const MSME_COLUMNS = (group) => [
+  { key: 'msmeNo', label: 'MSME No', ...(group ? { group } : {}) },
+  { key: 'msmeStatus', label: 'MSME Status', ...(group ? { group } : {}) },
+];
+
 const COLUMNS = [
   { key: 'status', label: 'Status' },
   { key: 'warehouse', label: 'Warehouse' },
@@ -41,6 +55,7 @@ const COLUMNS = [
   { key: 'billDate', label: 'Bill Date', date: true },
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
+  ...MSME_COLUMNS(),
   // The GRN report's own amount breakdown, in its source order -- see the
   // same four columns on GRN_COLUMNS below.
   { key: 'billAmount', label: 'Bill.Amount', numeric: true },
@@ -80,6 +95,7 @@ const MATCHED_COLUMNS = [
   { key: 'billDate', label: 'Bill Date', date: true },
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
+  ...MSME_COLUMNS(),
   { key: 'ageingGrnNo', label: 'Focus doc_no' },
   { key: 'netAmt', label: 'NetAmt', numeric: true },
   { key: 'adjPurReturn', label: 'AdjPurReturn', numeric: true },
@@ -137,6 +153,7 @@ const ACCOUNTS_CHEQUE_COLUMNS = [
   { key: 'chequeGrnCount', label: 'GRNs', integer: true },
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
+  ...MSME_COLUMNS(),
   { key: 'chqDate', label: 'Cheque Date', date: true },
   { key: 'chequeAmount', label: 'Cheque Amount', numeric: true },
   { key: 'paymentDocNo', label: 'PaymentDocNo' },
@@ -177,6 +194,8 @@ const GRN_COLUMNS = [
   { key: 'dcNo', label: 'DC No' },
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
+  // Not the GRN report's own -- an annotation beside its vendor, as on the tab.
+  ...MSME_COLUMNS(),
   { key: 'billAmount', label: 'Bill.Amount', numeric: true },
   { key: 'transportAmount', label: 'Transport Amount', numeric: true },
   { key: 'totalAmount', label: ' Total Amount', numeric: true },
@@ -214,7 +233,8 @@ const BPAD_COLUMNS = [
   { key: 'warehouse', label: 'WareHouse' },
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
-  { key: 'vendorCategory', label: 'Vendor Category' },
+  // Not the register's own -- an annotation beside its vendor, as on the tab.
+  ...MSME_COLUMNS(),
   { key: 'invNo', label: 'Inv.No.' },
   { key: 'invDate', label: 'Inv Date', date: true },
   { key: 'grnNo', label: 'GRN No' },
@@ -232,7 +252,7 @@ const BPAD_COLUMNS = [
 ];
 
 /**
- * What every Turnaround file carries, whatever it is measuring: the thirteen
+ * What every Turnaround file carries, whatever it is measuring: the fifteen
  * identifying columns, in the order the screen shows them.
  *
  * `group` is what puts a column under "Particulars", "Days taken" or "Reached"
@@ -246,6 +266,7 @@ const TURNAROUND_PARTICULARS = [
   { key: 'billDate', label: 'Bill Date', date: true, group: 'Particulars' },
   { key: 'vendorName', label: 'Vendor', group: 'Particulars' },
   { key: 'vendorCode', label: 'Vendor Code', group: 'Particulars' },
+  ...MSME_COLUMNS('Particulars'),
   // The ageing report's own amount breakdown, ahead of PayableAmount -- the
   // same order as NetAmt through PayableAmount on the CSD and Valid GRNs tabs.
   { key: 'netAmt', label: 'NetAmt', numeric: true, group: 'Particulars' },
@@ -330,6 +351,7 @@ const CSD_COLUMNS = [
   { key: 'billDate', label: 'Bill Date', date: true },
   { key: 'vendorName', label: 'Vendor' },
   { key: 'vendorCode', label: 'Vendor Code' },
+  ...MSME_COLUMNS(),
   { key: 'ageingGrnNo', label: 'Focus doc_no' },
   { key: 'netAmt', label: 'NetAmt', numeric: true },
   { key: 'adjPurReturn', label: 'AdjPurReturn', numeric: true },
@@ -358,6 +380,7 @@ const CSD_CHEQUE_COLUMNS = [
   { key: 'chequeGrnCount', label: 'GRNs', integer: true },
   { key: 'vendorName', label: 'Vendor' },
   { key: 'vendorCode', label: 'Vendor Code' },
+  ...MSME_COLUMNS(),
   { key: 'chqDate', label: 'Cheque Date', date: true },
   { key: 'chequeAmount', label: 'Cheque Amount', numeric: true },
   { key: 'paymentDocNo', label: 'PaymentDocNo' },
@@ -610,8 +633,14 @@ async function loadExcelJS() {
  * Split out of buildXlsx so a multi-tab export (see buildWorkbook below) can
  * add several sheets -- one per UI tab -- to a single file rather than
  * opening a workbook per sheet and writing several files.
+ *
+ * `plain` drops every colour -- no fills, no coloured type, no tinted
+ * gridlines -- and keeps the structure: the title, the group band and the
+ * header in bold, frozen above the data. The HIS vs FOCUS workbook is written
+ * this way. A column may also carry `width` (characters) to override the
+ * width worked out from its header, and `wrap` to wrap its text.
  */
-function addSheet(book, rows, { sheetName = 'Reconciliation', columns = COLUMNS, title } = {}) {
+function addSheet(book, rows, { sheetName = 'Reconciliation', columns = COLUMNS, title, plain = false } = {}) {
   // Excel caps sheet names at 31 characters.
   // The merged band above the headers, when the layout groups its columns --
   // the same "Days taken" / "Reached" split the table carries. Derived from the
@@ -646,13 +675,17 @@ function addSheet(book, rows, { sheetName = 'Reconciliation', columns = COLUMNS,
   // fill carried across all of them for the same banner look a merge gave.
   if (title) {
     const row = sheet.getRow(1);
-    for (let col = 1; col <= lastCol; col += 1) {
-      row.getCell(col).fill = solid(INK);
+    if (!plain) {
+      for (let col = 1; col <= lastCol; col += 1) {
+        row.getCell(col).fill = solid(INK);
+      }
     }
     const cell = row.getCell(1);
     cell.value = title;
-    cell.font = { name: FONT, size: 14, bold: true, color: { argb: PAPER } };
-    cell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+    cell.font = plain
+      ? { name: FONT, size: 14, bold: true }
+      : { name: FONT, size: 14, bold: true, color: { argb: PAPER } };
+    cell.alignment = { vertical: 'middle', horizontal: 'left', indent: plain ? 0 : 1 };
     row.height = 26;
   }
 
@@ -665,12 +698,16 @@ function addSheet(book, rows, { sheetName = 'Reconciliation', columns = COLUMNS,
       if (group.span > 1) sheet.mergeCells(row.number, col, row.number, col + group.span - 1);
       const cell = sheet.getCell(row.number, col);
       cell.value = group.label || null;
-      cell.font = { name: FONT, size: 10.5, bold: true, color: { argb: PAPER } };
-      // The ungrouped stretch on the left takes the ink rather than the brand,
-      // so the two named bands read as the bands and it reads as the gap.
-      cell.fill = solid(group.label ? BRAND : INK);
       cell.alignment = { vertical: 'middle', horizontal: 'center' };
-      cell.border = BORDER;
+      if (plain) {
+        cell.font = { name: FONT, size: 10.5, bold: true };
+      } else {
+        cell.font = { name: FONT, size: 10.5, bold: true, color: { argb: PAPER } };
+        // The ungrouped stretch on the left takes the ink rather than the brand,
+        // so the two named bands read as the bands and it reads as the gap.
+        cell.fill = solid(group.label ? BRAND : INK);
+        cell.border = BORDER;
+      }
       col += group.span;
     }
   }
@@ -679,21 +716,29 @@ function addSheet(book, rows, { sheetName = 'Reconciliation', columns = COLUMNS,
   const header = sheet.addRow(columns.map((c) => c.label));
   header.height = 24;
   header.eachCell((cell) => {
+    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+    if (plain) {
+      cell.font = { name: FONT, size: 10.5, bold: true };
+      return;
+    }
     cell.font = { name: FONT, size: 10.5, bold: true, color: { argb: PAPER } };
     cell.fill = solid(BRAND);
-    cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
     cell.border = BORDER;
   });
 
   // --- The data ------------------------------------------------------------
   rows.forEach((row, i) => {
     const line = sheet.addRow(columns.map((c) => toCell(row, c)));
-    const banded = i % 2 === 1;
+    const banded = !plain && i % 2 === 1;
 
     line.eachCell({ includeEmpty: true }, (cell, col) => {
       const column = columns[col - 1];
-      cell.font = { name: FONT, size: 10, color:"#0b1017" };
-      cell.border = BORDER;
+      if (plain) {
+        cell.font = { name: FONT, size: 10 };
+      } else {
+        cell.font = { name: FONT, size: 10, color:"#0b1017" };
+        cell.border = BORDER;
+      }
       if (banded) cell.fill = solid(BAND);
 
       if (column?.integer) {
@@ -705,13 +750,14 @@ function addSheet(book, rows, { sheetName = 'Reconciliation', columns = COLUMNS,
       } else {
         cell.alignment = { horizontal: 'left' };
       }
+      if (column?.wrap) cell.alignment = { ...cell.alignment, wrapText: true, vertical: 'top' };
     });
   });
 
   // --- Column widths -------------------------------------------------------
-  // Sized off each column's own header.
+  // Sized off each column's own header, unless the column names its own.
   columns.forEach((c, i) => {
-    sheet.getColumn(i + 1).width = Math.max(12, Math.min(34, c.label.length + 8));
+    sheet.getColumn(i + 1).width = c.width ?? Math.max(12, Math.min(34, c.label.length + 8));
   });
 
   // Repeat the header on every printed page of a 1,200-row handout -- the group
@@ -821,10 +867,11 @@ function save(blob, fileName) {
  * level here so the column keys resolve like every other column's, the same
  * way the table itself reads them.
  */
-async function sheetRows(batchId, spec, { q, location, spans, view }) {
+async function sheetRows(batchId, spec, { q, location, msme, spans, view }) {
   const { name, rows: raw } = await api.exportRows(batchId, spec.status, {
     q,
     location,
+    msme,
     progress: spec.progress,
     dept: spec.dept,
     register: spec.register,
@@ -844,6 +891,16 @@ async function sheetRows(batchId, spec, { q, location, spans, view }) {
         }))
       : raw;
   return { name, rows };
+}
+
+/**
+ * The MSME dropdown's choice as a file-name fragment -- "MSME", "Non_MSME" --
+ * or null for every vendor, which adds nothing.
+ */
+function msmeSlug(msme) {
+  if (msme === 'MSME') return 'MSME';
+  if (msme === 'NON_MSME') return 'Non_MSME';
+  return null;
 }
 
 /**
@@ -885,13 +942,17 @@ async function inBatches(items, work) {
  * reordered there moves its sheet with it and nothing here has to be edited.
  * The first entry is the section itself, and it names the file.
  *
- * Only `q` and `location` travel across every sheet: they are the page's
- * scope. The dropdown filters are left out, the same as before -- each sheet
- * carries its own card's narrowing and nothing else, so a section's sheets
- * always divide that section whole rather than whatever was left after a
+ * Only `q`, `location` and `msme` travel across every sheet: they are the
+ * page's scope. The dropdown filters are left out, the same as before -- each
+ * sheet carries its own card's narrowing and nothing else, so a section's
+ * sheets always divide that section whole rather than whatever was left after a
  * dropdown had already cut it down.
+ *
+ * `msme` is the MSME dropdown's value ('MSME' or 'NON_MSME', '' for every
+ * vendor). It narrows every sheet, as it narrows every card on screen, and it
+ * joins the file name, so an MSME-only workbook is not mistaken for the whole.
  */
-export async function exportSection(batchId, sheets, { q, location, spans = [], accountsView } = {}) {
+export async function exportSection(batchId, sheets, { q, location, msme, spans = [], accountsView } = {}) {
   // The GRNs / Cheques switch reaches the Accounts sheets only: those are the
   // rows it changes on screen.
   const viewFor = (s) => (s.status === 'VALID' ? accountsView : undefined);
@@ -899,6 +960,7 @@ export async function exportSection(batchId, sheets, { q, location, spans = [], 
     sheetRows(batchId, s, {
       q,
       location,
+      msme,
       spans,
       view: viewFor(s) === ACCOUNTS_CHEQUE_VIEW ? ACCOUNTS_CHEQUE_VIEW : undefined,
     }),
@@ -932,6 +994,7 @@ export async function exportSection(batchId, sheets, { q, location, spans = [], 
       slug(spans.map(spanLabel).join(' ')),
     // A cheque-per-row file is a different report from a GRN-per-row one.
     accountsView === ACCOUNTS_CHEQUE_VIEW && sheets.some((s) => s.status === 'VALID') && 'Cheque_View',
+    msmeSlug(msme),
     safeName,
   ]
     .filter(Boolean)
@@ -992,12 +1055,13 @@ export async function exportLogs(filters, describe) {
  * turn round, so it is flattened to a display string here; the same goes for
  * the status label, which the queue stores raw.
  */
-export async function exportCsd(q, stage, location, view) {
+export async function exportCsd(q, stage, location, view, msme) {
   const { rows: raw } = await api.listCsd({
     all: true,
     q,
     stage,
     location,
+    msme,
     view: view === ACCOUNTS_CHEQUE_VIEW ? ACCOUNTS_CHEQUE_VIEW : undefined,
   });
 
@@ -1023,7 +1087,12 @@ export async function exportCsd(q, stage, location, view) {
 
   // The stage joins the name when one is chosen, so two exports taken minutes
   // apart are not the same file with different contents.
-  const fileName = `${[slug(report), stage && slug(stage), view === ACCOUNTS_CHEQUE_VIEW && 'Cheque_View']
+  const fileName = `${[
+    slug(report),
+    stage && slug(stage),
+    view === ACCOUNTS_CHEQUE_VIEW && 'Cheque_View',
+    msmeSlug(msme),
+  ]
     .filter(Boolean)
     .join('_')}.xlsx`;
 
@@ -1033,4 +1102,85 @@ export async function exportCsd(q, stage, location, view) {
     title: report,
   });
   save(blob, fileName);
+}
+
+/* -------------------------------------------------------------------------
+   HIS vs FOCUS Reco (the MSME reco, in code).
+   ------------------------------------------------------------------------- */
+
+/** A stored row's verdict, spelled as the screen spells it. */
+export const MSME_STATUS_LABELS = {
+  MATCHED: 'Matched',
+  MISMATCH: 'Mismatch',
+  NOT_IN_ACCOUNTS: 'Not in FOCUS',
+};
+
+/**
+ * The reco's sheet: who the vendor is, then each compared field as a pair --
+ * the vendor master's value and the FOCUS (Accounts) one, under a band naming
+ * the field -- and the Remarks last, which is the column the sheet is for.
+ *
+ * Each pair's headers are the source files' own column names, so a reader can
+ * go straight from a remark to the column to correct in either file.
+ */
+function msmeColumns(fields) {
+  return [
+    { key: 'vendorCode', label: 'Vendor Code' },
+    { key: 'warehouse', label: 'Warehouse' },
+    { key: 'msmeStatus', label: 'Status' },
+    ...fields.flatMap((f) => [
+      { key: `his.${f.key}`, label: `${f.his} (HIS)`, group: f.label },
+      { key: `acc.${f.key}`, label: `${f.acc} (FOCUS)`, group: f.label },
+    ]),
+    { key: 'remarks', label: 'Remarks', width: 60, wrap: true },
+  ];
+}
+
+/**
+ * One run as one workbook: a sheet per card on the screen, in the cards'
+ * order and under their names -- the whole vendor master first, then each
+ * verdict on its own. Plain, with no colour anywhere: the Remarks column
+ * already says what differs.
+ *
+ * `cards` is the page's own card list, `[{ label, status }]` with `status`
+ * null for the card that holds every row -- so a card renamed or added there
+ * moves its sheet with it, and nothing here has to be edited.
+ *
+ * Every row is fetched once and divided here, rather than a request per card.
+ * Only the search narrows the sheets: the field chip is a way of looking at
+ * one card, and applied to the whole workbook it would leave Matched empty.
+ */
+export async function exportMsmeReco(runId, { q, cards = [] } = {}) {
+  const data = await api.msmeRows(runId, { q, all: true });
+  const fields = data.fields ?? [];
+
+  // Flattened, because toCell reads top-level keys only.
+  const rows = data.rows.map((r) => ({
+    ...r,
+    msmeStatus: MSME_STATUS_LABELS[r.status] ?? r.status,
+    ...Object.fromEntries(
+      fields.flatMap((f) => [
+        [`his.${f.key}`, r.his?.[f.key] ?? null],
+        [`acc.${f.key}`, r.acc?.[f.key] ?? null],
+      ]),
+    ),
+  }));
+
+  const columns = msmeColumns(fields);
+  const blob = await buildWorkbook(
+    cards.map((card) => ({
+      sheetName: card.label,
+      title: `HIS vs FOCUS Reco - ${card.label}`,
+      columns,
+      plain: true,
+      rows: card.status ? rows.filter((r) => r.status === card.status) : rows,
+    })),
+  );
+
+  // A searched file is a different file from the whole run, so it says so.
+  const fileName = `${['HIS_vs_FOCUS_Reco', q && slug(q), new Date().toISOString().slice(0, 10)]
+    .filter(Boolean)
+    .join('_')}.xlsx`;
+  save(blob, fileName);
+  return { count: rows.length };
 }

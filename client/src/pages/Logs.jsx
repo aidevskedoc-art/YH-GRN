@@ -27,6 +27,7 @@ const CATEGORY_TONES = {
   DATES: { stat: 'pending', pill: 'pending' },
   USERS: { stat: 'dept', pill: 'admin' },
   CONFIG: { stat: 'missing', pill: 'diff' },
+  MSME: { stat: 'bpad', pill: 'diff' },
 };
 
 /** dd/MM/yyyy HH:mm from a timestamp, in the browser's own zone. */
@@ -241,8 +242,9 @@ export default function Logs() {
               {`${data.counts.week.toLocaleString('en-IN')} in the last 7 days`}
             </div>
           </button>
-          {/* Deleted uploads and files, users and branches. Combines with a
-              category card -- Uploads + Deleted is just the deleted uploads. */}
+          {/* Deleted uploads and files, vendor recos, users and branches.
+              Combines with a category card -- Uploads + Deleted is just the
+              deleted uploads. */}
           <button
             type="button"
             className={`card stat stat--rejected ${deleted ? 'is-active' : ''}`}
@@ -251,12 +253,12 @@ export default function Logs() {
             title={
               deleted
                 ? 'Showing deletions only — press again for every entry'
-                : 'Show only deleted uploads, files, users and branches'
+                : 'Show only deleted uploads, files, HIS vs FOCUS recos, users and branches'
             }
           >
             <div className="stat__label">Deleted</div>
             <div className="stat__value">{(data.counts.deleted ?? 0).toLocaleString('en-IN')}</div>
-            <div className="stat__hint">uploads, files, users, branches</div>
+            <div className="stat__hint">uploads, files, vendor recos, users, branches</div>
           </button>
           {categories.map((c) => (
             <button

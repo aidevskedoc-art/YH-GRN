@@ -292,3 +292,14 @@ export const IconEyeOff = (p) => (
     <path d="m3 3 18 18" />
   </Icon>
 );
+
+/* Two lists held against each other: the MSME reco, the vendor master beside
+   the Accounts list, with the arrows between them saying they are compared. */
+export const IconCompare = (p) => (
+  <Icon {...p}>
+    <rect x="3" y="4" width="6" height="16" rx="1.5" />
+    <rect x="15" y="4" width="6" height="16" rx="1.5" />
+    <path d="M10.5 9h3m-1.2-1.6L13.5 9l-1.2 1.6" />
+    <path d="M13.5 15h-3m1.2-1.6L10.5 15l1.2 1.6" />
+  </Icon>
+);

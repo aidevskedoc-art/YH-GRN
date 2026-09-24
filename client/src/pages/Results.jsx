@@ -37,6 +37,7 @@ import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/
 import TurnaroundView from '../components/TurnaroundView.jsx';
 import BpadView from '../components/BpadView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
+import MsmeFilter from '../components/MsmeFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import { IconArrowRight, IconX } from '../components/icons.jsx';
 
@@ -324,6 +325,10 @@ export default function Results() {
   // it survives moving between tabs, because "the Secunderabad numbers" is a
   // question every tab answers.
   const [location, setLocation] = useState('');
+  // 'MSME', 'NON_MSME', or '' for every vendor -- the MSME dropdown. A scope
+  // like Location: every tab, card, count and export follows it, and it
+  // survives moving between tabs. See MsmeFilter.jsx.
+  const [msme, setMsme] = useState('');
   // Which desk the BPAD tab is narrowed to -- one value of the register's own
   // Pending With Dept. column -- or '' for every one of them. It belongs to
   // that tab the way matchFilter belongs to Total GRNS, and `departments` is
@@ -403,10 +408,10 @@ export default function Results() {
   useEffect(() => {
     if (!batchId) return;
     api
-      .summary(batchId, { q, location })
+      .summary(batchId, { q, location, msme })
       .then(({ summary: s }) => setSummary(s))
       .catch((err) => setError(err.message));
-  }, [batchId, q, location]);
+  }, [batchId, q, location, msme]);
 
   // Which rows to ask for, as against which tab is showing. The two are the
   // same everywhere except Total GRNS with its filter set, where the tab decides
@@ -428,13 +433,14 @@ export default function Results() {
         q,
         progress,
         location,
+        msme,
         dept: pendingDept,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
       })
       .then(setData)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [batchId, status, rowStatus, page, pageSize, q, progress, location, pendingDept, byCheque]);
+  }, [batchId, status, rowStatus, page, pageSize, q, progress, location, msme, pendingDept, byCheque]);
 
   useEffect(loadRows, [loadRows]);
 
@@ -444,7 +450,7 @@ export default function Results() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [batchId, rowStatus, page, pageSize, q, progress, location, pendingDept, byCheque]);
+  }, [batchId, rowStatus, page, pageSize, q, progress, location, msme, pendingDept, byCheque]);
 
   /*
    * The three things "Select multiple" can batch, mirroring the row's own
@@ -687,6 +693,12 @@ export default function Results() {
     setPage(1);
   }
 
+  /** Narrow every figure on the page to MSME or Non-MSME vendors, or '' for all. */
+  function selectMsme(next) {
+    setMsme(next);
+    setPage(1);
+  }
+
   /** Show one half of Total GRNS, or both. */
   function selectMatchFilter(next) {
     setMatchFilter(next);
@@ -902,6 +914,7 @@ export default function Results() {
       await exportSection(batchId, exportSheets, {
         q,
         location,
+        msme,
         spans,
         accountsView: status === VALID ? accountsView : undefined,
       });
@@ -1324,6 +1337,10 @@ export default function Results() {
 
       <div className="toolbar">
         <div className="toolbar__actions">
+          {/* MSME or Non-MSME vendors, on every view -- first, ahead of the
+              view's own dropdown, since it narrows the whole page (cards,
+              rows and export) where that one narrows the table. */}
+          <MsmeFilter value={msme} onChange={selectMsme} />
           {/* One dropdown, three questions -- whichever the view underneath
               can answer. Total GRNS is the mixed list, so there it asks which
               half; Accounts is already one bucket and the open question there
@@ -1486,6 +1503,7 @@ export default function Results() {
           batchId={batchId}
           q={q}
           location={location}
+          msme={msme}
           dept={dept}
           register={register}
           onDepartments={setDepartments}
@@ -1495,6 +1513,7 @@ export default function Results() {
           batchId={batchId}
           q={q}
           location={location}
+          msme={msme}
           spans={spans}
           onSpansChange={setSpans}
         />

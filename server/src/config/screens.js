@@ -61,6 +61,15 @@ export const SCREENS = [
     hint: 'Every upload and its files. Deleting them stays with administrators.',
   },
   {
+    // The HIS vendor master against the Accounts vendor list. Its own grant
+    // and its own dropdown in the sidebar: it reads neither report the GRN
+    // screens do, so holding it says nothing about them, or they about it.
+    // Deleting a run stays administrator-only, as deleting an upload does.
+    key: 'msme-reco',
+    label: 'HIS vs FOCUS Reco',
+    hint: 'HIS vendor master against the FOCUS (Accounts) vendor list: PAN, GST, drug licence, MSME and bank details.',
+  },
+  {
     // Account management. A standard user given this can create and edit
     // standard accounts, but cannot create, change or delete an administrator
     // -- see the guards in routes/users.js.

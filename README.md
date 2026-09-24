@@ -92,13 +92,19 @@ out access can never be locked out of a screen by the list it edits.
 
 ### Screen access
 
-Three screens can be granted, keyed by the route they guard:
+These screens can be granted, each keyed by the route it guards:
 
 | Key | Screen |
 | --- | --- |
-| `upload` | New reconciliation |
-| `results` | Reconciliation results, including the GRNS SPAN tab |
+| `upload` | New uploads |
+| `results` | Results, including the GRNS SPAN tab |
+| `accounts-department` | Accounts Department |
 | `csd` | CS Department |
+| `config` | Configuration |
+| `uploads` | Uploaded files |
+| `msme-reco` | HIS vs FOCUS Reco (see [HIS vs FOCUS Reco](#his-vs-focus-reco)) |
+| `users` | User management |
+| `logs` | Activity logs |
 
 The list lives in `server/src/config/screens.js` and is sent down with the accounts, so the tick
 boxes on the screen and the validation on the way back are one list rather than two that can drift.
@@ -345,6 +351,130 @@ That looks like a question for whoever owns the ageing report rather than someth
   Accounts** column in the existing exports is unaffected: it is marked as a date column, so it
   still renders `dd-MM-yyyy` rather than the ISO form Postgres now returns.
 - `Cheque_ClearanceDate` is stored but not reported on; a cheque → clearance stage is one line away.
+
+---
+
+## HIS vs FOCUS Reco
+
+**HIS vs FOCUS Reco** sits under its own dropdown in the sidebar, **Vendor Reco**, and has its own
+screen grant. It compares the HIS vendor master with the FOCUS (Accounts) vendor list and shows,
+vendor by vendor, where the two disagree.
+
+It started out as the "MSME reco". That name is still used for the route (`/msme-reco`), the screen
+key (`msme-reco`), the API (`/api/msme-reco`) and the tables (`msme_reco_*`). Renaming those would
+change a URL and a stored grant for no visible gain.
+
+- **`00. VendorMasterReport from HIS`**: the vendor master. The workbook has an **All** sheet
+  (every vendor, inactive ones included) and an **Active** sheet. **Active** is read when the
+  workbook has one; otherwise the first sheet with the header is. The screen names the sheet it read.
+- **`02. 010Account`**: the Accounts vendor list. Its header is on row 4, under a title, a group
+  band and a row of internal names. The parser finds it by the column names.
+
+Upload both files with **New reco**. Each run is stored, so the screen opens on the latest one
+and earlier runs stay in the **Reco** selector. Only an administrator can delete a run.
+
+### How the matching works
+
+Vendors are matched on **vendor code**: `VENDOR_CODE` in the vendor master, `Code` in Accounts. The
+match is exact after trimming, folding repeated spaces to one, and upper-casing. Ignoring
+separators (as the GRN matching does) found no extra matches in the sample files, and it would have
+merged 16 pairs of different Accounts codes.
+
+For every matched vendor, these pairs are compared:
+
+| Field | Vendor master | Accounts | Compared as |
+|---|---|---|---|
+| Vendor Name | `VENDOR_NAME` | `Name` | name |
+| PAN No | `PAN_NO` | `PAN No` | identifier |
+| GST No | `GST_NUMBER` | `GSTIN` | identifier |
+| Drug Licence No | `DRUG_LICENCE_NO` | `Drug Licence No` | identifier |
+| MSME No | `MSME_NUMBER` | `MSME Reg No` | identifier |
+| MSME Type | `ENTERPRISE_TYPE` | `MSME Type` | identifier |
+| MSME Activity | `ENTERPRISE_ACTIVITY` | `MSME Activity` | identifier |
+| Bank Account No | `BANK_ACCOUNT_NO` | `Bank Account Number` | account |
+| IFSC | `IFSC` | `Bank IFSC Code` | identifier |
+| Payee Name | `PAYEE_NAME` | `Bank Account Name` | name |
+
+- **Identifier:** case, spaces and separators are ignored, so `AICP L8904E` equals `AICPL8904E`.
+  Every letter and digit must still agree.
+- **Name:** also ignores punctuation, spacing, `&`/`AND`, `PVT`/`PRIVATE`, `LTD`/`LIMITED` and a
+  leading `M/S`. So `S.V.ELECTRONICS` equals `S V ELECTRONICS`, but `DAMANI` and `DAMMANI` are still
+  a mismatch.
+- **Account:** compared like an identifier. If the only difference is leading zeros, the remark says
+  so.
+- **Placeholders** count as blank in every field: dashes or dots, a value made only of zeros, `NA`,
+  `N/A`, `NIL`, `NULL`, `NONE`, `Not Applicable`, and Accounts' own "no number" markers:
+  `Unregistered` in GSTIN, and `PAN Applied` or `No Pan` in PAN. Two blanks agree, so a blank
+  `GST_NUMBER` against `Unregistered` is a match. A value on one side only is reported as
+  *missing in FOCUS* or *missing in HIS*.
+
+> **Payee Name** is compared with Accounts' `Bank Account Name`, not its `Bank Name`. `Bank Name`
+> holds the bank itself ("STATE BANK OF INDIA"). Against `PAYEE_NAME` it matched 0 of the 1,724
+> shared vendors, while `Bank Account Name` matched 1,349. The pairing is one line in `FIELDS` in
+> `server/src/services/msmeReco.js` if it ever needs to change.
+
+**Every HIS vendor is stored**, one row each, with one of three statuses:
+
+| Status | Meaning | Remarks |
+|---|---|---|
+| **Matched** | Code in both files; every field agrees | `All details match` |
+| **Mismatch** | Code in both files; at least one field differs | Every difference, e.g. `PAN No mismatch, MSME No missing in FOCUS` |
+| **Not in FOCUS** | Vendor code not in the FOCUS (Accounts) list | Also names the FOCUS code with the same PAN or GSTIN, when there is one |
+
+On screen, in the Excel file and in the remarks, the Accounts side is called **FOCUS**, the system
+the Accounts list comes from.
+
+**Accounts codes that are not in the HIS vendor master are counted, not stored.** The count is kept
+on the run in `msme_reco_runs`, and the screen shows it in a note under the run selector. These codes
+are most of the Accounts ledger (land, labour and staff accounts, and so on), so storing them would
+mean about 29,000 rows per run with no remark to read. `npm run migrate` removes any such rows left
+over from runs stored before this rule.
+
+If Accounts lists a code more than once, the vendor is compared with the first row and the remark
+says how many there were.
+
+### The screen and the Excel file
+
+The cards pick a view: **HIS vendors** (the default: every vendor master row), **Mismatched**,
+**Matched** and **Not in FOCUS**. Under them, **Mismatches by field** counts each field's
+differences. Press a chip to see only those vendors. The search box looks at the code, name, PAN and
+GSTIN on both sides.
+
+When you scroll sideways, **Vendor Code, Status and the Vendor Name pair** (HIS and FOCUS) stay
+fixed on the left. Warehouse slides under them. On windows narrower than 1280px only Vendor Code
+and Status stay fixed, because four frozen columns would take up most of the table.
+
+The table on screen is laid out like the Excel file: Vendor Code, Warehouse and Status, then each
+field as an HIS column and a FOCUS column under a
+band naming the field, and Remarks last. The header uses the app's own theme, light or dark, like
+every other table. Values that differ are marked in pale red with bold dark-red text.
+
+**Export Excel** downloads one workbook with a sheet for each card, in the cards' order and under
+their names: **HIS vendors**, **Mismatched**, **Matched** and **Not in FOCUS**. A search on screen
+narrows every sheet, and its text goes into the file name. The field chips don't affect the export,
+because applied to every sheet they would leave **Matched** empty. On each sheet, each field is a
+pair of columns headed with the source files' own column names (`PAN_NO (HIS)`, `PAN No (FOCUS)`)
+under a band naming the field, and **Remarks** is the last column. The sheets are plain: bold
+headers, frozen above the data, and no colours. The Remarks column says what differs.
+
+### Sample files (September 2026)
+
+| | Vendors | Stored |
+|---|---:|:---:|
+| HIS vendors (Active sheet) | 1,897 | |
+| — In both files, all details match | 580 | yes |
+| — In both files, details differ | 1,144 | yes |
+| — Not in FOCUS | 173 | yes (72 of them name a FOCUS code with the same PAN or GSTIN) |
+| Accounts codes not in HIS | 28,822 | count only |
+
+A run of these files stores 1,897 rows, one per HIS vendor.
+
+```bash
+npm run check-msme
+```
+
+This reads both sample files from the project root and checks those counts, including the number of
+rows a run stores, without the database.
 
 ---
 

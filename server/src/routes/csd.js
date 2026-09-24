@@ -15,6 +15,7 @@ import { normKey } from '../services/normalize.js';
 import { branchFor } from '../config/screens.js';
 import { branchScope, branchPick, branchAccountNo } from '../services/branchScope.js';
 import { logActivity } from '../services/activityLog.js';
+import { msmeFields, msmeFilter, vendorMsmeNo } from '../services/vendorMsme.js';
 
 export const csdRouter = express.Router();
 
@@ -177,6 +178,7 @@ const dispatchSelect = (extra = '') => `
          c.net_amt, c.adj_pur_return, c.adjusted_jv, c.tds_jv, c.payable_amount,
          c.cheque_no, c.chq_date, c.payment_doc_no,
          ${BRANCH_ACCOUNT_NO} AS account_no,
+         ${vendorMsmeNo('c.vendor_code')} AS vendor_msme_no,
          c.status, c.discrepancy_notes,
          c.batch_id, c.sent_at,
          c.stage, c.stage_at, c.received_at, c.approved_at, c.rejected_at,
@@ -217,6 +219,9 @@ function mapDispatch(r) {
     billDate: r.bill_date,
     vendorCode: r.vendor_code,
     vendorName: r.vendor_name,
+    // The vendor's MSME No and MSME Status, read live off the HIS vendor master
+    // rather than copied onto the handover -- see services/vendorMsme.js.
+    ...msmeFields(r.vendor_msme_no),
     location: r.location,
     ageingGrnNo: r.ageing_grn_no,
     netAmt: r.net_amt,
@@ -340,12 +345,15 @@ const LOCATION_FILTER = branchPick({ divisionCode: 'c.division_code', location: 
  * The account's own branch grant, then the dropdown's choice within it. Same
  * pair and same reasoning as branchClauses on the results router: the first is
  * read off the signed-in user and cannot be widened by anything the browser
- * sends, and null for an administrator.
+ * sends, and null for an administrator. The MSME dropdown rides along as a
+ * third, like Location a scope the cards count inside -- see branchClauses on
+ * the results router.
  */
 function branchClauses(req, params) {
   return [
     LOCATION_FILTER(branchFor(req.user), params),
     LOCATION_FILTER(req.query.location, params),
+    msmeFilter(req.query.msme, 'c.vendor_code'),
   ];
 }
 

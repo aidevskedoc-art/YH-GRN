@@ -22,6 +22,7 @@ export const CATEGORIES = [
   { key: 'DATES', label: 'Date corrections' },
   { key: 'USERS', label: 'Users' },
   { key: 'CONFIG', label: 'Configuration' },
+  { key: 'MSME', label: 'HIS vs FOCUS Reco' },
 ];
 
 /**
@@ -48,14 +49,23 @@ export const ACTIONS = {
   BRANCH_CREATE: { label: 'Added branch', category: 'CONFIG' },
   BRANCH_UPDATE: { label: 'Updated branch', category: 'CONFIG' },
   BRANCH_DELETE: { label: 'Deleted branch', category: 'CONFIG' },
+  MSME_RECO_RUN: { label: 'Ran HIS vs FOCUS reco', category: 'MSME' },
+  MSME_RECO_DELETE: { label: 'Deleted HIS vs FOCUS reco', category: 'MSME' },
 };
 
 /**
  * The deletions the Activity logs screen's Deleted card gathers: uploads and
- * their files, accounts and branches -- each logged with a full record of what
- * was removed. CSD deletions are logged too but are not part of this view.
+ * their files, HIS vs FOCUS reco runs, accounts and branches -- each logged with a
+ * full record of what was removed. CSD deletions are logged too but are not
+ * part of this view.
  */
-export const DELETE_ACTIONS = ['UPLOAD_DELETE', 'UPLOAD_FILE_DELETE', 'USER_DELETE', 'BRANCH_DELETE'];
+export const DELETE_ACTIONS = [
+  'UPLOAD_DELETE',
+  'UPLOAD_FILE_DELETE',
+  'MSME_RECO_DELETE',
+  'USER_DELETE',
+  'BRANCH_DELETE',
+];
 
 /**
  * Record one action by the signed-in user on `req`.

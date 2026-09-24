@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import Sheet from './Sheet.jsx';
 import { chequePrepared } from '../services/cheque.js';
 import { useConfirm } from './ConfirmDialog.jsx';
+import MsmeCells from './MsmeCells.jsx';
 import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, canHandToCsd } from '../services/resultsViews.js';
 
 const currency = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -873,6 +874,7 @@ export default function ResultsTable({
     (isAll ? 1 : 0) + // Match
     (showGrnSide ? 1 : 0) + // Warehouse
     4 + // Division, GRN No (Cheque No on Cheque view), Vendor, Vendor Code
+    2 + // MSME No, MSME Status
     (showGrnDetail ? 3 : 0) + // GRN Date, Bill No, Bill Date
     // Bill.Amount, Transport Amount, Total Amount, Add.Amount, Ded.Amount
     (showGrnSide ? 5 : 0) +
@@ -1213,6 +1215,12 @@ export default function ResultsTable({
                 down the column or lined up against the row above it, which is
                 the whole reason for having it beside the name. */}
             <th>Vendor Code</th>
+            {/* The vendor's MSME registration, off the HIS vendor master the
+                latest HIS vs FOCUS Reco run read -- see MsmeCells. On every
+                layout, the Cheque view's included: it is a question about the
+                vendor, and every layout has one. */}
+            <th>MSME No</th>
+            <th>MSME Status</th>
             {/* The GRN report's own amount breakdown, in its source order --
                 Bill.Amount and Transport Amount make up Total Amount, and
                 Add.Amount / Ded.Amount adjust it further. A Pending row is
@@ -1318,6 +1326,7 @@ export default function ResultsTable({
               <td className="table__mono">
                 {row.vendorCode || <span className="table__miss">&mdash;</span>}
               </td>
+              <MsmeCells row={row} />
               {showGrnSide && <td className="table__num">{formatAmountOrDash(row.billAmount)}</td>}
               {showGrnSide && (
                 <td className="table__num">{formatAmountOrDash(row.transportAmount)}</td>

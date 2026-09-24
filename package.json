@@ -7,6 +7,7 @@
     "install:all": "npm --prefix server install && npm --prefix client install",
     "migrate": "npm --prefix server run migrate",
     "check-parse": "npm --prefix server run check-parse",
+    "check-msme": "npm --prefix server run check-msme",
     "dev:server": "npm --prefix server run dev",
     "dev:client": "npm --prefix client run dev",
     "build": "npm --prefix client run build",

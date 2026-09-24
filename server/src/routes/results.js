@@ -14,6 +14,7 @@ import {
 } from '../services/branchScope.js';
 import { branchFor } from '../config/screens.js';
 import { logActivity } from '../services/activityLog.js';
+import { msmeFields, msmeFilter, vendorMsmeNo } from '../services/vendorMsme.js';
 
 export const resultsRouter = express.Router();
 
@@ -130,11 +131,18 @@ const LOCATION_FILTER = branchPick({ divisionCode: 'a.division_code', location: 
  *
  * `branchFor` returns null for an administrator, so the first clause simply
  * vanishes for them. See config/screens.js.
+ *
+ * The MSME dropdown rides along as a third clause. It is not a branch, but it
+ * is the same kind of thing as the Location dropdown -- a scope the whole page
+ * is looked at through -- and every query that must follow Location must follow
+ * it too: the rows, the cards, the desk and cheque counts, the turnaround
+ * statistics and the export. Carried here, it cannot be left off one of them.
  */
 function branchClauses(req, params) {
   return [
     LOCATION_FILTER(branchFor(req.user), params),
     LOCATION_FILTER(req.query.location, params),
+    msmeFilter(req.query.msme, 'g.vendor_code'),
   ];
 }
 
@@ -157,6 +165,12 @@ const BRANCH_DIVISION_CODE = branchDivisionCode({
   divisionCode: 'a.division_code',
   location: 'g.location',
 });
+
+/**
+ * The GRN's vendor's MSME number off the HIS vendor master -- see
+ * services/vendorMsme.js, which every GRN table's route shares.
+ */
+const VENDOR_MSME_NO = vendorMsmeNo('g.vendor_code');
 
 /**
  * The columns the search box looks in: the three a transaction is looked up by,
@@ -488,7 +502,12 @@ const resultJoins = (scope) => `
   ${CHEQUE_MATCH}
 `;
 
-const rowSelect = (scope) => `${ROW_COLUMNS} ${resultJoins(scope)} ${PRIOR_REJECTION_JOIN}`;
+// The vendor's MSME number rides on this select and not on ROW_COLUMNS, which
+// the Cheque view also builds on: that one reads every row before it folds
+// them into cheques, so it looks the vendor up afterwards, once per cheque
+// listed -- see chequeRows.
+const rowSelect = (scope) =>
+  `${ROW_COLUMNS}, ${VENDOR_MSME_NO} AS vendor_msme_no ${resultJoins(scope)} ${PRIOR_REJECTION_JOIN}`;
 
 function mapRow(r) {
   return {
@@ -520,6 +539,8 @@ function mapRow(r) {
     // not the ageing report's own DivisionCode above, which is null on a
     // Pending row. Null when no configured branch claims the row's Location.
     branchDivisionCode: r.branch_division_code ?? null,
+    // The vendor's MSME No and MSME Status -- see services/vendorMsme.js.
+    ...msmeFields(r.vendor_msme_no),
     netAmt: r.net_amt,
     adjPurReturn: r.adj_pur_return,
     adjustedJv: r.adjusted_jv,
@@ -887,8 +908,11 @@ async function chequeRows(
   );
   const total = countRows[0].total;
 
+  // The vendor's MSME number on the outer select, after the fold: it is the
+  // representative bill's vendor, and asked here it is looked up once per
+  // cheque listed rather than once per bill read.
   const { rows } = await query(
-    `SELECT z.* FROM (
+    `SELECT z.*, ${vendorMsmeNo('z.vendor_code')} AS vendor_msme_no FROM (
        SELECT q.*,
               SUM(q.payable_amount) OVER (PARTITION BY q.cheque_no) AS cheque_amount,
               (COUNT(*) OVER (PARTITION BY q.cheque_no))::int AS cheque_grn_count,
@@ -1370,10 +1394,12 @@ const BPAD_BRANCH_SCOPE = branchScope(BPAD_BRANCH_COLUMNS);
 const BPAD_LOCATION_FILTER = branchPick(BPAD_BRANCH_COLUMNS);
 const BPAD_BRANCH_DIVISION_CODE = branchDivisionCode(BPAD_BRANCH_COLUMNS);
 
+/** As branchClauses, MSME dropdown included, read off the register row's vendor. */
 function bpadBranchClauses(req, params) {
   return [
     BPAD_LOCATION_FILTER(branchFor(req.user), params),
     BPAD_LOCATION_FILTER(req.query.location, params),
+    msmeFilter(req.query.msme, 'b.vendor_code'),
   ];
 }
 
@@ -1490,14 +1516,15 @@ const BPAD_AGEING_SQL = `
 const BPAD_COLUMNS_SQL = `
   SELECT b.id, b.in_register,
          b.sl_no, b.location, b.warehouse,
-         b.vendor_code, b.vendor_name, b.vendor_category,
+         b.vendor_code, b.vendor_name,
          b.inv_no, b.inv_date,
          b.grn_no, b.grn_date, b.grn_amount,
          b.po_number, b.po_date,
          b.pending_with_dept, b.bpad_received_date, b.accounts_received_date,
          b.pending_with_user, b.pend_reason,
          ${BPAD_AGEING_SQL} AS ageing,
-         ${BPAD_BRANCH_DIVISION_CODE} AS branch_division_code
+         ${BPAD_BRANCH_DIVISION_CODE} AS branch_division_code,
+         ${vendorMsmeNo('b.vendor_code')} AS vendor_msme_no
 `;
 
 /**
@@ -1576,7 +1603,9 @@ function mapBpadRow(r) {
     warehouse: r.warehouse,
     vendorCode: r.vendor_code,
     vendorName: r.vendor_name,
-    vendorCategory: r.vendor_category,
+    // The vendor's MSME No and MSME Status -- see services/vendorMsme.js. The
+    // register's vendor codes are HIS's, the same as the GRN report's.
+    ...msmeFields(r.vendor_msme_no),
     invNo: r.inv_no,
     invDate: r.inv_date,
     grnNo: r.grn_no,
@@ -1844,7 +1873,8 @@ const TURNAROUND_COLUMNS = `
          a.bill_to_audit, a.bill_handover_to_acc, a.chq_date,
          a.cheque_no, a.payment_doc_no,
          ${CHEQUE_COLUMNS},
-         ${CSD_DATES}
+         ${CSD_DATES},
+         ${VENDOR_MSME_NO} AS vendor_msme_no
 `;
 
 const turnaroundSelect = (scope) => `
@@ -1889,6 +1919,8 @@ function mapTurnaroundRow(r) {
     divisionCode: r.division_code,
     vendorName: r.vendor_name,
     vendorCode: r.vendor_code,
+    // The vendor's MSME No and MSME Status -- see services/vendorMsme.js.
+    ...msmeFields(r.vendor_msme_no),
     location: r.location,
     // The GRN report's own amount breakdown, ahead of PayableAmount -- the
     // ageing report's own figure, which they add up to on the stores' side.

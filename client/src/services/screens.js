@@ -19,6 +19,9 @@ export const SCREEN_ROUTES = {
   'accounts-department': '/accounts-department',
   config: '/config',
   uploads: '/uploads',
+  // After the GRN screens, as it is in the sidebar: an account holding both
+  // lands on a GRN screen, and one holding only this lands here.
+  'msme-reco': '/msme-reco',
   logs: '/logs',
   users: '/users',
 };
@@ -31,6 +34,7 @@ export const SCREEN_LABELS = {
   csd: 'CS Department',
   config: 'Configuration',
   uploads: 'Uploaded files',
+  'msme-reco': 'HIS vs FOCUS Reco',
   users: 'User management',
   logs: 'Activity logs',
 };

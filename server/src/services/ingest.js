@@ -13,8 +13,11 @@ const CHUNK_SIZE = 500;
 /**
  * Insert `rows` into `table`, `CHUNK_SIZE` at a time, returning the new ids in
  * input order.
+ *
+ * Exported for the MSME reco's rows (routes/msmeReco.js), which are stored
+ * the same way but are not part of a batch.
  */
-async function bulkInsert(client, table, columns, rows, toValues) {
+export async function bulkInsert(client, table, columns, rows, toValues) {
   const ids = [];
 
   for (let start = 0; start < rows.length; start += CHUNK_SIZE) {
@@ -219,7 +222,7 @@ const BANK_COLUMNS = [
  */
 const BPAD_COLUMNS = [
   'batch_id', 'source_row_no', 'sl_no', 'location', 'warehouse',
-  'vendor_code', 'vendor_code_key', 'vendor_name', 'vendor_category',
+  'vendor_code', 'vendor_code_key', 'vendor_name',
   'inv_no', 'inv_date', 'grn_no', 'grn_no_key', 'grn_date', 'grn_amount',
   'po_number', 'po_date', 'pending_with_dept',
   'bpad_received_date', 'accounts_received_date',
@@ -426,7 +429,7 @@ export function saveBatch({
       await clearBpadRecordsFor(client, bpadRows);
       await bulkInsert(client, 'bpad_records', BPAD_COLUMNS, bpadRows, (r) => [
         batchId, r.sourceRowNo, r.slNo, r.location, r.warehouse,
-        r.vendorCode, r.vendorCodeKey, r.vendorName, r.vendorCategory,
+        r.vendorCode, r.vendorCodeKey, r.vendorName,
         r.invNo, r.invDate, r.grnNo, r.grnNoKey, r.grnDate, r.grnAmount,
         r.poNumber, r.poDate, r.pendingWithDept,
         r.bpadReceivedDate, r.accountsReceivedDate,

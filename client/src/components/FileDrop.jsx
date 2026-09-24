@@ -96,12 +96,18 @@ export default function FileDrop({
         onDragOver={(e) => e.preventDefault()}
         onDrop={() => setDepth(0)}
       >
+        {/* The title is the whole of what the box may be cutting short: on a
+            short window the upload page steps its boxes down to a one-line
+            hint (see the dropslot container rules in styles.css), and a long
+            filename is always ellipsed. The input is what the pointer rests
+            on, so the tooltip goes here. */}
         <input
           ref={inputRef}
           className="drop__input"
           type="file"
           accept={accept}
           aria-label={label}
+          title={file ? file.name : hint}
           onChange={(e) => take(e.target.files?.[0] || null)}
         />
 

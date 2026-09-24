@@ -27,6 +27,7 @@ import {
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
+import MsmeFilter from '../components/MsmeFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import { IconX } from '../components/icons.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
@@ -148,6 +149,9 @@ export default function AccountsDepartment() {
   // counts and the export -- because it is a scope rather than a question
   // about a row, and it survives moving between the two views.
   const [location, setLocation] = useState('');
+  // 'MSME', 'NON_MSME', or '' for every vendor -- the MSME dropdown, a scope
+  // like Location. See MsmeFilter.jsx.
+  const [msme, setMsme] = useState('');
   // Which stretches of the process the ageing view measures -- `{ from, to }`
   // pairs of checkpoints, empty for every stage. It lives here rather than in
   // the view because the Export button lives here too, and a file that carried
@@ -206,10 +210,10 @@ export default function AccountsDepartment() {
 
   useEffect(() => {
     api
-      .summary(batchId, { q, location })
+      .summary(batchId, { q, location, msme })
       .then(({ summary: s }) => setSummary(s))
       .catch((err) => setError(err.message));
-  }, [batchId, q, location]);
+  }, [batchId, q, location, msme]);
 
   const loadRows = useCallback(() => {
     // The ageing view is not a reconciliation status -- /results would reject
@@ -224,12 +228,13 @@ export default function AccountsDepartment() {
         q,
         progress,
         location,
+        msme,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
       })
       .then(setData)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [batchId, status, page, pageSize, q, progress, location, byCheque]);
+  }, [batchId, status, page, pageSize, q, progress, location, msme, byCheque]);
 
   useEffect(loadRows, [loadRows]);
 
@@ -239,7 +244,7 @@ export default function AccountsDepartment() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [batchId, status, page, pageSize, q, progress, location, accountsView]);
+  }, [batchId, status, page, pageSize, q, progress, location, msme, accountsView]);
 
   /*
    * The three things "Select multiple" can batch, mirroring the row's own
@@ -422,6 +427,12 @@ export default function AccountsDepartment() {
   }
 
   /** Narrow every figure on the page to one branch, or '' for all of them. */
+  /** Narrow every figure on the page to MSME or Non-MSME vendors, or '' for all. */
+  function selectMsme(next) {
+    setMsme(next);
+    setPage(1);
+  }
+
   function selectLocation(next) {
     setLocation(next);
     // Page 7 of one branch is rarely a page of another.
@@ -499,6 +510,7 @@ export default function AccountsDepartment() {
       await exportSection(batchId, exportSheets, {
         q,
         location,
+        msme,
         spans,
         accountsView: status === VALID ? accountsView : undefined,
       });
@@ -559,7 +571,6 @@ export default function AccountsDepartment() {
           {status === VALID && <ViewModeRadios value={accountsView} onChange={selectAccountsView} />}
 
           <LocationFilter value={location} onChange={selectLocation} />
-
           {/* The view showing, as one workbook -- see handleExport. Beside
               the View dropdown because that is what it follows. The toolbar's
               filters still do not narrow it: each sheet carries its own
@@ -689,6 +700,9 @@ export default function AccountsDepartment() {
 
       <div className="toolbar">
         <div className="toolbar__actions">
+          {/* MSME or Non-MSME vendors -- first, ahead of the Status dropdown,
+              since it narrows the whole page (cards, rows and export). */}
+          <MsmeFilter value={msme} onChange={selectMsme} />
           {/* How far through CSD the rows have got -- the open question on both
               views, since every row either screen shows here has an ageing
               entry. Choosing a value on the ageing view takes the table to
@@ -791,6 +805,7 @@ export default function AccountsDepartment() {
           batchId={batchId}
           q={q}
           location={location}
+          msme={msme}
           spans={spans}
           onSpansChange={setSpans}
         />

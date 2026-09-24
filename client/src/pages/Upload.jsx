@@ -72,19 +72,22 @@ export default function Upload() {
   }
 
   return (
-    <>
-      {/* The shell's top bar already names the page, so this is the lead only. */}
-      <div className="page__head">
-        <p className="page__lead">
-          {/* Upload the GRN report, the Vendor Ageing report, or both -- either works on its own. Every
-          GRN transaction is matched against the ageing report by its GRN number to work out which have
-          reached the accounts department and which are still pending: without the ageing report every
-          GRN shows as pending, and without the GRN report the ageing rows are stored with nothing yet to
-          reconcile them against. The bank statement is optional too: only its transaction table is read,
-          and it is stored rather than reconciled. */}
-        </p>
-      </div>
+    /* The whole page on one screen -- see .upload-page in styles.css: the card
+       is held to the window's height and the drop boxes give way inside it, so
+       the button is never below the fold.
 
+       The top bar already names the page, and the lead paragraph that used to
+       sit here was left empty, so there is no head row: an empty one was 22px
+       of margin that the drop boxes can use. Its text, kept for whenever a
+       lead comes back: Upload the GRN report, the Vendor Ageing report, or both
+       -- either works on its own. Every GRN transaction is matched against the
+       ageing report by its GRN number to work out which have reached the
+       accounts department and which are still pending: without the ageing
+       report every GRN shows as pending, and without the GRN report the ageing
+       rows are stored with nothing yet to reconcile them against. The bank
+       statement is optional too: only its transaction table is read, and it
+       is stored rather than reconciled. */
+    <div className="upload-page">
       <form className="card upload" onSubmit={handleSubmit}>
         <div className="upload__rule">
           <span>The reports</span>
@@ -194,6 +197,6 @@ export default function Upload() {
           </div>
         )}
       </form>
-    </>
+    </div>
   );
 }
