@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
 import { exportLogs } from '../services/exporter.js';
+import { singlePress } from '../services/press.js';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 
 /** Matches the other screens' search boxes. */
@@ -28,6 +29,7 @@ const CATEGORY_TONES = {
   USERS: { stat: 'dept', pill: 'admin' },
   CONFIG: { stat: 'missing', pill: 'diff' },
   MSME: { stat: 'bpad', pill: 'diff' },
+  VENDOR_MASTER: { stat: 'moved_to_accounts', pill: 'moved_to_accounts' },
 };
 
 /** dd/MM/yyyy HH:mm from a timestamp, in the browser's own zone. */
@@ -156,7 +158,7 @@ export default function Logs() {
 
   useEffect(load, [load]);
 
-  /** A category card toggles its filter, as the CSD stage cards do. */
+  /** A category card toggles its filter; pressing the chosen one again clears it. */
   function toggleCategory(key) {
     setCategory((current) => (current === key ? '' : key));
   }
@@ -248,7 +250,7 @@ export default function Logs() {
           <button
             type="button"
             className={`card stat stat--rejected ${deleted ? 'is-active' : ''}`}
-            onClick={() => setDeleted((v) => !v)}
+            onClick={singlePress(() => setDeleted((v) => !v))}
             aria-pressed={deleted}
             title={
               deleted
@@ -267,7 +269,7 @@ export default function Logs() {
               className={`card stat stat--${CATEGORY_TONES[c.key]?.stat ?? 'dept'} ${
                 category === c.key ? 'is-active' : ''
               }`}
-              onClick={() => toggleCategory(c.key)}
+              onClick={singlePress(() => toggleCategory(c.key))}
               aria-pressed={category === c.key}
               title={
                 category === c.key ? `Showing ${c.label} only — press again for everything` : `Show only ${c.label}`

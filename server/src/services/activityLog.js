@@ -23,6 +23,7 @@ export const CATEGORIES = [
   { key: 'USERS', label: 'Users' },
   { key: 'CONFIG', label: 'Configuration' },
   { key: 'MSME', label: 'HIS vs FOCUS Reco' },
+  { key: 'VENDOR_MASTER', label: 'Vendor Master' },
 ];
 
 /**
@@ -31,6 +32,8 @@ export const CATEGORIES = [
  */
 export const ACTIONS = {
   UPLOAD: { label: 'Uploaded reports', category: 'UPLOAD' },
+  // No longer written -- uploads and their files cannot be deleted now -- but
+  // kept so the entries logged while they could still read as what they were.
   UPLOAD_DELETE: { label: 'Deleted upload', category: 'UPLOAD' },
   UPLOAD_FILE_DELETE: { label: 'Deleted uploaded file', category: 'UPLOAD' },
   CSD_SEND: { label: 'Sent to CSD', category: 'CSD' },
@@ -50,7 +53,14 @@ export const ACTIONS = {
   BRANCH_UPDATE: { label: 'Updated branch', category: 'CONFIG' },
   BRANCH_DELETE: { label: 'Deleted branch', category: 'CONFIG' },
   MSME_RECO_RUN: { label: 'Ran HIS vs FOCUS reco', category: 'MSME' },
+  // No longer written -- a reco run cannot be deleted now -- but kept so the
+  // entries logged while it could still read as what they were.
   MSME_RECO_DELETE: { label: 'Deleted HIS vs FOCUS reco', category: 'MSME' },
+  // Supply Type or Inter picked on the Vendor Master screen.
+  VENDOR_UPDATE: { label: 'Updated vendor', category: 'VENDOR_MASTER' },
+  // No longer written -- VENDOR_UPDATE covers Supply Type now, with Inter --
+  // but kept so the entries logged before it read as what they were.
+  VENDOR_SUPPLY_TYPE: { label: 'Set vendor supply type', category: 'VENDOR_MASTER' },
 };
 
 /**

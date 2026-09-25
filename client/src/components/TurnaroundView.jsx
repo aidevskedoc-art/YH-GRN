@@ -5,7 +5,7 @@ import { formatAmount, formatAmountOrDash, formatDate } from './ResultsTable.jsx
 import SpanPicker from './SpanPicker.jsx';
 import { CHECKPOINTS, spanDays, spanId, spanLabel, stageLabel, totalDays } from '../services/stages.js';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
-import MsmeCells from './MsmeCells.jsx';
+import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
 
 const int = (n) => (n === null || n === undefined ? '' : Number(n).toLocaleString('en-IN'));
 
@@ -192,10 +192,11 @@ export default function TurnaroundView({ batchId, q, location, msme, spans = [],
   // Thirteen fixed columns, a day count per stage or span, the row total where
   // there is one, then the dates -- the same width the two header rows span
   // between them.
-  // Fifteen Particulars: the thirteen identifiers and amounts, and MSME No and
-  // MSME Status beside the vendor.
+  // The Particulars: the thirteen identifiers and amounts, and the Vendor
+  // Master's four beside the vendor (MSME No, MSME Status, Inter, Supply Type).
+  const particulars = 13 + VENDOR_CELL_COUNT;
   const columnCount =
-    15 + dayColumns.length + (custom ? 0 : 1) + dateColumns.length + (isAdmin ? 1 : 0);
+    particulars + dayColumns.length + (custom ? 0 : 1) + dateColumns.length + (isAdmin ? 1 : 0);
 
   // An upload made before the stage dates were captured has rows but no dates.
   // Guarded on isEmpty: with nothing in scope every stage is empty too, and
@@ -249,7 +250,7 @@ export default function TurnaroundView({ batchId, q, location, msme, spans = [],
         <table className="table">
           <thead>
             <tr>
-              <th className="table__group" colSpan="15">Particulars</th>
+              <th className="table__group" colSpan={particulars}>Particulars</th>
               <th className="table__group" colSpan={dayColumns.length + (custom ? 0 : 1)}>
                 Days taken
               </th>
@@ -277,10 +278,13 @@ export default function TurnaroundView({ batchId, q, location, msme, spans = [],
                   results and CSD tables column for column so the three
                   screens read the same way. */}
               <th>Vendor Code</th>
-              {/* The vendor's MSME registration off the HIS vendor master, as
-                  on every GRN table -- see MsmeCells. */}
+              {/* The vendor's details off the Vendor Master -- its MSME
+                  registration, and the Inter and Supply Type picked there -- as
+                  on every GRN table. See VendorCells. */}
               <th>MSME No</th>
               <th>MSME Status</th>
+              <th>Inter</th>
+              <th>Supply Type</th>
               {/* The ageing report's own amount breakdown, ahead of
                   PayableAmount -- the same four columns and the same order as
                   the CSD and Valid GRNs tabs. */}
@@ -347,7 +351,7 @@ export default function TurnaroundView({ batchId, q, location, msme, spans = [],
                 <td className="table__mono">
                   {row.vendorCode || <span className="table__miss">&mdash;</span>}
                 </td>
-                <MsmeCells row={row} />
+                <VendorCells row={row} />
                 <td className="table__num">{formatAmountOrDash(row.netAmt)}</td>
                 <td className="table__num">{formatAmountOrDash(row.adjPurReturn)}</td>
                 <td className="table__num">{formatAmountOrDash(row.adjustedJv)}</td>

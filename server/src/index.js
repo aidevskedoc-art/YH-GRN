@@ -12,7 +12,9 @@ import { csdRouter } from './routes/csd.js';
 import { configRouter } from './routes/config.js';
 import { logsRouter } from './routes/logs.js';
 import { msmeRecoRouter } from './routes/msmeReco.js';
+import { vendorMasterRouter } from './routes/vendorMaster.js';
 import { purgeOldLogs } from './services/activityLog.js';
+import { applyPendingVendorMasters } from './services/vendorMaster.js';
 import { errorHandler } from './middleware/error.js';
 
 const app = express();
@@ -58,6 +60,9 @@ app.use('/api/logs', logsRouter);
 // The HIS vendor master against the Accounts vendor list. Its own resource:
 // it reads neither GRN report and belongs to no batch.
 app.use('/api/msme-reco', msmeRecoRouter);
+// Every HIS vendor with its latest details. Read-only: each reco run above
+// adds its new vendors and updates the rest.
+app.use('/api/vendor-master', vendorMasterRouter);
 
 // Serve the built client if it exists, so `npm start` alone runs the whole app.
 const clientDist = path.join(config.rootDir, 'client', 'dist');
@@ -83,6 +88,15 @@ const server = app.listen(config.port, () => {
 const DAY_MS = 24 * 60 * 60 * 1000;
 purgeOldLogs();
 setInterval(purgeOldLogs, DAY_MS).unref();
+
+// A reco stored without reaching the Vendor Master -- by a server still running
+// older code after the migration -- is applied now rather than at the next
+// reco. Never fatal: the screens work without it.
+applyPendingVendorMasters()
+  .then((applied) => {
+    if (applied > 0) console.log(`Vendor Master: applied ${applied} earlier reco run(s).`);
+  })
+  .catch((err) => console.error('Vendor Master: could not apply earlier reco runs:', err.message));
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {

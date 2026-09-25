@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
 import { formatAmountOrDash, formatDate } from './ResultsTable.jsx';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
-import MsmeCells from './MsmeCells.jsx';
+import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
 
 /**
  * Where every GRN in this upload stands in the BPAD register.
@@ -127,11 +127,14 @@ export default function BpadView({ batchId, q, location, msme, dept, register, o
               <th>WareHouse</th>
               <th>Vendor Code</th>
               <th>Vendor Name</th>
-              {/* Not the register's own: the vendor's MSME registration off the
-                  HIS vendor master, beside the vendor as on every GRN table --
-                  see MsmeCells. */}
+              {/* Not the register's own: the vendor's details off the Vendor
+                  Master -- its MSME registration, and the Inter and Supply Type
+                  picked there -- beside the vendor as on every GRN table. See
+                  VendorCells. */}
               <th>MSME No</th>
               <th>MSME Status</th>
+              <th>Inter</th>
+              <th>Supply Type</th>
               {/* The register's Vendor Category used to follow. It is no
                   longer read, stored or exported. */}
               <th>Inv.No.</th>
@@ -165,7 +168,7 @@ export default function BpadView({ batchId, q, location, msme, dept, register, o
                 the page from jumping as a search is typed. */}
             {rows.length === 0 && (
               <tr>
-                <td className="table__empty" colSpan={20}>
+                <td className="table__empty" colSpan={18 + VENDOR_CELL_COUNT}>
                   Matches not found
                 </td>
               </tr>
@@ -186,7 +189,7 @@ export default function BpadView({ batchId, q, location, msme, dept, register, o
                 </td>
                 <td>{row.vendorCode}</td>
                 <td>{row.vendorName}</td>
-                <MsmeCells row={row} />
+                <VendorCells row={row} />
                 <td>
                   <Text value={row.invNo} />
                 </td>

@@ -1,8 +1,8 @@
 import express from 'express';
 import multer from 'multer';
 import { config } from '../config/env.js';
-import { query, withTransaction } from '../db/pool.js';
-import { requireAuth, requireAdmin, requireScreen } from '../middleware/auth.js';
+import { query } from '../db/pool.js';
+import { requireAuth, requireScreen } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
 import {
   readGrnReport,
@@ -13,7 +13,7 @@ import {
 } from '../services/excelParser.js';
 import { normKey } from '../services/normalize.js';
 import { reconcile } from '../services/reconcile.js';
-import { saveBatch } from '../services/ingest.js';
+import { saveBatch, lastRowPerGrn } from '../services/ingest.js';
 import { logActivity } from '../services/activityLog.js';
 
 export const batchesRouter = express.Router();
@@ -194,11 +194,13 @@ function bpadRowsForGrns(registerRows, identities) {
 }
 
 /**
- * POST /api/batches - upload one or both reports, reconcile, and store the batch.
+ * POST /api/batches - upload one or more of the four files, store them, and
+ * reconcile what they touched.
  *
- * Behind the upload screen, not the router: GET below is what fills the batch
- * selector on the results page and the count in the sidebar, so an account with
- * results but not uploads still has to be able to list them.
+ * Behind the upload screen, not the router: GET below is what the results and
+ * Accounts screens count uploads with ("N uploads combined", and whether there
+ * is anything to show at all), so an account with results but not uploads
+ * still has to be able to list them.
  */
 batchesRouter.post(
   '/',
@@ -264,6 +266,10 @@ batchesRouter.post(
       }
     }
 
+    // One row per GRN number, as saveBatch will store them, so the BPAD filler
+    // rows and the summary are built from the same row a GRN is stored as.
+    const grnRows = lastRowPerGrn(grn?.rows ?? []);
+
     let bank = null;
     if (bankFile) {
       try {
@@ -280,7 +286,7 @@ batchesRouter.post(
     let bpad = null;
     let bpadRows = [];
     if (bpadFile) {
-      const identities = await grnMatchKeys(grn?.rows ?? []);
+      const identities = await grnMatchKeys(grnRows);
       try {
         bpad = readBpadReport(bpadFile.buffer, {
           keep: (vendorCodeKey, grnNoKey) => identities.has(`${vendorCodeKey}|${grnNoKey}`),
@@ -294,16 +300,18 @@ batchesRouter.post(
       bpadRows = bpadRowsForGrns(bpad.rows, identities);
     }
 
-    const { results, summary } = reconcile(grn?.rows ?? [], ageing?.rows ?? []);
+    // The two files against each other only, for the summary in the response.
+    // What is stored is paired against everything on file -- see linkResults
+    // in services/ingest.js.
+    const { summary } = reconcile(grnRows, ageing?.rows ?? []);
 
-    const { batchId, reopenedRejections } = await saveBatch({
+    const { batchId, reopenedRejections, replaced } = await saveBatch({
       name,
       grnFileName: grnFile?.originalname ?? null,
       ageingFileName: ageingFile?.originalname ?? null,
       userId: req.user.id,
-      grnRows: grn?.rows ?? [],
+      grnRows,
       ageingRows: ageing?.rows ?? [],
-      results,
       bankFileName: bankFile?.originalname ?? null,
       bankRows: bank?.rows ?? [],
       bankAccountNo: bank?.accountNo ?? null,
@@ -328,6 +336,8 @@ batchesRouter.post(
         bpadFile: bpadFile?.originalname ?? null,
         bpadStoredRows: bpadRows.length,
         reopenedRejections,
+        // Rows already stored that this upload replaced -- see saveBatch.
+        replaced,
       },
     });
 
@@ -349,6 +359,9 @@ batchesRouter.post(
       // Worth reporting rather than doing quietly: those GRNs have just
       // changed from rejected to unsent, and somebody has to send them again.
       reopenedRejections,
+      // How many rows already stored this upload replaced, per file, rather
+      // than adding beside them -- see saveBatch in services/ingest.js.
+      replaced,
     });
   }),
 );
@@ -387,270 +400,6 @@ batchesRouter.get(
         uploadedAt: r.uploaded_at,
         uploadedBy: r.uploaded_by,
       })),
-    });
-  }),
-);
-
-/**
- * An upload as it stood, for the activity log's record of deleting it or one of
- * its files: who uploaded it and when, each file it carried with its row count,
- * and how many reconciled results it held. Only the batch's own summary -- the
- * rows themselves (thousands per file) are not copied.
- *
- * `runner` is anything with a `query` method -- the pool, or a transaction's
- * client -- so the file delete can read it inside its own transaction.
- * Returns null when the upload does not exist.
- */
-async function uploadSnapshot(runner, batchId) {
-  const { rows } = await runner.query(
-    `SELECT b.name, b.uploaded_at,
-            b.grn_file_name, b.grn_row_count, b.ageing_file_name, b.ageing_row_count,
-            b.bank_file_name, b.bank_row_count, b.bank_account_no,
-            b.bpad_file_name, b.bpad_row_count, b.bpad_matched_count,
-            u.username AS uploaded_by, u.full_name AS uploaded_by_name,
-            (SELECT COUNT(*)::int FROM reconciliation_results r WHERE r.batch_id = b.id) AS result_count
-       FROM upload_batches b
-       LEFT JOIN users u ON u.id = b.uploaded_by
-      WHERE b.id = $1`,
-    [batchId],
-  );
-  const b = rows[0];
-  if (!b) return null;
-  return {
-    uploadName: b.name,
-    uploadedBy: b.uploaded_by_name || b.uploaded_by || null,
-    uploadedAt: b.uploaded_at,
-    grnFile: b.grn_file_name,
-    grnRows: b.grn_file_name ? b.grn_row_count : null,
-    ageingFile: b.ageing_file_name,
-    ageingRows: b.ageing_file_name ? b.ageing_row_count : null,
-    bankFile: b.bank_file_name,
-    bankRows: b.bank_file_name ? b.bank_row_count : null,
-    bankAccountNo: b.bank_account_no,
-    bpadFile: b.bpad_file_name,
-    bpadRows: b.bpad_file_name ? b.bpad_row_count : null,
-    bpadMatched: b.bpad_file_name ? b.bpad_matched_count : null,
-    reconciledResults: b.result_count,
-  };
-}
-
-/**
- * DELETE /api/batches/:id - removes the batch and everything under it.
- *
- * Administrators only. Being given the upload screen is permission to add a
- * month's reports, not to remove one: a delete takes the GRN rows, the ageing
- * rows and every reconciled result with it, and the results screen is read by
- * people who did not upload them. requireAdmin rather than a hidden button --
- * the button is hidden too, but that is a courtesy, not the guard.
- */
-batchesRouter.delete(
-  '/:id',
-  requireAdmin,
-  asyncHandler(async (req, res) => {
-    const batchId = Number(req.params.id);
-    // What is about to go, taken before it goes -- see uploadSnapshot.
-    const snapshot = await uploadSnapshot({ query }, batchId);
-    const { rows } = await query('DELETE FROM upload_batches WHERE id = $1 RETURNING id, name', [batchId]);
-    if (rows.length === 0) return res.status(404).json({ error: 'That upload no longer exists.' });
-    logActivity(req, {
-      action: 'UPLOAD_DELETE',
-      target: rows[0].name,
-      summary: `Deleted upload "${rows[0].name}" and everything under it`,
-      details: { batchId: rows[0].id, ...snapshot },
-    });
-    return res.status(204).end();
-  }),
-);
-
-/**
- * The four files an upload can carry, and what removing one means.
- *
- * Keyed on the same strings the upload form sends (`grnFile` minus the suffix),
- * so the screen that lists a file and the route that deletes it name it
- * identically rather than through a translation table nobody maintains.
- *
- * `column` is the file name on upload_batches -- a null there IS "not
- * uploaded", so clearing it is what makes the file stop existing as far as
- * every list and every count is concerned. `clear` blanks the counts that went
- * with it in the same statement. `remove` takes the rows the file put in.
- */
-const FILE_KINDS = {
-  grn: {
-    label: 'GRN report',
-    column: 'grn_file_name',
-    clear: 'grn_file_name = NULL, grn_row_count = 0',
-    /**
-     * The GRN rows, and with them every reconciliation result that was about
-     * one: reconciliation_results.grn_transaction_id cascades, so a result
-     * cannot outlive the GRN it describes -- including results stored by a
-     * LATER upload against these rows (see the cross-batch matching in
-     * services/ingest.js), which is right, because the GRN they were about is
-     * what is being deleted.
-     */
-    async remove(client, batchId) {
-      const { rowCount } = await client.query('DELETE FROM grn_transactions WHERE batch_id = $1', [batchId]);
-      return rowCount;
-    },
-  },
-  ageing: {
-    label: 'Vendor Ageing report',
-    column: 'ageing_file_name',
-    clear: 'ageing_file_name = NULL, ageing_row_count = 0',
-    /**
-     * The ageing rows -- and first, the results that matched against them.
-     *
-     * matched_ageing_id is ON DELETE SET NULL, which on its own would leave a
-     * row still saying MATCHED with nothing left to have matched: a Valid GRN
-     * whose evidence has been deleted. Those results are put back to PENDING
-     * instead, which is exactly what reconcile() says about a GRN with no
-     * ageing row -- so deleting this file returns its GRNs to where they were
-     * before it was uploaded, rather than to a state the reconciliation could
-     * never have produced.
-     *
-     * Not scoped to this batch: an ageing row is matched by whichever upload
-     * happened to find it, so the results pointing at these rows can belong to
-     * any batch.
-     */
-    async remove(client, batchId) {
-      await client.query(
-        `UPDATE reconciliation_results
-            SET matched_ageing_id = NULL,
-                status = 'PENDING',
-                bill_no_match = NULL,
-                vendor_name_match = NULL,
-                discrepancy_notes = NULL
-          WHERE matched_ageing_id IN (SELECT id FROM vendor_ageing WHERE batch_id = $1)`,
-        [batchId],
-      );
-      const { rowCount } = await client.query('DELETE FROM vendor_ageing WHERE batch_id = $1', [batchId]);
-      return rowCount;
-    },
-  },
-  bank: {
-    label: 'Bank statement',
-    column: 'bank_file_name',
-    // The account number goes too: it was read off this statement's letterhead
-    // and means nothing once the statement is gone.
-    clear: 'bank_file_name = NULL, bank_row_count = 0, bank_account_no = NULL',
-    /** Matched to nothing at upload time, so nothing else has to be told. */
-    async remove(client, batchId) {
-      const { rowCount } = await client.query(
-        'DELETE FROM bank_statement_transactions WHERE batch_id = $1',
-        [batchId],
-      );
-      return rowCount;
-    },
-  },
-  bpad: {
-    label: 'BPAD register',
-    column: 'bpad_file_name',
-    clear: 'bpad_file_name = NULL, bpad_row_count = 0, bpad_matched_count = 0',
-    /**
-     * The register's answers from this upload. A GRN whose only BPAD row came
-     * from here goes back to having none -- the BPAD tab simply stops
-     * reporting on it, which is what it did before the register was uploaded.
-     * An earlier register's rows for the same GRNs are not restored: they were
-     * replaced when this one landed (see clearBpadRecordsFor in ingest.js),
-     * and a snapshot that has been superseded is not worth resurrecting.
-     */
-    async remove(client, batchId) {
-      const { rowCount } = await client.query('DELETE FROM bpad_records WHERE batch_id = $1', [batchId]);
-      return rowCount;
-    },
-  },
-};
-
-/**
- * DELETE /api/batches/:id/files/:kind - remove one file from an upload.
- *
- * Administrators only, for the reason the whole-batch delete below is: this
- * takes stored rows out from under a results screen other people are reading.
- *
- * An upload is up to four files that happened to be sent together, and they
- * are independent afterwards -- a bank statement is matched against every
- * ageing row on file, a register against every GRN -- so removing the wrong
- * one should not cost the other three. Deleting the last remaining file
- * deletes the upload itself: a batch naming no file is not a batch of
- * anything, and the table says so (upload_batches_has_a_file).
- */
-batchesRouter.delete(
-  '/:id/files/:kind',
-  requireAdmin,
-  asyncHandler(async (req, res) => {
-    const batchId = Number(req.params.id);
-    const kind = FILE_KINDS[req.params.kind];
-    if (!kind) return res.status(400).json({ error: 'That is not one of the files an upload can carry.' });
-
-    const result = await withTransaction(async (client) => {
-      // Locked for the length of the transaction, so two admins deleting the
-      // last two files at once cannot both read "one file left" and leave a
-      // batch behind that names none.
-      const { rows } = await client.query(
-        `SELECT name, grn_file_name, ageing_file_name, bank_file_name, bpad_file_name
-           FROM upload_batches WHERE id = $1 FOR UPDATE`,
-        [batchId],
-      );
-      if (rows.length === 0) return { missing: 'batch' };
-
-      const batch = rows[0];
-      if (!batch[kind.column]) return { missing: 'file' };
-
-      // The upload as it stood before this file came out of it, for the log.
-      const snapshot = await uploadSnapshot(client, batchId);
-
-      const rowsDeleted = await kind.remove(client, batchId);
-
-      // What the upload would still be carrying afterwards.
-      const remaining = Object.values(FILE_KINDS).filter(
-        (k) => k.column !== kind.column && batch[k.column],
-      );
-
-      const fileName = batch[kind.column];
-      if (remaining.length === 0) {
-        // Everything under it cascades -- see the references in schema.sql.
-        await client.query('DELETE FROM upload_batches WHERE id = $1', [batchId]);
-        return { rowsDeleted, batchDeleted: true, batchName: batch.name, fileName, snapshot };
-      }
-
-      await client.query(`UPDATE upload_batches SET ${kind.clear} WHERE id = $1`, [batchId]);
-      return { rowsDeleted, batchDeleted: false, batchName: batch.name, fileName, snapshot };
-    });
-
-    if (result.missing === 'batch') return res.status(404).json({ error: 'That upload no longer exists.' });
-    if (result.missing === 'file') {
-      return res.status(404).json({ error: `This upload has no ${kind.label} to remove.` });
-    }
-
-    logActivity(req, {
-      action: 'UPLOAD_FILE_DELETE',
-      target: result.batchName,
-      summary:
-        `Deleted the ${kind.label} (${result.fileName}) from "${result.batchName}"` +
-        (result.batchDeleted ? ' — the upload had no other file, so it was deleted too' : ''),
-      details: {
-        batchId,
-        fileType: kind.label,
-        fileName: result.fileName,
-        rowsDeleted: result.rowsDeleted,
-        uploadAlsoDeleted: result.batchDeleted,
-        uploadedBy: result.snapshot?.uploadedBy ?? null,
-        uploadedAt: result.snapshot?.uploadedAt ?? null,
-        // Every file the upload carried before this one came out, so what is
-        // left behind can be read off the entry too.
-        filesBefore: [
-          result.snapshot?.grnFile,
-          result.snapshot?.ageingFile,
-          result.snapshot?.bankFile,
-          result.snapshot?.bpadFile,
-        ].filter(Boolean),
-      },
-    });
-
-    return res.json({
-      batchId,
-      kind: req.params.kind,
-      rowsDeleted: result.rowsDeleted,
-      batchDeleted: result.batchDeleted,
     });
   }),
 );

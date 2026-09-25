@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
+import { singlePress } from '../services/press.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
   ACCOUNTS_GRN_VIEW,
   ACCOUNTS_QUEUE_CARD,
+  ACCOUNTS_RECEIVED_CARD,
   ACCOUNTS_ROW,
   ACCOUNTS_TAB,
   CHEQUE_CARDS,
@@ -21,6 +23,7 @@ import {
   bulkReceiveEligible,
   csdCardFigures,
   progressCardFigures,
+  actionFilterOptions,
   progressFilterOptions,
   sectionSheets,
 } from '../services/resultsViews.js';
@@ -30,6 +33,7 @@ import LocationFilter from '../components/LocationFilter.jsx';
 import MsmeFilter from '../components/MsmeFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import { IconX } from '../components/icons.jsx';
+import BackButton, { useSectionTrail } from '../components/BackButton.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import { expandCheques, resultsChequeBills } from '../services/chequeGroups.js';
 
@@ -110,6 +114,7 @@ const CARD_BY_ID = Object.fromEntries([
   ...CSD_CARDS.map((card) => [card.stage, { kind: 'csd', ...card }]),
   ...CHEQUE_CARDS.map((card) => [card.progress, { kind: 'progress', ...card }]),
   [ACCOUNTS_QUEUE_CARD.progress, { kind: 'progress', ...ACCOUNTS_QUEUE_CARD }],
+  [ACCOUNTS_RECEIVED_CARD.progress, { kind: 'progress', ...ACCOUNTS_RECEIVED_CARD }],
 ]);
 
 /**
@@ -136,9 +141,14 @@ export default function AccountsDepartment() {
   // ageing view is a step away on the same dropdown.
   const [status, setStatus] = useState(VALID);
   // Which Status value the table is narrowed to, or '' for every row. Set by
-  // the CSD and cheque cards as well as by the dropdown -- one filter with two
-  // ways in.
+  // the CSD and cheque cards as well as by the Status dropdown -- one filter
+  // with two ways in.
   const [progress, setProgress] = useState('');
+  // Where the rows have got to -- Sent to CSD, Accounts received, Sent to
+  // Bank -- or '' for anywhere: the Action dropdown beside the search box. It
+  // narrows on top of the card's `progress` rather than replacing it, so a
+  // card and an action together are the rows answering both.
+  const [action, setAction] = useState('');
   // How the Accounts table is read: a row per GRN, or a row per cheque with its
   // bills' PayableAmount summed. The cards follow it -- GRN counts first on GRN
   // view, cheque counts first on Cheque view.
@@ -227,6 +237,9 @@ export default function AccountsDepartment() {
         pageSize,
         q,
         progress,
+        action,
+        // The counts beside the Action dropdown's options -- see selectAction.
+        actionCounts: true,
         location,
         msme,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
@@ -234,7 +247,7 @@ export default function AccountsDepartment() {
       .then(setData)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [batchId, status, page, pageSize, q, progress, location, msme, byCheque]);
+  }, [batchId, status, page, pageSize, q, progress, action, location, msme, byCheque]);
 
   useEffect(loadRows, [loadRows]);
 
@@ -244,7 +257,7 @@ export default function AccountsDepartment() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [batchId, status, page, pageSize, q, progress, location, msme, accountsView]);
+  }, [batchId, status, page, pageSize, q, progress, action, location, msme, accountsView]);
 
   /*
    * The three things "Select multiple" can batch, mirroring the row's own
@@ -410,10 +423,14 @@ export default function AccountsDepartment() {
   function selectStatus(next) {
     setStatus(next);
     setPage(1);
-    // The Status filter belongs to the Accounts rows. The ageing view has no
-    // such column and does not apply it, so carrying it across would leave the
-    // dropdown naming a stage over a table showing every row regardless.
-    if (next !== VALID) setProgress('');
+    // The card and Action filters belong to the Accounts rows. The ageing view
+    // has no such columns and does not apply them, so carrying them across
+    // would leave the dropdown naming a stage over a table showing every row
+    // regardless.
+    if (next !== VALID) {
+      setProgress('');
+      setAction('');
+    }
   }
 
   /** Switch the Accounts table between a row per GRN and a row per cheque. */
@@ -453,6 +470,25 @@ export default function AccountsDepartment() {
     if (next && status !== VALID) setStatus(VALID);
   }
 
+  /**
+   * Narrow the rows to where they have got to, inside whichever card is
+   * selected -- or '' for anywhere. The card stays as it is: the two answer
+   * different questions, and together they are the rows answering both.
+   * Picking one from the ageing view moves to Accounts, as a card does.
+   */
+  function selectAction(next) {
+    setAction(next);
+    setPage(1);
+    if (next && status !== VALID) setStatus(VALID);
+  }
+
+  // The views this page has shown, for the Back button -- the view only. A
+  // card or dropdown narrowing it is not a step Back walks through; returning
+  // opens the view the way the View dropdown does, unnarrowed. Accounts is
+  // where the page opens, so Back is not offered there.
+  const sectionTrail = useSectionTrail(status, selectStatus, VALID);
+  const describeSection = (s) => TABS.find((tab) => tab.status === s)?.label ?? s;
+
   if (batches.length === 0 && !loading) {
     return (
       <div className="empty empty--page">
@@ -472,7 +508,12 @@ export default function AccountsDepartment() {
     );
   }
 
-  const progressFilters = progressFilterOptions(summary);
+  const progressFilters = progressFilterOptions(summary, progress);
+
+  // The Action dropdown's options, with the counts the rows came back with --
+  // how many each leaves inside the card as it stands. The ageing view's rows
+  // are not these, so it offers them without counts.
+  const actionFilters = actionFilterOptions(status === VALID ? data?.actionCounts : null);
 
   // The cards this view shows, in the order CARDS_FOR names them.
   const cards = (CARDS_FOR[status] ?? []).map((id) => CARD_BY_ID[id]).filter(Boolean);
@@ -591,6 +632,11 @@ export default function AccountsDepartment() {
         </div>
       </div>
 
+      {/* Back to the Accounts view -- see BackButton. Not on Accounts itself.
+          Outside the cards' own condition: the ageing view has no cards, and
+          it is the one view here Back is offered on. */}
+      <BackButton trail={sectionTrail} describe={describeSection} />
+
       {summary && cards.length > 0 && (
         <div className="cards">
           {cards.map((card) =>
@@ -598,24 +644,28 @@ export default function AccountsDepartment() {
               /* How many GRNs are in accounts at all -- the count at the head
                  of the row, and the "All" of it.
 
-                 Every other card on this row sets `progress`, so pressing this
-                 one clears it and the table goes back to every Accounts row.
-                 The ring follows that rather than saying which view is showing
+                 Every other card on this row sets `progress`, and the Action
+                 dropdown narrows on top of it, so pressing this one clears
+                 both and the table goes back to every Accounts row. The ring
+                 follows that rather than saying which view is showing
                  -- there is only one view with cards here, so a ring that never
-                 went out would say nothing. A card that looks like the head of
-                 a row but ignores a press while the ones beside it toggle is
-                 the kind of dead control people press twice and stop trusting;
+                 went out would say nothing. The cards beside it stay on when
+                 pressed again, so this is the one way back to every row -- a
+                 head card that ignored a press would leave no way back at all;
                  same reasoning as the results screen's rowHead. */
               <button
                 key={card.status}
                 type="button"
                 className={`card stat stat--${card.status.toLowerCase()} ${
-                  progress ? '' : 'is-active'
+                  progress || action ? '' : 'is-active'
                 }`}
-                onClick={() => selectProgress('')}
-                aria-pressed={!progress}
+                onClick={() => {
+                  selectProgress('');
+                  setAction('');
+                }}
+                aria-pressed={!progress && !action}
                 title={
-                  progress
+                  progress || action
                     ? 'Show every GRN in accounts again'
                     : 'Showing every GRN in accounts — press a card beside this to narrow it'
                 }
@@ -642,11 +692,11 @@ export default function AccountsDepartment() {
                 className={`card stat stat--${card.tone ?? 'dept'} ${
                   progress === card.progress ? 'is-active' : ''
                 }`}
-                onClick={() => selectProgress(progress === card.progress ? '' : card.progress)}
+                onClick={singlePress(() => selectProgress(card.progress))}
                 aria-pressed={progress === card.progress}
                 title={
                   progress === card.progress
-                    ? `Showing ${card.label} only — press again for every row`
+                    ? `Showing ${card.label} only — press ${ACCOUNTS_TAB.label} for every row`
                     : `Show only the ${card.label} rows`
                 }
               >
@@ -663,24 +713,28 @@ export default function AccountsDepartment() {
               </button>
             ) : (
               /* One CSD stage's share of the rows below. Pressing it narrows
-                 the table to that stage; pressing the one already showing goes
-                 back to every row.
+                 the table to that stage, and pressing it again keeps it there:
+                 the Accounts card heading the row is the way back to every
+                 row. A press that undid itself also undid itself on a
+                 double-click, which read as the card throwing you back to the
+                 head of the row.
 
-                 It sets `progress`, which is the Status column's own filter and
-                 already knows these four stages by name (see PROGRESS in
-                 routes/results.js). So the dropdown under the cards moves with
-                 the card, and the card lights up when the dropdown is used --
-                 one filter with two ways in, rather than a second filter that
-                 happens to mean the same thing. */
+                 It sets `progress` (see PROGRESS in routes/results.js), which
+                 the Status dropdown shows under this card's name while it is
+                 set -- see progressFilterOptions. The same stages are also
+                 Action dropdown options, which narrow on top of whatever card
+                 is chosen rather than lighting one -- see selectAction.
+
+                 singlePress on this and the cheque cards: see services/press.js. */
               <button
                 key={card.stage}
                 type="button"
                 className={`card stat stat--${card.tone} ${progress === card.stage ? 'is-active' : ''}`}
-                onClick={() => selectProgress(progress === card.stage ? '' : card.stage)}
+                onClick={singlePress(() => selectProgress(card.stage))}
                 aria-pressed={progress === card.stage}
                 title={
                   progress === card.stage
-                    ? `Showing ${card.label} only — press again for every row`
+                    ? `Showing ${card.label} only — press ${ACCOUNTS_TAB.label} for every row`
                     : `Show only the ${card.label} rows`
                 }
               >
@@ -703,24 +757,50 @@ export default function AccountsDepartment() {
           {/* MSME or Non-MSME vendors -- first, ahead of the Status dropdown,
               since it narrows the whole page (cards, rows and export). */}
           <MsmeFilter value={msme} onChange={selectMsme} />
-          {/* How far through CSD the rows have got -- the open question on both
-              views, since every row either screen shows here has an ageing
-              entry. Choosing a value on the ageing view takes the table to
-              Accounts, which is the only view that has a Status column for it
-              to be about. The counts come from the same clauses the filter
-              uses, so the number beside an option is the number of rows
-              picking it yields. */}
+          {/* Whether a cheque has been drawn up -- where the rows have got to
+              is the Action dropdown's, beside it. Choosing a value on the
+              ageing view takes the table to Accounts, which is the only view
+              whose rows it can be about. It sets the cards' own `progress`, so
+              a card and this move together -- see progressFilterOptions for
+              how a CSD or Accounts card shows here -- and its counts are the
+              cards' figures: GRNs, over the search and branch, before any
+              Action is chosen. */}
           <select
             className="field__input stage-filter"
             value={progress}
             onChange={(e) => selectProgress(e.target.value)}
-            aria-label="Filter the table by what the Status column says"
+            aria-label="Filter the table by whether a cheque has been prepared"
           >
-            <option value="">All </option>
+            <option value="">All statuses</option>
             {progressFilters.map((f) => (
               <option key={f.value} value={f.value}>
                 {f.label}
-                {summary?.progress?.[f.value] ? ` (${summary.progress[f.value].count})` : ''}
+                {summary?.progress?.[f.value]
+                  ? ` (${summary.progress[f.value].count.toLocaleString('en-IN')})`
+                  : ''}
+              </option>
+            ))}
+          </select>
+
+          {/* The Action filter, a dropdown of its own: where the rows have got
+              to, inside whichever card or status is selected -- see
+              selectAction. Choosing a value on the ageing view takes the table
+              to Accounts, the only view with an Action column for it to be
+              about. The counts come back with the rows, taken inside the card
+              and search as they stand, so the number beside an option is the
+              number of rows picking it shows. */}
+          <select
+            className="field__input stage-filter"
+            value={action}
+            onChange={(e) => selectAction(e.target.value)}
+            aria-label="Filter the table by where the rows have got to, inside the card selected"
+            title="Filter by action, inside the card selected"
+          >
+            <option value="">All actions</option>
+            {actionFilters.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
+                {f.count !== null ? ` (${f.count.toLocaleString('en-IN')})` : ''}
               </option>
             ))}
           </select>
@@ -730,7 +810,7 @@ export default function AccountsDepartment() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search vendor, GRN, bill or cheque no."
+            placeholder="Search vendor, vendor code, GRN, bill or cheque no."
             aria-label="Search by vendor name, GRN number, bill number or cheque number"
           />
 
@@ -827,9 +907,13 @@ export default function AccountsDepartment() {
             <div className="pager">
               <span className="pager__info">
                 {data.total === 0
-                  ? q
-                    ? `Nothing matches "${q}"`
-                    : 'No rows'
+                  ? action
+                    ? // A card and an action that share no rows -- say which
+                      // filter emptied the table, and how to undo it.
+                      `No rows at ${actionFilters.find((f) => f.value === action)?.label ?? action} here — choose All actions to see the rest`
+                    : q
+                      ? `Nothing matches "${q}"`
+                      : 'No rows'
                   : `Showing ${(data.page - 1) * data.pageSize + 1}–${Math.min(
                       data.page * data.pageSize,
                       data.total,

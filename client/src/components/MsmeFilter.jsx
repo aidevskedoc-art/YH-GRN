@@ -10,7 +10,7 @@
  * same lookup the MSME Status column reads, so choosing MSME keeps exactly the
  * rows that column calls MSME.
  *
- * A vendor the HIS vendor master has no row for is neither MSME nor Non-MSME
+ * A vendor the Vendor Master has no row for is neither MSME nor Non-MSME
  * -- its MSME Status reads as a dash -- so it shows under All vendors only.
  *
  * `value` is '' for every vendor, or one of the two keys below; they are the

@@ -141,19 +141,6 @@ export const api = {
   },
 
   listBatches: () => request('/batches'),
-  deleteBatch: (id) => request(`/batches/${id}`, { method: 'DELETE' }),
-
-  /**
-   * Remove one file from an upload, leaving the others it arrived with alone.
-   *
-   * `kind` is one of grn, ageing, bank, bpad -- the same four the upload form
-   * sends. The rows that file put in the database go with it; removing the
-   * last file an upload carries removes the upload too, which the response
-   * reports as `batchDeleted` so the screen can say which of the two happened.
-   *
-   * Administrator-only at the API, like deleteBatch above.
-   */
-  deleteBatchFile: (id, kind) => request(`/batches/${id}/files/${kind}`, { method: 'DELETE' }),
   uploadBatch: (formData) => request('/batches', { method: 'POST', body: formData, isForm: true }),
 
   /** `q` is the search box: vendor name, GRN number or bill number, either side. */
@@ -167,20 +154,30 @@ export const api = {
     return request(`/batches/${id}/summary?${params}`);
   },
   /**
-   * `progress` is the Status column's own value -- CLEARED, one of the four CSD
-   * stages, RECORDS or NOT_SENT -- so the filter dropdown asks for the rows
-   * showing what it says rather than for an adjacent idea.
+   * `progress` is what the cards and the Status dropdown set: one of the cheque
+   * three, one of the four CSD stages, or one of the two Accounts cards' keys
+   * (see PROGRESS in routes/results.js).
+   *
+   * `action` is the Action filter: where the row has got to, narrowing on top of
+   * `progress` rather than replacing it -- Cheque Prepared on the card, then
+   * CSD received here. `actionCounts` asks for the counts beside that
+   * dropdown's options to come back with the rows, as `actionCounts`.
    *
    * `location` is one configured branch, by the name the configuration screen
    * gives it. It narrows every figure on the page together -- rows, cards and
    * the counts beside the filter options -- because it is a scope rather than a
    * question about a row.
    */
-  results: (id, { status, page = 1, pageSize = 50, q, progress, location, msme, dept, chequeNo, view } = {}) => {
+  results: (
+    id,
+    { status, page = 1, pageSize = 50, q, progress, action, actionCounts, location, msme, dept, chequeNo, view } = {},
+  ) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (status) params.set('status', status);
     if (q) params.set('q', q);
     if (progress) params.set('progress', progress);
+    if (action) params.set('action', action);
+    if (actionCounts) params.set('actionCounts', '1');
     if (location) params.set('location', location);
     if (msme) params.set('msme', msme);
     // One BPAD desk, set by the breakdown cards under the Pending view -- the
@@ -357,33 +354,54 @@ export const api = {
 
   /* --- MSME reco -----------------------------------------------------------
      The HIS vendor master against the Accounts vendor list. A run is both
-     files reconciled and stored; the screen reads its rows from the API
-     rather than from the files. */
-
-  /** Every run, newest first, plus the list of compared fields. */
-  listMsmeRuns: () => request('/msme-reco/runs'),
+     files reconciled and stored; the screen shows every vendor once, from the
+     latest run that had it, read from the API rather than from the files. */
 
   /** Upload both masters (`vendorFile`, `accountFile`) and store the reco. */
   runMsmeReco: (formData) => request('/msme-reco/runs', { method: 'POST', body: formData, isForm: true }),
 
   /**
-   * One run's rows -- every vendor master row; Accounts-only codes are counted
-   * on the run, not stored. `view` is a card: ALL (the default), MATCHED,
-   * MISMATCH or NOT_IN_ACCOUNTS;
-   * `field` narrows to the rows whose `field` pair disagrees; `q` is the search
-   * box. `all` drops the paging, for the export.
+   * Every HIS vendor once, from the latest reco that had it, with the latest
+   * reco itself (`latestRun`, null before the first) and how many there have
+   * been (`runCount`). Accounts-only codes are counted on each run, not
+   * stored. `view` is a card: ALL (the default), MATCHED, MISMATCH or
+   * NOT_IN_ACCOUNTS; `field` narrows to the rows whose `field` pair disagrees;
+   * `q` is the search box. `all` drops the paging, for the export.
    */
-  msmeRows: (id, { view, field, q, page = 1, pageSize = 20, all } = {}) => {
+  msmeRows: ({ view, field, q, page = 1, pageSize = 20, all } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (view) params.set('view', view);
     if (field) params.set('field', field);
     if (q) params.set('q', q);
     if (all) params.set('all', '1');
-    return request(`/msme-reco/runs/${id}/rows?${params}`);
+    return request(`/msme-reco/rows?${params}`);
   },
 
-  /** Remove a run and its rows. Administrator-only at the API. */
-  deleteMsmeRun: (id) => request(`/msme-reco/runs/${id}`, { method: 'DELETE' }),
+  /* --- Vendor Master -------------------------------------------------------
+     Every vendor the HIS vendor master -- the correct data -- has ever listed,
+     once each, with its latest details. Each reco run above adds its new
+     vendors and updates the rest; Supply Type and Inter are set here. */
+
+  /**
+   * The master in vendor code order, each row as its `cells` in the order of
+   * `headers` with its `supplyType` and `inter`, and `lastApply` the last
+   * vendor master file applied to it (null before any). `view` is a card: ALL
+   * (the default), NO_STATUS, or a STATUS value; `q` searches every column
+   * shown. `all` drops the paging, for the export.
+   */
+  vendorMasterRows: ({ view, q, page = 1, pageSize = 20, all } = {}) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (view) params.set('view', view);
+    if (q) params.set('q', q);
+    if (all) params.set('all', '1');
+    return request(`/vendor-master/rows?${params}`);
+  },
+
+  /**
+   * Set a vendor's picked details: `{ supplyType }` ('REGULAR' or 'STENTS')
+   * and/or `{ inter }` ('NO' or 'YES').
+   */
+  updateVendor: (id, changes) => request(`/vendor-master/${id}`, { method: 'PATCH', body: changes }),
 
   /**
    * Every row for one sheet, unpaginated -- the input to

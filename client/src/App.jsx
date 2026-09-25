@@ -4,7 +4,6 @@ import AppShell from './AppShell.jsx';
 import Login from './pages/Login.jsx';
 import NoAccess from './pages/NoAccess.jsx';
 import Upload from './pages/Upload.jsx';
-import Uploads from './pages/Uploads.jsx';
 import Results from './pages/Results.jsx';
 import Csd from './pages/Csd.jsx';
 import AccountsDepartment from './pages/AccountsDepartment.jsx';
@@ -12,6 +11,7 @@ import Users from './pages/Users.jsx';
 import Config from './pages/Config.jsx';
 import Logs from './pages/Logs.jsx';
 import MsmeReco from './pages/MsmeReco.jsx';
+import VendorMaster from './pages/VendorMaster.jsx';
 
 export default function App() {
   return (
@@ -27,7 +27,7 @@ export default function App() {
 
           Each route additionally names the screen it needs. The outer guard
           answers "are you signed in"; the inner ones answer "were you given
-          this", so an account that has only Results cannot reach Uploads by
+          this", so an account that has only Results cannot reach Upload by
           typing the address. The API enforces the same grants -- see
           requireScreen in server/src/middleware/auth.js -- and these guards
           only keep the browser from opening a screen it cannot fill. */}
@@ -46,19 +46,10 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-        {/* What has been uploaded, and the only place a file can be taken
-            back out. Behind the same grant as the upload form rather than a
-            new one: it is the same screen's other half, and deleting is
-            gated on the role instead -- requireAdmin on the route that does
-            it, see server/src/routes/batches.js. */}
-        <Route
-          path="/uploads"
-          element={
-            <ProtectedRoute screen="uploads">
-              <Uploads />
-            </ProtectedRoute>
-          }
-        />
+        {/* No Uploaded files screen: the results screens show every GRN once,
+            from its latest upload, so there are no uploads to list or delete
+            one by one. Its old address lands on Results. */}
+        <Route path="/uploads" element={<Navigate to="/results" replace />} />
         <Route
           path="/results"
           element={
@@ -112,9 +103,20 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-        {/* The HIS vendor master against the Accounts vendor list -- the MSME
-            dropdown's one screen, with its own grant (see
-            server/src/routes/msmeReco.js). */}
+        {/* Every vendor the HIS vendor master has ever listed, once each, with
+            its latest details -- filled by each HIS vs FOCUS Reco. The Vendor
+            Reco dropdown's first screen, read-only, with its own grant (see
+            server/src/routes/vendorMaster.js). */}
+        <Route
+          path="/vendor-master"
+          element={
+            <ProtectedRoute screen="vendor-master">
+              <VendorMaster />
+            </ProtectedRoute>
+          }
+        />
+        {/* The HIS vendor master against the Accounts vendor list, with its
+            own grant (see server/src/routes/msmeReco.js). */}
         <Route
           path="/msme-reco"
           element={

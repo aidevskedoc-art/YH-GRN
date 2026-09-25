@@ -167,6 +167,14 @@ export const IconArrowRight = (p) => (
   </Icon>
 );
 
+/* IconArrowRight, mirrored. The Back button above a row of cards. */
+export const IconArrowLeft = (p) => (
+  <Icon {...p}>
+    <path d="M20 12H5" />
+    <path d="m11 6-6 6 6 6" />
+  </Icon>
+);
+
 /* Two people: the account in front, and the shoulder of a second behind it.
    The user management screen, in the sidebar and on its own page head. */
 export const IconUsers = (p) => (
@@ -290,6 +298,19 @@ export const IconEyeOff = (p) => (
     <path d="M6.6 6.6A18.4 18.4 0 0 0 2 12s3.6 7 10 7a10.3 10.3 0 0 0 4.4-.95" />
     <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
     <path d="m3 3 18 18" />
+  </Icon>
+);
+
+/* An address card: one vendor's record, a person's mark on the left and lines
+   of detail beside it. The Vendor Master screen -- the master itself, where
+   IconCompare below is the master held against another list. */
+export const IconVendorCard = (p) => (
+  <Icon {...p}>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <circle cx="9" cy="10.5" r="2" />
+    <path d="M5.5 16a3.5 3.5 0 0 1 7 0" />
+    <path d="M15 10h3" />
+    <path d="M15 13.5h3" />
   </Icon>
 );
 

@@ -1,11 +1,29 @@
 /**
- * Persists a parsed + reconciled upload as one batch.
+ * Persists a parsed upload as one batch, and reconciles what it touched.
  *
  * Everything happens inside a single transaction: a batch is either fully
  * stored with its reconciliation results, or not stored at all.
+ *
+ * One copy of everything. A report re-uploaded -- the same file twice, or next
+ * month's carrying a GRN that was still pending in this month's -- is newer
+ * data about rows already stored, so it replaces them rather than adding a
+ * second copy beside them:
+ *
+ *  - a GRN row, by its GRN number;
+ *  - a GRN's ageing rows, all of them together, by the GRN number they are
+ *    about;
+ *  - a bank transaction, when the new statement carries the same one;
+ *  - a GRN's BPAD register rows, as before (clearBpadRecordsFor).
+ *
+ * and each GRN has one reconciliation result, rebuilt whenever an upload
+ * touches either side of it (see linkResults). Anything the upload says
+ * nothing about is left exactly as it was.
+ *
+ * `batch_id` on a row therefore says which upload last brought it. The upload
+ * itself stays listed with the file names and row counts it arrived with.
  */
 import { withTransaction } from '../db/pool.js';
-import { STATUS, matchGrnAgeingPair, indexAgeingByGrnNumber } from './reconcile.js';
+import { matchGrnAgeingPair } from './reconcile.js';
 
 /** Rows per multi-row INSERT. Keeps well under Postgres' 65535 parameter cap. */
 const CHUNK_SIZE = 500;
@@ -166,25 +184,263 @@ async function reopenRejectedFor(client, batchId, grnKeys) {
 }
 
 /**
- * The most recent row per key, across every batch, restricted to a
- * caller-supplied set of keys -- an upload only ever needs to ask about the
- * keys it just saw, not the whole table.
+ * Uploads one at a time.
  *
- * "Most recent" means the highest batch_id, the same tie-break the "all
- * uploads" results view uses (see DEDUPED_RESULTS in routes/results.js): a
- * GRN or ageing row re-uploaded since is a correction, and the newer copy is
- * the one worth matching against.
+ * Replacing is a delete followed by an insert, and two uploads carrying the
+ * same GRN side by side would each delete only what was committed before they
+ * started -- then both insert, and the GRN has two copies again (or, with the
+ * unique indexes schema.sql adds, one of the uploads fails). This makes the
+ * second wait for the first. relinkStoredResults takes the same lock.
+ *
+ * SHARE ROW EXCLUSIVE: it conflicts with itself and with every write to these
+ * tables, and not with reads, so the screens keep working while a file is
+ * stored. Taken after the upload's own row is inserted into upload_batches,
+ * and in the order schema.sql reaches these five tables, so an upload does not
+ * take them the other way round from `npm run migrate`. That is not a promise
+ * the two can overlap: schema.sql locks `users` before `upload_batches`, and
+ * the upload's insert checks `users` (uploaded_by) after taking
+ * `upload_batches`. Run the migration with the server stopped -- a clash is
+ * caught by Postgres as a deadlock and one side rolls back whole, but it is
+ * still a failed upload or a failed migration.
  */
-async function findLatestByKey(client, table, keyColumn, keys, extraColumns) {
+async function lockUploadTables(client) {
+  await client.query(
+    `LOCK TABLE grn_transactions, vendor_ageing, reconciliation_results,
+                bank_statement_transactions, bpad_records
+       IN SHARE ROW EXCLUSIVE MODE`,
+  );
+}
+
+/**
+ * The GRN report's rows, one per GRN number -- the last row wins.
+ *
+ * A report is not expected to carry a GRN twice, but nothing in the parser
+ * stops it, and a second row would break the one-row-per-GRN rule (and the
+ * unique index behind it). The later row is kept, as the later of two uploads
+ * would be. A row whose GRN number folds to nothing is kept as it is: there is
+ * no telling two of those apart.
+ *
+ * Exported for routes/batches.js, which builds the BPAD register's filler rows
+ * and the upload's summary from the same rows this stores. Applied again here
+ * all the same, so saveBatch holds the rule whoever calls it.
+ */
+export function lastRowPerGrn(grnRows) {
+  const seen = new Set();
+  const kept = [];
+  for (let i = grnRows.length - 1; i >= 0; i -= 1) {
+    const key = grnRows[i].dprNoKey;
+    if (key) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    kept.push(grnRows[i]);
+  }
+  return kept.reverse();
+}
+
+/**
+ * Hand-typed cheque clearance dates on the ageing rows about to be replaced,
+ * by GRN and cheque number.
+ *
+ * cheque_clearance_override is the one column on an ageing row that is not
+ * the report's: it is written by PATCH /api/ageing/:id/dates (routes/results.js;
+ * no screen offers it now) and wins over the bank statement's date. The new
+ * report cannot carry it, so it is carried across to the new row for the same
+ * cheque. The seven stage dates that route can also change are the report's
+ * own columns, and the new report's values replace them -- a correction there
+ * does not outlive the next report naming the GRN.
+ */
+async function clearanceOverridesFor(client, keys) {
   if (keys.length === 0) return new Map();
   const { rows } = await client.query(
-    `SELECT DISTINCT ON (${keyColumn}) id, ${keyColumn} AS key, ${extraColumns.join(', ')}
-     FROM ${table}
-     WHERE ${keyColumn} = ANY($1)
-     ORDER BY ${keyColumn}, batch_id DESC, id DESC`,
+    `SELECT grn_number_key, cheque_no, cheque_clearance_override
+       FROM vendor_ageing
+      WHERE grn_number_key = ANY($1)
+        AND cheque_clearance_override IS NOT NULL
+        AND COALESCE(cheque_no, '') <> ''
+      ORDER BY batch_id, id`,
     [keys],
   );
-  return new Map(rows.map((r) => [r.key, r]));
+  // Oldest first, so where two copies disagree the newer one is what is kept.
+  return new Map(rows.map((r) => [`${r.grn_number_key}|${r.cheque_no}`, r.cheque_clearance_override]));
+}
+
+/**
+ * Each GRN row's verdict against the ageing row it pairs with now.
+ *
+ * The ageing row is the first of the GRN's rows -- the report repeats a GRN
+ * once per cheque, and the first row is the one that carries NetAmt and the
+ * payable amount (see indexAgeingByGrnNumber in reconcile.js). Every GRN's rows come from one
+ * upload, so "first" is simply the lowest row number; the batch order ahead of
+ * it only matters on a database the migration has not yet cleaned up.
+ *
+ * `where` selects the GRN rows, as SQL over `g`, with `params` for it. Returns
+ * the verdict for each, and the result it currently has, if any.
+ */
+async function verdictsFor(client, where, params) {
+  const { rows } = await client.query(
+    `SELECT g.id AS grn_id, g.bill_no_key, g.bill_no, g.vendor_name_key,
+            m.id AS ageing_id, m.bill_no_key AS ageing_bill_no_key,
+            m.bill_no AS ageing_bill_no, m.vendor_name_key AS ageing_vendor_name_key,
+            r.id AS result_id, r.matched_ageing_id, r.status AS current_status
+       FROM grn_transactions g
+       LEFT JOIN LATERAL (
+         SELECT a.id, a.bill_no_key, a.bill_no, a.vendor_name_key
+           FROM vendor_ageing a
+          WHERE a.grn_number_key = g.dpr_no_key
+            AND g.dpr_no_key <> ''
+          ORDER BY a.batch_id DESC, a.source_row_no NULLS LAST, a.id
+          LIMIT 1
+       ) m ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT rr.id, rr.matched_ageing_id, rr.status
+           FROM reconciliation_results rr
+          WHERE rr.grn_transaction_id = g.id
+          ORDER BY rr.batch_id DESC, rr.id DESC
+          LIMIT 1
+       ) r ON TRUE
+      WHERE ${where}
+      -- Oldest copy first, so on a database the migration has not cleaned yet
+      -- the newest copy of a GRN gets the highest result id -- which is the
+      -- tie-break DEDUPED_RESULTS (routes/results.js) shows by.
+      ORDER BY g.batch_id, g.id`,
+    params,
+  );
+
+  return rows.map((row) => {
+    const verdict = matchGrnAgeingPair(
+      { billNoKey: row.bill_no_key, billNo: row.bill_no, vendorNameKey: row.vendor_name_key },
+      row.ageing_id == null
+        ? undefined
+        : {
+            billNoKey: row.ageing_bill_no_key,
+            billNo: row.ageing_bill_no,
+            vendorNameKey: row.ageing_vendor_name_key,
+          },
+    );
+    return {
+      grnId: row.grn_id,
+      ageingId: row.ageing_id ?? null,
+      resultId: row.result_id ?? null,
+      changed: row.result_id == null
+        || (row.matched_ageing_id ?? null) !== (row.ageing_id ?? null)
+        || row.current_status !== verdict.status,
+      ...verdict,
+    };
+  });
+}
+
+/**
+ * One result per GRN this upload touched, rebuilt from what is stored now.
+ *
+ * Touched means: a GRN row this upload stored, or a GRN already on file whose
+ * ageing rows this upload replaced. Both sides are read back out of the tables
+ * rather than taken from the parsed files, so the answer is the same whichever
+ * order the two reports arrived in -- GRN report today and ageing report last
+ * week, or the other way round, or both together. Whatever result those GRNs
+ * had before goes, and the new one is filed under this upload.
+ */
+async function linkResults(client, batchId, ageingKeys) {
+  const verdicts = await verdictsFor(
+    client,
+    'g.batch_id = $1 OR g.dpr_no_key = ANY($2)',
+    [batchId, ageingKeys],
+  );
+  if (verdicts.length === 0) return verdicts;
+
+  await client.query('DELETE FROM reconciliation_results WHERE grn_transaction_id = ANY($1)', [
+    verdicts.map((v) => v.grnId),
+  ]);
+  await bulkInsert(client, 'reconciliation_results', RESULT_COLUMNS, verdicts, (v) => [
+    batchId, v.grnId, v.ageingId, v.status, v.billNoMatch, v.vendorNameMatch, v.discrepancyNotes,
+  ]);
+  return verdicts;
+}
+
+/**
+ * Bring every stored result in line with the ageing row its GRN pairs with
+ * now -- run by `npm run migrate`, after schema.sql has cleared the older
+ * copies away.
+ *
+ * Two things left results pointing at the wrong ageing row, or at none:
+ *
+ *  - an upload used to pair a GRN with the LAST of its ageing rows when they
+ *    had arrived in an earlier upload, and with the first when they arrived
+ *    together -- so a GRN paid by several cheques could show a later cheque's
+ *    row, which carries no amounts;
+ *  - clearing an older upload's ageing rows (schema.sql) sets the link on any
+ *    result that still pointed at one of them to NULL.
+ *
+ * Only results whose ageing row or verdict actually changes are written, and
+ * they keep the upload they are filed under. Idempotent: once every result is
+ * in line, this changes nothing.
+ *
+ * @returns {Promise<number>} how many results were changed
+ */
+export function relinkStoredResults() {
+  return withTransaction(async (client) => {
+    await lockUploadTables(client);
+
+    const changed = (await verdictsFor(client, 'TRUE', [])).filter((v) => v.changed && v.resultId != null);
+    for (let start = 0; start < changed.length; start += CHUNK_SIZE) {
+      const chunk = changed.slice(start, start + CHUNK_SIZE);
+      await client.query(
+        `UPDATE reconciliation_results r
+            SET matched_ageing_id = u.ageing_id,
+                status            = u.status,
+                bill_no_match     = u.bill_no_match,
+                vendor_name_match = u.vendor_name_match,
+                discrepancy_notes = u.discrepancy_notes
+           FROM unnest($1::int[], $2::int[], $3::text[], $4::boolean[], $5::boolean[], $6::text[])
+                  AS u(id, ageing_id, status, bill_no_match, vendor_name_match, discrepancy_notes)
+          WHERE r.id = u.id`,
+        [
+          chunk.map((v) => v.resultId),
+          chunk.map((v) => v.ageingId),
+          chunk.map((v) => v.status),
+          chunk.map((v) => v.billNoMatch),
+          chunk.map((v) => v.vendorNameMatch),
+          chunk.map((v) => v.discrepancyNotes),
+        ],
+      );
+    }
+    return changed.length;
+  });
+}
+
+/**
+ * A bank transaction the new statement carries, stored by an earlier upload.
+ *
+ * A statement has no transaction id, so a transaction is known by everything
+ * on its row: dates, reference, narration, amounts and the closing balance --
+ * the account's running balance after it, which is what tells two otherwise
+ * identical same-day charges apart. The account comes from the upload's
+ * letterhead (upload_batches.bank_account_no), and a statement whose letterhead
+ * did not give one matches any account.
+ *
+ * Every earlier copy of each transaction goes, and the new statement's rows are
+ * what stay -- all of them, including a row it genuinely carries twice.
+ *
+ * Kept in step with the bank clean-up at the end of schema.sql.
+ */
+async function clearEarlierBankRows(client, batchId, accountNo) {
+  const { rowCount } = await client.query(
+    `DELETE FROM bank_statement_transactions o
+      USING bank_statement_transactions n, upload_batches ob
+      WHERE n.batch_id = $1
+        AND o.batch_id <> $1
+        AND ob.id = o.batch_id
+        AND (ob.bank_account_no IS NULL OR $2::text IS NULL OR ob.bank_account_no = $2::text)
+        AND o.txn_date = n.txn_date
+        AND COALESCE(o.chq_ref_no, '') = COALESCE(n.chq_ref_no, '')
+        AND COALESCE(o.narration, '')  = COALESCE(n.narration, '')
+        AND o.value_date      IS NOT DISTINCT FROM n.value_date
+        AND o.withdrawal_amt  IS NOT DISTINCT FROM n.withdrawal_amt
+        AND o.deposit_amt     IS NOT DISTINCT FROM n.deposit_amt
+        AND o.closing_balance IS NOT DISTINCT FROM n.closing_balance`,
+    [batchId, accountNo],
+  );
+  return rowCount;
 }
 
 const GRN_COLUMNS = [
@@ -205,6 +461,9 @@ const AGEING_COLUMNS = [
   'indent_date', 'po_date', 'security_date', 'grn_date', 'bill_to_audit',
   'bill_handover_to_acc', 'chq_date', 'cheque_clearance_date',
   'payment_doc_no', 'cheque_no', 'balance',
+  // Not the report's: carried over from the row this one replaces. See
+  // clearanceOverridesFor.
+  'cheque_clearance_override',
 ];
 
 /** The statement's transaction table. See schema.sql for why only this part. */
@@ -243,16 +502,17 @@ const RESULT_COLUMNS = [
  * @param {number} params.userId
  * @param {Array}  [params.grnRows]     parsed GRN rows
  * @param {Array}  [params.ageingRows]  parsed ageing rows
- * @param {Array}  params.results     from reconcile()
  * @param {string} [params.bankFileName] the bank statement, if one was given
  * @param {Array}  [params.bankRows]     its parsed transaction rows
+ * @param {string} [params.bankAccountNo] the account its letterhead names
  * @param {string} [params.bpadFileName] the BPAD register, if one was given
  * @param {Array}  [params.bpadRows]     one row per GRN in scope: the
  *   register's own where it had one, a GRN-report-only row where it did not
  * @param {number} [params.bpadScanned]  how many rows the register held
- * @returns {Promise<{batchId: number, reopenedRejections: number}>} the new
- *   batch id, and how many GRNs this upload took back off the CSD queue by
- *   carrying a bill CSD had rejected -- see reopenRejectedFor.
+ * @returns {Promise<{batchId: number, reopenedRejections: number, replaced: object}>}
+ *   the new batch id; how many GRNs this upload took back off the CSD queue by
+ *   carrying a bill CSD had rejected -- see reopenRejectedFor; and how many
+ *   stored rows it replaced, per file.
  */
 export function saveBatch({
   name,
@@ -261,7 +521,6 @@ export function saveBatch({
   userId,
   grnRows = [],
   ageingRows = [],
-  results,
   bankFileName = null,
   bankRows = [],
   bankAccountNo = null,
@@ -288,14 +547,40 @@ export function saveBatch({
     );
     const batchId = batchRows[0].id;
 
-    const grnIds = await bulkInsert(client, 'grn_transactions', GRN_COLUMNS, grnRows, (r) => [
+    await lockUploadTables(client);
+
+    // GRN rows: whatever is stored for these GRN numbers goes -- taking its
+    // result with it (ON DELETE CASCADE) -- and this report's rows go in.
+    const grnToStore = lastRowPerGrn(grnRows);
+    const grnKeys = [...new Set(grnToStore.map((r) => r.dprNoKey).filter(Boolean))];
+    const { rowCount: replacedGrnRows } = grnKeys.length > 0
+      ? await client.query('DELETE FROM grn_transactions WHERE dpr_no_key = ANY($1)', [grnKeys])
+      : { rowCount: 0 };
+
+    await bulkInsert(client, 'grn_transactions', GRN_COLUMNS, grnToStore, (r) => [
       batchId, r.sourceRowNo, r.slNo, r.warehouse, r.dprNo, r.dprNoKey, r.poNo,
       r.dprDate, r.billDate, r.billNo, r.billNoKey, r.dcNo, r.vendorCode, r.vendorName,
       r.vendorNameKey, r.billAmount, r.transportAmount, r.totalAmount, r.location,
       r.addAmount, r.dedAmount,
     ]);
 
-    const ageingIds = await bulkInsert(client, 'vendor_ageing', AGEING_COLUMNS, ageingRows, (r) => [
+    // Ageing rows: the same, a whole GRN at a time. The report repeats a GRN
+    // once per cheque and adds rows as payments are made, so its rows for a
+    // GRN are that GRN's current payment picture, and all of the older rows go
+    // -- matching them one by one could leave a stale "no cheque yet" row
+    // beside the cheque that has since been written. Rows whose GRN number
+    // folds to nothing are never matched and never replaced.
+    //
+    // A result still pointing at one of the deleted rows loses the link (ON
+    // DELETE SET NULL) for a moment; linkResults below rebuilds it, since
+    // every such result is for one of these GRN numbers.
+    const ageingKeys = [...new Set(ageingRows.map((r) => r.grnNumberKey).filter(Boolean))];
+    const overrides = await clearanceOverridesFor(client, ageingKeys);
+    const { rowCount: replacedAgeingRows } = ageingKeys.length > 0
+      ? await client.query('DELETE FROM vendor_ageing WHERE grn_number_key = ANY($1)', [ageingKeys])
+      : { rowCount: 0 };
+
+    await bulkInsert(client, 'vendor_ageing', AGEING_COLUMNS, ageingRows, (r) => [
       batchId, r.sourceRowNo, r.division, r.divisionCode, r.storeName, r.vendorName,
       r.vendorNameKey, r.vendorCode, r.grnDoc, r.grnNo, r.branchCode, r.grnNumber,
       r.grnNumberKey, r.billNo, r.billNoKey, r.billDate, r.netAmt, r.adjPurReturn,
@@ -303,130 +588,38 @@ export function saveBatch({
       r.indentDate, r.poDate, r.securityDate, r.grnDate, r.billToAudit,
       r.billHandOverToAcc, r.chqDate, r.chequeClearanceDate,
       r.paymentDocNo, r.chequeNo, r.balance,
+      (r.grnNumberKey && r.chequeNo && overrides.get(`${r.grnNumberKey}|${r.chequeNo}`)) || null,
     ]);
 
-    // reconcile() preserves input order, so a result's position maps to the id
-    // of the GRN row at the same position. The matched ageing row is located by
-    // its own position, recorded during parsing.
-    const ageingIdBySourceRow = new Map(ageingRows.map((r, i) => [r.sourceRowNo, ageingIds[i]]));
-
-    /*
-     * reconcile() above only ever paired this upload's own two files. That
-     * misses two situations someone uploading one report at a time hits
-     * constantly:
-     *
-     *  - a GRN uploaded today whose matching ageing row was uploaded last
-     *    week, on its own, days before this GRN report existed to match it;
-     *  - an ageing report uploaded today, on its own, naming a GRN that was
-     *    uploaded last week and has been sitting PENDING ever since.
-     *
-     * Both are the same shape of problem: half the pair is in *this* batch's
-     * freshly-parsed rows and the other half is already sitting in an earlier
-     * batch's table. The fix is to go look for it there.
-     */
-    const grnKeysThisBatch = new Set(grnRows.map((r) => r.dprNoKey).filter(Boolean));
-
-    // This upload's own GRN rows that stayed PENDING after matching against
-    // this upload's own ageing file (if it had one) get a second chance
-    // against whatever ageing row is the latest on file for that GRN number,
-    // from any earlier upload.
-    const pendingDprKeys = [
-      ...new Set(results.filter((r) => r.status === STATUS.PENDING && r.grn.dprNoKey).map((r) => r.grn.dprNoKey)),
-    ];
-    const priorAgeingByKey = await findLatestByKey(client, 'vendor_ageing', 'grn_number_key', pendingDprKeys, [
-      'bill_no_key',
-      'bill_no',
-      'vendor_name_key',
-    ]);
-
-    const upgradedResults = results.map((r) => {
-      if (r.status !== STATUS.PENDING || !r.grn.dprNoKey) return r;
-      const prior = priorAgeingByKey.get(r.grn.dprNoKey);
-      if (!prior) return r;
-      const match = matchGrnAgeingPair(r.grn, {
-        billNoKey: prior.bill_no_key,
-        billNo: prior.bill_no,
-        vendorNameKey: prior.vendor_name_key,
-      });
-      return { ...r, ...match, priorAgeingId: prior.id };
-    });
-
-    await bulkInsert(client, 'reconciliation_results', RESULT_COLUMNS, upgradedResults, (r, index) => [
-      batchId,
-      grnIds[index],
-      r.ageing ? ageingIdBySourceRow.get(r.ageing.sourceRowNo) ?? null : (r.priorAgeingId ?? null),
-      r.status,
-      r.billNoMatch,
-      r.vendorNameMatch,
-      r.discrepancyNotes,
-    ]);
-
-    // The other direction: this upload's own ageing rows that name a GRN
-    // number no GRN row in this same upload carries. Those keys are looked up
-    // among every earlier upload's GRN rows instead, and a fresh result is
-    // stored -- against that earlier GRN row's own id, since this batch never
-    // stored one of its own for it -- so the newer upload is what the "all
-    // uploads" view now shows for that GRN (it dedupes by highest batch_id;
-    // see DEDUPED_RESULTS in routes/results.js).
-    const { index: ageingIndex } = indexAgeingByGrnNumber(ageingRows);
-    const ageingOnlyKeys = [...ageingIndex.keys()].filter((key) => !grnKeysThisBatch.has(key));
-    const priorGrnByKey = await findLatestByKey(client, 'grn_transactions', 'dpr_no_key', ageingOnlyKeys, [
-      'bill_no_key',
-      'bill_no',
-      'vendor_name_key',
-    ]);
-
-    const crossBatchResults = [];
-    for (const key of ageingOnlyKeys) {
-      const priorGrn = priorGrnByKey.get(key);
-      // No GRN by that number has ever been uploaded -- the ageing row is
-      // stored (above) with nothing yet to reconcile it against, same as
-      // when the two arrive together and one side has no match.
-      if (!priorGrn) continue;
-
-      const ageingRow = ageingIndex.get(key);
-      const match = matchGrnAgeingPair(
-        { billNoKey: priorGrn.bill_no_key, billNo: priorGrn.bill_no, vendorNameKey: priorGrn.vendor_name_key },
-        ageingRow,
-      );
-      crossBatchResults.push({
-        grnTransactionId: priorGrn.id,
-        matchedAgeingId: ageingIdBySourceRow.get(ageingRow.sourceRowNo) ?? null,
-        ...match,
-      });
-    }
-
-    if (crossBatchResults.length > 0) {
-      await bulkInsert(client, 'reconciliation_results', RESULT_COLUMNS, crossBatchResults, (r) => [
-        batchId,
-        r.grnTransactionId,
-        r.matchedAgeingId,
-        r.status,
-        r.billNoMatch,
-        r.vendorNameMatch,
-        r.discrepancyNotes,
-      ]);
-    }
+    // Then one result for every GRN either report touched. This is also what
+    // pairs across uploads: a GRN report today against ageing rows uploaded
+    // last week, or an ageing report today naming a GRN uploaded last week and
+    // sitting PENDING since.
+    await linkResults(client, batchId, ageingKeys);
 
     // Optional, and reconciled against nothing: the statement is stored as it
-    // was read, for matching later by extracted_cheque_no.
+    // was read, for matching later by extracted_cheque_no. In first, so the
+    // earlier copies of its transactions can be found by joining to it.
+    let replacedBankRows = 0;
     if (bankRows.length > 0) {
       await bulkInsert(client, 'bank_statement_transactions', BANK_COLUMNS, bankRows, (r) => [
         batchId, r.sourceRowNo, r.txnDate, r.narration, r.chqRefNo,
         r.extractedChequeNo, r.valueDate, r.withdrawalAmt, r.depositAmt, r.closingBalance,
       ]);
+      replacedBankRows = await clearEarlierBankRows(client, batchId, bankAccountNo);
     }
 
     // Optional too, and reconciled against nothing here: the matching was done
     // while the register was read (see readBpadReport), and the GRNs it had no
     // entry for were filled in afterwards, so what arrives is already one row
     // per GRN and ready to store.
+    let replacedBpadRows = 0;
     if (bpadRows.length > 0) {
       // Replacing rather than adding to. A re-uploaded register is a newer
       // answer about the same bills, so the older answer about those bills
       // goes first -- inside this transaction, so a failed upload leaves the
       // rows it was about to replace exactly where they were.
-      await clearBpadRecordsFor(client, bpadRows);
+      replacedBpadRows = await clearBpadRecordsFor(client, bpadRows);
       await bulkInsert(client, 'bpad_records', BPAD_COLUMNS, bpadRows, (r) => [
         batchId, r.sourceRowNo, r.slNo, r.location, r.warehouse,
         r.vendorCode, r.vendorCodeKey, r.vendorName,
@@ -457,6 +650,15 @@ export function saveBatch({
     ];
     const reopenedRejections = await reopenRejectedFor(client, batchId, reopenKeys);
 
-    return { batchId, reopenedRejections };
+    return {
+      batchId,
+      reopenedRejections,
+      replaced: {
+        grnRows: replacedGrnRows,
+        ageingRows: replacedAgeingRows,
+        bankRows: replacedBankRows,
+        bpadRows: replacedBpadRows,
+      },
+    };
   });
 }

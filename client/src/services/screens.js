@@ -18,9 +18,9 @@ export const SCREEN_ROUTES = {
   // both lands on the fuller screen, which is the superset of this one.
   'accounts-department': '/accounts-department',
   config: '/config',
-  uploads: '/uploads',
-  // After the GRN screens, as it is in the sidebar: an account holding both
-  // lands on a GRN screen, and one holding only this lands here.
+  // After the GRN screens, as they are in the sidebar: an account holding both
+  // lands on a GRN screen, and one holding only these lands here.
+  'vendor-master': '/vendor-master',
   'msme-reco': '/msme-reco',
   logs: '/logs',
   users: '/users',
@@ -33,7 +33,7 @@ export const SCREEN_LABELS = {
   'accounts-department': 'Accounts Department',
   csd: 'CS Department',
   config: 'Configuration',
-  uploads: 'Uploaded files',
+  'vendor-master': 'Vendor Master',
   'msme-reco': 'HIS vs FOCUS Reco',
   users: 'User management',
   logs: 'Activity logs',

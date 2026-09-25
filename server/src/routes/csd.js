@@ -15,7 +15,7 @@ import { normKey } from '../services/normalize.js';
 import { branchFor } from '../config/screens.js';
 import { branchScope, branchPick, branchAccountNo } from '../services/branchScope.js';
 import { logActivity } from '../services/activityLog.js';
-import { msmeFields, msmeFilter, vendorMsmeNo } from '../services/vendorMsme.js';
+import { msmeFilter, vendorColumns, vendorFields } from '../services/vendorMsme.js';
 
 export const csdRouter = express.Router();
 
@@ -96,9 +96,16 @@ const STAGE_STAMPS = {
 /**
  * The columns the search box looks in. The same three a GRN is chased by --
  * vendor, GRN number, bill number -- plus the ageing report's own GRN_NO, which
- * is what CSD quote back, and the cheque it was paid by.
+ * is what CSD quote back, the vendor's code, and the cheque it was paid by.
  */
-const SEARCH_COLUMNS = ['c.vendor_name', 'c.dpr_no', 'c.bill_no', 'c.ageing_grn_no', 'c.cheque_no'];
+const SEARCH_COLUMNS = [
+  'c.vendor_name',
+  'c.vendor_code',
+  'c.dpr_no',
+  'c.bill_no',
+  'c.ageing_grn_no',
+  'c.cheque_no',
+];
 
 /** Push the search parameter and return its SQL, or null when nothing was typed. */
 function searchFilter(term, params) {
@@ -178,7 +185,7 @@ const dispatchSelect = (extra = '') => `
          c.net_amt, c.adj_pur_return, c.adjusted_jv, c.tds_jv, c.payable_amount,
          c.cheque_no, c.chq_date, c.payment_doc_no,
          ${BRANCH_ACCOUNT_NO} AS account_no,
-         ${vendorMsmeNo('c.vendor_code')} AS vendor_msme_no,
+         ${vendorColumns('c.vendor_code')},
          c.status, c.discrepancy_notes,
          c.batch_id, c.sent_at,
          c.stage, c.stage_at, c.received_at, c.approved_at, c.rejected_at,
@@ -219,9 +226,10 @@ function mapDispatch(r) {
     billDate: r.bill_date,
     vendorCode: r.vendor_code,
     vendorName: r.vendor_name,
-    // The vendor's MSME No and MSME Status, read live off the HIS vendor master
-    // rather than copied onto the handover -- see services/vendorMsme.js.
-    ...msmeFields(r.vendor_msme_no),
+    // The vendor's MSME No, MSME Status, Inter and Supply Type, read live off
+    // the Vendor Master rather than copied onto the handover -- see
+    // services/vendorMsme.js.
+    ...vendorFields(r),
     location: r.location,
     ageingGrnNo: r.ageing_grn_no,
     netAmt: r.net_amt,

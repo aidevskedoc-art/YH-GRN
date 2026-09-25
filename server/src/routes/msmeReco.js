@@ -3,26 +3,34 @@
  * vendor list. It began as the MSME reco, and the route, screen key and
  * tables keep that name.
  *
- *   GET    /api/msme-reco/runs            every run, newest first
- *   POST   /api/msme-reco/runs            upload both files, reconcile, store
- *   GET    /api/msme-reco/runs/:id/rows   one run's rows, filtered and paged
- *   DELETE /api/msme-reco/runs/:id        remove a run (administrators only)
+ *   POST   /api/msme-reco/runs   upload both files, reconcile, store
+ *   GET    /api/msme-reco/rows   every vendor once, filtered and paged
  *
  * A run is stored -- a row for every vendor master row, and a count for the
  * Accounts codes the vendor master lacks -- so the screen and its export read
- * from the table rather than from the files, and reopening a
- * run a week later does not mean finding the two workbooks again. The
- * matching is services/msmeReco.js; nothing here decides what agrees.
+ * from the table rather than from the files. The screen shows no one run: it
+ * shows every vendor once, from the latest reco that carried it (CURRENT
+ * below). The matching is services/msmeReco.js; nothing here decides what
+ * agrees.
+ *
+ * The vendor master file is also applied to the Vendor Master -- new vendors
+ * added, known ones updated with the file's values (services/vendorMaster.js).
+ * It is the correct data, and this is the only way in for it.
+ *
+ * There is no deleting a run. The Vendor Master keeps one row per vendor, so
+ * uploading the same files again only updates what changed -- nothing piles
+ * up that would need taking back out.
  */
 import express from 'express';
 import multer from 'multer';
 import { config } from '../config/env.js';
 import { query, withTransaction } from '../db/pool.js';
-import { requireAuth, requireAdmin, requireScreen } from '../middleware/auth.js';
+import { requireAuth, requireScreen } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
 import { readVendorMaster, readAccountMaster, ExcelFormatError } from '../services/excelParser.js';
 import { reconcileMsme, FIELDS, FIELD_KEYS, STATUS, STORED_STATUSES } from '../services/msmeReco.js';
 import { bulkInsert } from '../services/ingest.js';
+import { applyPendingRuns, applyVendorMaster } from '../services/vendorMaster.js';
 import { logActivity } from '../services/activityLog.js';
 
 export const msmeRecoRouter = express.Router();
@@ -106,6 +114,9 @@ function mapRun(row) {
     },
     uploadedAt: row.uploaded_at,
     uploadedBy: row.uploader_name || row.uploader_username || null,
+    // What the run did to the Vendor Master; null for one not yet applied.
+    vendorMaster:
+      row.vm_added == null ? null : { added: row.vm_added, updated: row.vm_updated, unchanged: row.vm_unchanged },
   };
 }
 
@@ -129,23 +140,24 @@ function mapRow(row) {
     acc: sideOf(row, 'acc', row.status !== STATUS.NOT_IN_ACCOUNTS),
     mismatchFields: row.mismatch_fields ?? [],
     remarks: row.remarks,
+    // When the reco this row came from was run -- the latest that had the
+    // vendor (see CURRENT).
+    recoAt: row.run_uploaded_at ?? null,
   };
 }
 
+// With what the run's vendor master file did to the Vendor Master, when it has
+// been applied -- see vendor_master_applies in schema.sql.
 const RUN_SELECT = `
-  SELECT r.*, u.full_name AS uploader_name, u.username AS uploader_username
+  SELECT r.*, u.full_name AS uploader_name, u.username AS uploader_username,
+         vma.added AS vm_added, vma.updated AS vm_updated, vma.unchanged AS vm_unchanged
     FROM msme_reco_runs r
-    LEFT JOIN users u ON u.id = r.uploaded_by`;
+    LEFT JOIN users u ON u.id = r.uploaded_by
+    LEFT JOIN vendor_master_applies vma ON vma.run_id = r.id`;
 
 async function findRun(id) {
   const { rows } = await query(`${RUN_SELECT} WHERE r.id = $1`, [id]);
   return rows[0] ?? null;
-}
-
-/** A positive integer id from the URL, or null. */
-function runId(value) {
-  const id = Number(value);
-  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 /** Push the search parameter and return its SQL, or null when nothing was typed. */
@@ -167,20 +179,6 @@ function viewFilter(view, params) {
   params.push(view === ALL_VIEW ? STORED_STATUSES : [view]);
   return `status = ANY($${params.length})`;
 }
-
-/**
- * GET /api/msme-reco/runs
- *
- * Also carries the field list, so the screen can lay out its table before a
- * run has been chosen.
- */
-msmeRecoRouter.get(
-  '/runs',
-  asyncHandler(async (req, res) => {
-    const { rows } = await query(`${RUN_SELECT} ORDER BY r.uploaded_at DESC, r.id DESC`);
-    res.json({ runs: rows.map(mapRun), fields: PUBLIC_FIELDS });
-  }),
-);
 
 /**
  * POST /api/msme-reco/runs - both files, as `vendorFile` and `accountFile`.
@@ -227,13 +225,13 @@ msmeRecoRouter.post(
     // kept as rows -- see STORED_STATUSES.
     const stored = results.filter((r) => STORED_STATUSES.includes(r.status));
 
-    const runRow = await withTransaction(async (client) => {
+    const { id: runRow, vendorMaster } = await withTransaction(async (client) => {
       const { rows } = await client.query(
         `INSERT INTO msme_reco_runs
            (vendor_file_name, vendor_sheet_name, account_file_name, vendor_row_count, account_row_count,
             matched_count, mismatch_count, not_in_accounts_count, not_in_his_count, uploaded_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING id`,
+         RETURNING id, uploaded_at`,
         [
           vendorFile.originalname,
           vendor.sheetName ?? null,
@@ -266,7 +264,25 @@ msmeRecoRouter.post(
         r.remarks,
       ]);
 
-      return id;
+      // The same file, every column of it, into the Vendor Master: new vendors
+      // added, known ones updated. In this transaction, so a reco that fails
+      // leaves the master as it was.
+      //
+      // Last, after the reco's own rows: the master's lock is taken here, and
+      // held to the end, so recos landing together are applied one after the
+      // other. Taking it after the tables above keeps the order every other
+      // path takes them in -- migrate.js runs schema.sql over the same tables
+      // in that order -- so the two cannot deadlock. First any earlier run not
+      // yet applied (one stored by a server still running older code), so this
+      // file lands on top of it; not this one, which has no apply row yet.
+      await applyPendingRuns(client, { exceptRunId: id });
+      const applied = await applyVendorMaster(
+        client,
+        { id, uploadedAt: rows[0].uploaded_at, fileName: vendorFile.originalname, uploadedBy: req.user.id },
+        vendor.master,
+      );
+
+      return { id, vendorMaster: applied };
     });
 
     const run = await findRun(runRow);
@@ -288,6 +304,11 @@ msmeRecoRouter.post(
         accountRows: summary.accountRowCount,
         onlyInAccounts: statuses[STATUS.NOT_IN_HIS],
         rowsStored: stored.length,
+        vendorMasterSheet: vendor.master.sheetName ?? null,
+        vendorMasterAdded: vendorMaster.added,
+        vendorMasterUpdated: vendorMaster.updated,
+        vendorMasterUnchanged: vendorMaster.unchanged,
+        vendorMasterSkipped: vendorMaster.skipped,
       },
     });
 
@@ -296,11 +317,37 @@ msmeRecoRouter.post(
 );
 
 /**
- * GET /api/msme-reco/runs/:id/rows?view=&field=&q=&page=&pageSize=&all=
+ * Every vendor once, as a WITH clause named `cur`: each HIS vendor's row from
+ * the latest reco that carried it. Vendors are told apart by code as the reco
+ * matches them -- trimmed, runs of spaces folded to one, upper-cased (codeKey
+ * in services/msmeReco.js) -- so uploading the same files again replaces
+ * their rows here rather than adding a second copy, and a vendor the latest
+ * file no longer lists keeps the answer its last reco gave.
+ *
+ * Every query below reads this rather than one run: the screen has no run to
+ * pick, it shows everything at once.
+ */
+const CODE_KEY_SQL = `upper(regexp_replace(btrim(m.vendor_code), '\\s+', ' ', 'g'))`;
+const CURRENT = `
+  WITH cur AS (
+    SELECT DISTINCT ON (${CODE_KEY_SQL}) m.*, r.uploaded_at AS run_uploaded_at
+      FROM msme_reco_rows m
+      JOIN msme_reco_runs r ON r.id = m.run_id
+     WHERE m.status IN (${STORED_STATUSES.map((s) => `'${s}'`).join(', ')})
+     ORDER BY ${CODE_KEY_SQL}, r.uploaded_at DESC, r.id DESC, m.seq
+  )`;
+
+/**
+ * GET /api/msme-reco/rows?view=&field=&q=&page=&pageSize=&all=
+ *
+ * Every vendor once (see CURRENT), with the latest reco's own details for the
+ * line over the table -- `latestRun` is null before the first reco -- and how
+ * many recos have been run in all.
  *
  * `view` is one of the cards (ALL by default); `field` narrows to the rows
  * whose `field` pair disagrees; `q` is the search box. `all=1` drops the
- * paging, for the export.
+ * paging, for the export. Rows come the latest reco's vendors first, in its
+ * file's order, then any vendor only an earlier reco had.
  *
  * `counts` are per status with only the search applied -- the cards are how a
  * view is picked, so they must not shrink to the one already picked.
@@ -308,23 +355,22 @@ msmeRecoRouter.post(
  * how the view is narrowed, so they count what is in it.
  */
 msmeRecoRouter.get(
-  '/runs/:id/rows',
+  '/rows',
   asyncHandler(async (req, res) => {
-    const id = runId(req.params.id);
-    const run = id && (await findRun(id));
-    if (!run) return res.status(404).json({ error: 'That reco could not be found.' });
+    const { rows: latestRows } = await query(`${RUN_SELECT} ORDER BY r.uploaded_at DESC, r.id DESC LIMIT 1`);
+    const { rows: runCountRows } = await query('SELECT COUNT(*)::int AS n FROM msme_reco_runs');
 
     const view = VIEWS.has(req.query.view) ? req.query.view : ALL_VIEW;
     const field = FIELD_KEYS.includes(req.query.field) ? req.query.field : null;
     const wantsAll = req.query.all === '1';
 
     // --- The cards: per status, search only.
-    const countParams = [id];
-    const countWhere = ['run_id = $1', viewFilter(ALL_VIEW, countParams)];
+    const countParams = [];
+    const countWhere = [viewFilter(ALL_VIEW, countParams)];
     const countSearch = searchFilter(req.query.q, countParams);
     if (countSearch) countWhere.push(countSearch);
     const { rows: statusRows } = await query(
-      `SELECT status, COUNT(*)::int AS n FROM msme_reco_rows WHERE ${countWhere.join(' AND ')} GROUP BY status`,
+      `${CURRENT} SELECT status, COUNT(*)::int AS n FROM cur WHERE ${countWhere.join(' AND ')} GROUP BY status`,
       countParams,
     );
     const counts = Object.fromEntries(STORED_STATUSES.map((s) => [s, 0]));
@@ -332,13 +378,14 @@ msmeRecoRouter.get(
     counts[ALL_VIEW] = STORED_STATUSES.reduce((sum, s) => sum + counts[s], 0);
 
     // --- The chips: per field, within the view and the search.
-    const chipParams = [id];
-    const chipWhere = ['run_id = $1', viewFilter(view, chipParams)];
+    const chipParams = [];
+    const chipWhere = [viewFilter(view, chipParams)];
     const chipSearch = searchFilter(req.query.q, chipParams);
     if (chipSearch) chipWhere.push(chipSearch);
     const { rows: fieldRows } = await query(
-      `SELECT f AS field, COUNT(*)::int AS n
-         FROM msme_reco_rows, unnest(mismatch_fields) AS f
+      `${CURRENT}
+       SELECT f AS field, COUNT(*)::int AS n
+         FROM cur, unnest(mismatch_fields) AS f
         WHERE ${chipWhere.join(' AND ')}
         GROUP BY f`,
       chipParams,
@@ -347,8 +394,8 @@ msmeRecoRouter.get(
     for (const r of fieldRows) if (r.field in fieldCounts) fieldCounts[r.field] = r.n;
 
     // --- The rows: view, field and search.
-    const params = [id];
-    const where = ['run_id = $1', viewFilter(view, params)];
+    const params = [];
+    const where = [viewFilter(view, params)];
     if (field) {
       params.push(field);
       where.push(`$${params.length} = ANY(mismatch_fields)`);
@@ -357,23 +404,22 @@ msmeRecoRouter.get(
     if (search) where.push(search);
     const whereSql = where.join(' AND ');
 
-    const { rows: totalRows } = await query(
-      `SELECT COUNT(*)::int AS n FROM msme_reco_rows WHERE ${whereSql}`,
-      params,
-    );
+    const { rows: totalRows } = await query(`${CURRENT} SELECT COUNT(*)::int AS n FROM cur WHERE ${whereSql}`, params);
     const total = totalRows[0].n;
 
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || 20));
 
     const { rows } = await query(
-      `SELECT * FROM msme_reco_rows WHERE ${whereSql} ORDER BY seq
+      `${CURRENT}
+       SELECT * FROM cur WHERE ${whereSql} ORDER BY run_uploaded_at DESC, run_id DESC, seq
        ${wantsAll ? '' : `LIMIT $${params.length + 1} OFFSET $${params.length + 2}`}`,
       wantsAll ? params : [...params, pageSize, (page - 1) * pageSize],
     );
 
     return res.json({
-      run: mapRun(run),
+      latestRun: latestRows[0] ? mapRun(latestRows[0]) : null,
+      runCount: runCountRows[0].n,
       fields: PUBLIC_FIELDS,
       view,
       field,
@@ -383,40 +429,5 @@ msmeRecoRouter.get(
       total,
       ...(wantsAll ? {} : { page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) }),
     });
-  }),
-);
-
-/**
- * DELETE /api/msme-reco/runs/:id
- *
- * Administrators only, as deleting an upload is. Its rows go with it.
- */
-msmeRecoRouter.delete(
-  '/runs/:id',
-  requireAdmin,
-  asyncHandler(async (req, res) => {
-    const id = runId(req.params.id);
-    const run = id && (await findRun(id));
-    if (!run) return res.status(404).json({ error: 'That reco could not be found.' });
-
-    await query('DELETE FROM msme_reco_runs WHERE id = $1', [id]);
-
-    logActivity(req, {
-      action: 'MSME_RECO_DELETE',
-      target: `${run.vendor_file_name} vs ${run.account_file_name}`,
-      summary: `Deleted the HIS vs FOCUS reco of ${run.vendor_file_name} against ${run.account_file_name}`,
-      details: {
-        runId: run.id,
-        vendorFile: run.vendor_file_name,
-        vendorSheet: run.vendor_sheet_name,
-        accountFile: run.account_file_name,
-        ranAt: run.uploaded_at,
-        ranBy: run.uploader_name || run.uploader_username || null,
-        vendorRows: run.vendor_row_count,
-        accountRows: run.account_row_count,
-      },
-    });
-
-    return res.status(204).end();
   }),
 );

@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import Sheet from './Sheet.jsx';
 import { chequePrepared } from '../services/cheque.js';
 import { useConfirm } from './ConfirmDialog.jsx';
-import MsmeCells from './MsmeCells.jsx';
+import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
 import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, canHandToCsd } from '../services/resultsViews.js';
 
 const currency = new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -874,7 +874,7 @@ export default function ResultsTable({
     (isAll ? 1 : 0) + // Match
     (showGrnSide ? 1 : 0) + // Warehouse
     4 + // Division, GRN No (Cheque No on Cheque view), Vendor, Vendor Code
-    2 + // MSME No, MSME Status
+    VENDOR_CELL_COUNT + // MSME No, MSME Status, Inter, Supply Type
     (showGrnDetail ? 3 : 0) + // GRN Date, Bill No, Bill Date
     // Bill.Amount, Transport Amount, Total Amount, Add.Amount, Ded.Amount
     (showGrnSide ? 5 : 0) +
@@ -883,7 +883,7 @@ export default function ResultsTable({
     // Cheque No (pinned up front on Cheque view), Cheque Date, PaymentDocNo,
     // Account No
     (showChequeDetail ? (byCheque ? 3 : 4) : 0) +
-    (showAgeing ? 2 : 0); // Action, Status
+    (showAgeing ? 2 : 0); // Status, Action
 
   const isSent = (row) => row.csdSent || justSent.has(row.dprNo);
   const isFiled = (row) => row.recordsSent || justFiled.has(row.dprNo);
@@ -1215,12 +1215,14 @@ export default function ResultsTable({
                 down the column or lined up against the row above it, which is
                 the whole reason for having it beside the name. */}
             <th>Vendor Code</th>
-            {/* The vendor's MSME registration, off the HIS vendor master the
-                latest HIS vs FOCUS Reco run read -- see MsmeCells. On every
-                layout, the Cheque view's included: it is a question about the
-                vendor, and every layout has one. */}
+            {/* The vendor's details off the Vendor Master -- its MSME
+                registration, and the Inter and Supply Type picked there -- see
+                VendorCells. On every layout, the Cheque view's included: they
+                are about the vendor, and every layout has one. */}
             <th>MSME No</th>
             <th>MSME Status</th>
+            <th>Inter</th>
+            <th>Supply Type</th>
             {/* The GRN report's own amount breakdown, in its source order --
                 Bill.Amount and Transport Amount make up Total Amount, and
                 Add.Amount / Ded.Amount adjust it further. A Pending row is
@@ -1263,8 +1265,11 @@ export default function ResultsTable({
                 screen rather than off any of the three reports -- so it sits
                 after the cheque, as the account that cheque was drawn on. */}
             {showChequeDetail && <th>Account No</th>}
-            {showAgeing && <th>Action</th>}
             {showAgeing && <th>Status</th>}
+            {/* Last, and pinned to the right edge -- see .table__pin--action in
+                styles.css -- so the row's controls stay in reach however far
+                the table has been scrolled sideways. */}
+            {showAgeing && <th className="table__pin table__pin--action">Action</th>}
           </tr>
         </thead>
         <tbody>
@@ -1326,7 +1331,7 @@ export default function ResultsTable({
               <td className="table__mono">
                 {row.vendorCode || <span className="table__miss">&mdash;</span>}
               </td>
-              <MsmeCells row={row} />
+              <VendorCells row={row} />
               {showGrnSide && <td className="table__num">{formatAmountOrDash(row.billAmount)}</td>}
               {showGrnSide && (
                 <td className="table__num">{formatAmountOrDash(row.transportAmount)}</td>
@@ -1384,13 +1389,38 @@ export default function ResultsTable({
                   )}
                 </td>
               )}
+              {showAgeing && (
+                <td>
+                  {row.status === 'PENDING' ? (
+                    <span className="table__miss">&mdash;</span>
+                  ) : (
+                    <RowStatus
+                      sent={isSent(row)}
+                      stage={row.csdStage}
+                      accountsStage={row.csdAccountsStage}
+                      forwardedTo={row.csdForwardedTo}
+                      forwardedRoute={row.csdForwardedRoute}
+                      forwardedName={row.csdForwardedName}
+                      forwardedMobile={row.csdForwardedMobile}
+                      forwardedDate={row.csdForwardedDate}
+                      forwardedCourierName={row.csdForwardedCourierName}
+                      forwardedDocketNo={row.csdForwardedDocketNo}
+                      forwardedRemarks={row.csdForwardedRemarks}
+                      rejectRemarks={row.csdRejectRemarks}
+                      priorRejection={row.priorRejection}
+                      filed={isFiled(row)}
+                      clearedOn={row.chequeClearedOn}
+                    />
+                  )}
+                </td>
+              )}
               {/* A pending GRN has no ageing entry, so there is nothing to
                   hand over and nothing for CSD to have done with it. On Total
                   GRNS those two cells are dashes rather than a disabled button
                   and a "Not sent" pill, which would both read as a step not yet
                   taken when it is one that cannot be. */}
               {showAgeing && (
-                <td>
+                <td className="table__pin table__pin--action">
                   {row.status === 'PENDING' ? (
                     <span className="table__miss" title="Not in the ageing report yet — nothing to hand over">
                       &mdash;
@@ -1419,31 +1449,6 @@ export default function ResultsTable({
                       grouped={Boolean(row.chequeNo)}
                       onSend={send}
                       onTakeBack={takeBack}
-                    />
-                  )}
-                </td>
-              )}
-              {showAgeing && (
-                <td>
-                  {row.status === 'PENDING' ? (
-                    <span className="table__miss">&mdash;</span>
-                  ) : (
-                    <RowStatus
-                      sent={isSent(row)}
-                      stage={row.csdStage}
-                      accountsStage={row.csdAccountsStage}
-                      forwardedTo={row.csdForwardedTo}
-                      forwardedRoute={row.csdForwardedRoute}
-                      forwardedName={row.csdForwardedName}
-                      forwardedMobile={row.csdForwardedMobile}
-                      forwardedDate={row.csdForwardedDate}
-                      forwardedCourierName={row.csdForwardedCourierName}
-                      forwardedDocketNo={row.csdForwardedDocketNo}
-                      forwardedRemarks={row.csdForwardedRemarks}
-                      rejectRemarks={row.csdRejectRemarks}
-                      priorRejection={row.priorRejection}
-                      filed={isFiled(row)}
-                      clearedOn={row.chequeClearedOn}
                     />
                   )}
                 </td>

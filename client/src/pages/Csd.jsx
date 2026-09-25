@@ -15,6 +15,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { exportCsd } from '../services/exporter.js';
+import { singlePress } from '../services/press.js';
 import LocationFilter from '../components/LocationFilter.jsx';
 import MsmeFilter from '../components/MsmeFilter.jsx';
 import {
@@ -30,7 +31,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import Sheet from '../components/Sheet.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
-import MsmeCells from '../components/MsmeCells.jsx';
+import VendorCells, { VENDOR_CELL_COUNT } from '../components/VendorCells.jsx';
 import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, leadFigures } from '../services/resultsViews.js';
 import { csdChequeHandovers, expandCheques } from '../services/chequeGroups.js';
 
@@ -174,12 +175,13 @@ const STAGE_DATES = [
 
 /**
  * The header row below, counted, for either view: Division, the pinned GRN No
- * (Cheque No on Cheque view), Vendor, Vendor Code, MSME No, MSME Status and
- * Status on both; GRN view adds GRN Date, Bill No, Bill Date, Focus doc_no and
+ * (Cheque No on Cheque view), Vendor, Vendor Code and Status on both, with the
+ * Vendor Master's four (MSME No, MSME Status, Inter, Supply Type -- see
+ * VendorCells); GRN view adds GRN Date, Bill No, Bill Date, Focus doc_no and
  * the five amounts; Cheque view adds Cheque Date, Cheque Amount, PaymentDocNo
  * and Account No. Then one per stage date, then Action.
  */
-const columnCount = (byCheque) => 7 + (byCheque ? 4 : 9) + STAGE_DATES.length + 1;
+const columnCount = (byCheque) => 5 + VENDOR_CELL_COUNT + (byCheque ? 4 : 9) + STAGE_DATES.length + 1;
 
 /**
  * The two matched statuses, spelled for a reader. A GRN reaches CSD from either
@@ -621,20 +623,14 @@ export default function Csd() {
   }
 
   /**
-   * Pick a stage to look at, or press the chosen one again to see everything.
+   * Show one stage, or every stage for ''. What the cards and the dropdown
+   * both call.
    *
-   * Unlike the results page's cards -- where one bucket is always selected,
-   * because every GRN is in exactly one of them -- "all four" is a legitimate
-   * view here, and it is the one the screen opens on.
-   */
-  function selectStage(next) {
-    // A card toggles: pressing the chosen one again clears the filter.
-    applyStage(stage === next ? '' : next);
-  }
-
-  /**
-   * Show one stage, or every stage for ''. What the dropdown calls; the cards
-   * go through selectStage above so they can also toggle off.
+   * A card pressed again keeps its stage: one that switched itself off on a
+   * second press also switched itself off on a double-click, and dropped the
+   * queue back to every stage without being asked. "All stages" in the
+   * dropdown beside the search box is the way back to the whole queue -- it is
+   * also what the screen opens on.
    */
   function applyStage(next) {
     // replace, not push: working through the four stages should not leave four
@@ -896,8 +892,13 @@ export default function Csd() {
                 key={s.key}
                 type="button"
                 className={`card stat stat--${s.tone} ${stage === s.key ? 'is-active' : ''}`}
-                onClick={() => selectStage(s.key)}
+                onClick={singlePress(() => applyStage(s.key))}
                 aria-pressed={stage === s.key}
+                title={
+                  stage === s.key
+                    ? `Showing ${s.label} only — choose All stages in the stage filter for the whole queue`
+                    : `Show only the ${s.label} handovers`
+                }
               >
                 <div className="stat__label">{s.label}</div>
                 <div className="stat__value">{figures.value.toLocaleString('en-IN')}</div>
@@ -941,7 +942,7 @@ export default function Csd() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search vendor, GRN or bill no."
+            placeholder="Search vendor, vendor code, GRN or bill no."
             aria-label="Search the CSD queue by vendor name, GRN number or bill number"
           />
 
@@ -1042,11 +1043,14 @@ export default function Csd() {
                     {/* The code used to sit under the name, where it could not
                         be read down the column. */}
                     <th>Vendor Code</th>
-                    {/* The vendor's MSME registration off the HIS vendor master,
-                        read live rather than copied onto the handover -- see
-                        MsmeCells. On both views: it is about the vendor. */}
+                    {/* The vendor's details off the Vendor Master -- its MSME
+                        registration, and the Inter and Supply Type picked there
+                        -- read live rather than copied onto the handover. See
+                        VendorCells. On both views: they are about the vendor. */}
                     <th>MSME No</th>
                     <th>MSME Status</th>
+                    <th>Inter</th>
+                    <th>Supply Type</th>
                     {!byCheque && (
                       <>
                         <th>Focus doc_no</th>
@@ -1145,7 +1149,7 @@ export default function Csd() {
                       <td className="table__mono">
                         {row.vendorCode || <span className="table__miss">&mdash;</span>}
                       </td>
-                      <MsmeCells row={row} />
+                      <VendorCells row={row} />
                       {!byCheque && (
                         <>
                           <td className="table__mono">{row.ageingGrnNo}</td>

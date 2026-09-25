@@ -14,7 +14,7 @@ import {
 } from '../services/branchScope.js';
 import { branchFor } from '../config/screens.js';
 import { logActivity } from '../services/activityLog.js';
-import { msmeFields, msmeFilter, vendorMsmeNo } from '../services/vendorMsme.js';
+import { msmeFilter, vendorColumns, vendorFields } from '../services/vendorMsme.js';
 
 export const resultsRouter = express.Router();
 
@@ -167,22 +167,25 @@ const BRANCH_DIVISION_CODE = branchDivisionCode({
 });
 
 /**
- * The GRN's vendor's MSME number off the HIS vendor master -- see
- * services/vendorMsme.js, which every GRN table's route shares.
+ * The GRN's vendor's MSME number, Inter and Supply Type off the Vendor Master
+ * -- see services/vendorMsme.js, which every GRN table's route shares.
  */
-const VENDOR_MSME_NO = vendorMsmeNo('g.vendor_code');
+const VENDOR_COLUMNS = vendorColumns('g.vendor_code');
 
 /**
  * The columns the search box looks in: the three a transaction is looked up by,
- * on both sides of the match, plus the cheque it was paid by. The two systems
+ * on both sides of the match, the vendor's code, plus the cheque it was paid by. The two systems
  * spell vendor names differently and number the GRN differently again, so
  * either side's spelling is a legitimate thing to type.
  */
 const SEARCH_COLUMNS = [
   'g.vendor_name',
+  'g.vendor_code',
   'g.dpr_no',
   'g.bill_no',
   'a.vendor_name',
+  // The ageing side's own code, for a row whose GRN report entry carries none.
+  'a.vendor_code',
   'a.grn_no',
   'a.grn_number',
   'a.bill_no',
@@ -301,18 +304,20 @@ const CHEQUE_COLUMNS = `
 /* --------------------------------------------------------------------------
    The Status column, as a filter.
 
-   The dropdown beside the search box offers exactly what that column can say --
-   Cheque cleared, the four CSD stages, Accounts' own two hand-back steps, the
-   four places Accounts can send a GRN on to, Sent to Records, Not sent -- so
-   that picking a value asks for the rows showing it, rather than for some
-   adjacent idea a reader has to translate.
+   Every value that column can say -- Cheque cleared, the four CSD stages,
+   Accounts' own two hand-back steps, the five places Accounts can send a GRN
+   on to, Sent to Records -- is an Action dropdown option (see ACTIONS below),
+   so that picking one asks for the rows showing it rather than for some
+   adjacent idea a reader has to translate. `progress`, which the cards and the
+   Status dropdown set, reads the same map: the Status dropdown offers only the
+   cheque three, and the CSD and Accounts cards name their own keys.
 
    The buckets overlap on purpose, because the column does. A GRN whose cheque
    cleared while it was sitting at CSD shows "Cheque cleared" with its stage
    underneath, and it is a true answer to both "which cleared" and "which are
-   approved at CSD" -- so both find it. Only NOT_SENT is exclusive, since it is
-   defined as the absence of the others: it is what the column says when there
-   is nothing else to say.
+   approved at CSD" -- so both find it. NOT_SENT is exclusive of the handover
+   values, being defined as the absence of them, but not of CLEARED: a cleared
+   cheque on a bill nobody has sent anywhere is both.
    -------------------------------------------------------------------------- */
 
 /*
@@ -388,11 +393,58 @@ const PROGRESS = {
   VENDOR: "c.forwarded_to = 'VENDOR' AND c.forwarded_route = 'VENDOR'",
   PURCHASE_DEPT: "c.forwarded_to = 'VENDOR' AND c.forwarded_route = 'PURCHASE_DEPT'",
   OTHERS: "c.forwarded_to = 'OTHERS'",
+  COURIER: "c.forwarded_to = 'COURIER'",
   RECORDS: 'rd.id IS NOT NULL',
-  NOT_SENT: `c.id IS NULL AND rd.id IS NULL AND ${CHEQUE_CLEARED_ON} IS NULL`,
+  // Gone to neither destination: the rows whose Action cell still offers the
+  // Send picker. A cleared cheque does not change that -- the picker is still
+  // there -- so such a row is Not sent as well as Cheque cleared, the same
+  // overlap every other value here has with CLEARED.
+  NOT_SENT: 'c.id IS NULL AND rd.id IS NULL',
 };
 
 const PROGRESS_KEYS = Object.keys(PROGRESS);
+
+/**
+ * The values the Action filter takes: where a row stands in its own journey --
+ * ready for CSD, at CSD, back with Accounts, forwarded on, filed, cleared.
+ * Every PROGRESS key but the cheque three, which are the cards' question
+ * (whether a cheque exists at all) rather than a place the row has got to, and
+ * NOT_SENT, which the dropdown does not offer: SEND_TO_CSD below is the part
+ * of it anyone filters for.
+ *
+ * It narrows on top of `progress` rather than replacing it: pick Cheque
+ * Prepared on the cards, then CSD received here, and the table is the bills
+ * with a cheque that CSD have received. Same clauses as PROGRESS, so a row it
+ * finds is one whose Status column says what the option says.
+ *
+ * Plus one value no Status pill says, because it is about the Action cell
+ * instead: SEND_TO_CSD, the rows whose Send picker offers Send to CSD -- in
+ * accounts, sent nowhere yet, and with a cheque drawn up to hand over. The
+ * same rule as canSend in ResultsTable.jsx. Not a PROGRESS key, so the Status
+ * dropdown and the summary's counts are untouched by it.
+ */
+const CHEQUE_PROGRESS = new Set(['CHEQUE_PREPARED', 'CHEQUE_NOT_PREPARED', 'PAYMENT_NOT_REQUIRED']);
+const NOT_ACTIONS = new Set([...CHEQUE_PROGRESS, 'NOT_SENT']);
+const ACTIONS = {
+  ...Object.fromEntries(
+    PROGRESS_KEYS.filter((key) => !NOT_ACTIONS.has(key)).map((key) => [key, PROGRESS[key]]),
+  ),
+  SEND_TO_CSD: `(${PROGRESS.NOT_SENT}) AND (${PROGRESS.CHEQUE_PREPARED})`,
+};
+const ACTION_KEYS = Object.keys(ACTIONS);
+const ACTION_SET = new Set(ACTION_KEYS);
+
+/** A row of `<key>` count columns, as `{ KEY: n }` over ACTION_KEYS. */
+function actionCountsFrom(row) {
+  return Object.fromEntries(ACTION_KEYS.map((key) => [key, row?.[key.toLowerCase()] ?? 0]));
+}
+
+/** The SQL for one Action value, or null for any -- see ACTIONS. No parameters. */
+function actionFilter(action) {
+  if (!action) return null;
+  const sql = ACTIONS[action];
+  return sql ? `(${sql})` : null;
+}
 
 /**
  * The SQL for one Status value, or null when every row is in scope.
@@ -502,12 +554,12 @@ const resultJoins = (scope) => `
   ${CHEQUE_MATCH}
 `;
 
-// The vendor's MSME number rides on this select and not on ROW_COLUMNS, which
-// the Cheque view also builds on: that one reads every row before it folds
-// them into cheques, so it looks the vendor up afterwards, once per cheque
-// listed -- see chequeRows.
+// The vendor's Vendor Master details ride on this select and not on
+// ROW_COLUMNS, which the Cheque view also builds on: that one reads every row
+// before it folds them into cheques, so it looks the vendor up afterwards, once
+// per cheque listed -- see chequeRows.
 const rowSelect = (scope) =>
-  `${ROW_COLUMNS}, ${VENDOR_MSME_NO} AS vendor_msme_no ${resultJoins(scope)} ${PRIOR_REJECTION_JOIN}`;
+  `${ROW_COLUMNS}, ${VENDOR_COLUMNS} ${resultJoins(scope)} ${PRIOR_REJECTION_JOIN}`;
 
 function mapRow(r) {
   return {
@@ -539,8 +591,9 @@ function mapRow(r) {
     // not the ageing report's own DivisionCode above, which is null on a
     // Pending row. Null when no configured branch claims the row's Location.
     branchDivisionCode: r.branch_division_code ?? null,
-    // The vendor's MSME No and MSME Status -- see services/vendorMsme.js.
-    ...msmeFields(r.vendor_msme_no),
+    // The vendor's MSME No, MSME Status, Inter and Supply Type -- see
+    // services/vendorMsme.js.
+    ...vendorFields(r),
     netAmt: r.net_amt,
     adjPurReturn: r.adj_pur_return,
     adjustedJv: r.adjusted_jv,
@@ -652,6 +705,12 @@ async function resolveScope(idParam) {
 /**
  * Push the parameter for the batch filter and return its SQL, or null when
  * every batch is in scope.
+ *
+ * One upload means the GRNs whose result it filed: an upload replaces the
+ * stored row and result of every GRN it brings either side of (saveBatch in
+ * services/ingest.js), so a GRN belongs to the upload that last brought it,
+ * not to every upload that ever carried it. Only the API offers this; the
+ * screens always ask for every upload.
  */
 function batchFilter(scope, params) {
   if (scope.all) return null;
@@ -669,14 +728,13 @@ function whereFrom(clauses) {
  * One row per GRN number, for the combined view.
  *
  * A GRN still pending when one month's report is taken is uploaded again with
- * the next, so across uploads the same GRN number appears several times. The
- * most recently uploaded row wins -- it carries the latest state of that GRN,
- * which is usually the one that has since reached accounts -- and the earlier
- * copies are dropped.
+ * the next. An upload now replaces the GRN's stored row and result rather than
+ * adding another (saveBatch in services/ingest.js), and `npm run migrate`
+ * cleared the copies stored before that and made them unique -- so this
+ * normally has nothing left to fold. It stays as the guard for a database not
+ * yet migrated: the most recently uploaded copy wins, as it always has.
  *
- * Within one upload the GRN number is already unique (it is the key the whole
- * reconciliation is built on), so a single batch reads the plain table and pays
- * nothing for this.
+ * A single batch reads the plain table and pays nothing for this.
  */
 const DEDUPED_RESULTS = `(
   SELECT DISTINCT ON (dg.dpr_no_key) dr.*
@@ -876,7 +934,18 @@ const CHEQUE_VIEW = 'cheque';
 async function chequeRows(
   req,
   scope,
-  { status, progress, dept, deptJoin = '', chequeNo, page = 1, pageSize = 50, all = false },
+  {
+    status,
+    progress,
+    action,
+    dept,
+    deptJoin = '',
+    chequeNo,
+    page = 1,
+    pageSize = 50,
+    all = false,
+    withActionCounts = false,
+  },
 ) {
   const params = [];
   const baseWhere = whereFrom([
@@ -887,11 +956,14 @@ async function chequeRows(
     ...branchClauses(req, params),
     `COALESCE(a.cheque_no, '') <> ''`,
   ]);
-  const hitClauses = [
+  // Everything that decides whether a bill matches, bar the Action filter --
+  // kept apart so the Action filter's own counts can be taken over it.
+  const scopeHitClauses = [
     searchFilter(req.query.q, params),
     progressFilter(progress),
     pendingDeptFilter(dept, params),
   ].filter(Boolean);
+  const hitClauses = [...scopeHitClauses, actionFilter(action)].filter(Boolean);
   // COALESCE because an ILIKE over a null column is null, not false, and a
   // null would sort ahead of true when picking the representative bill.
   const hit = `COALESCE((${hitClauses.length > 0 ? hitClauses.join(' AND ') : 'TRUE'}), FALSE)`;
@@ -908,11 +980,11 @@ async function chequeRows(
   );
   const total = countRows[0].total;
 
-  // The vendor's MSME number on the outer select, after the fold: it is the
-  // representative bill's vendor, and asked here it is looked up once per
-  // cheque listed rather than once per bill read.
+  // The vendor's Vendor Master details on the outer select, after the fold: it
+  // is the representative bill's vendor, and asked here it is looked up once
+  // per cheque listed rather than once per bill read.
   const { rows } = await query(
-    `SELECT z.*, ${vendorMsmeNo('z.vendor_code')} AS vendor_msme_no FROM (
+    `SELECT z.*, ${vendorColumns('z.vendor_code')} FROM (
        SELECT q.*,
               SUM(q.payable_amount) OVER (PARTITION BY q.cheque_no) AS cheque_amount,
               (COUNT(*) OVER (PARTITION BY q.cheque_no))::int AS cheque_grn_count,
@@ -936,11 +1008,35 @@ async function chequeRows(
     all ? params : [...params, pageSize, (page - 1) * pageSize],
   );
 
+  // How many cheques each Action value would list, with every other filter
+  // as it stands -- the counts beside the Action dropdown's options. A cheque
+  // counts under a value when any of its matching bills is there, which is
+  // the same rule that lists it.
+  let actionCounts;
+  if (withActionCounts) {
+    const scopeHit = scopeHitClauses.length > 0 ? scopeHitClauses.join(' AND ') : 'TRUE';
+    const { rows: counted } = await query(
+      `SELECT ${ACTION_KEYS.map(
+        (key) => `(COUNT(*) FILTER (WHERE t.${key.toLowerCase()}))::int AS ${key.toLowerCase()}`,
+      ).join(', ')}
+       FROM (
+         SELECT ${ACTION_KEYS.map(
+           (key) => `BOOL_OR(COALESCE((${scopeHit} AND (${ACTIONS[key]})), FALSE)) AS ${key.toLowerCase()}`,
+         ).join(', ')}
+         ${resultJoins(scope)} ${deptJoin} ${baseWhere}
+         GROUP BY a.cheque_no
+       ) t`,
+      params,
+    );
+    actionCounts = actionCountsFrom(counted[0]);
+  }
+
   return {
     page,
     pageSize,
     total,
     totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    ...(actionCounts ? { actionCounts } : {}),
     rows: rows.map((r) => ({
       ...mapRow(r),
       // Every PayableAmount the cheque pays, added up -- see above.
@@ -1055,7 +1151,10 @@ resultsRouter.get(
 
     /*
      * How many of this upload's GRNs the Status column would show each of its
-     * values against -- the counts the filter dropdown puts beside its options.
+     * values against -- the figures the `progress` cards read, and the counts
+     * the Status dropdown puts beside its options. The Action dropdown's own
+     * counts are taken inside the chosen card instead; see actionCounts on the
+     * rows endpoint.
      *
      * FILTER aggregates rather than a GROUP BY, because these buckets overlap:
      * a cleared cheque on a GRN sitting at CSD counts under both, exactly as
@@ -1084,7 +1183,12 @@ resultsRouter.get(
        -- card: a cheque is handed back from CSD as one thing.
        (COUNT(DISTINCT a.cheque_no) FILTER (
           WHERE ${PROGRESS.RETURNED_BY_CSD} AND COALESCE(a.cheque_no, '') <> ''
-       ))::int AS accounts_queue_cheques
+       ))::int AS accounts_queue_cheques,
+       -- The same, for the ones Accounts has received and not yet forwarded
+       -- on: the Accounts Received card beside it.
+       (COUNT(DISTINCT a.cheque_no) FILTER (
+          WHERE ${PROGRESS.ACCOUNTS_RECEIVED} AND COALESCE(a.cheque_no, '') <> ''
+       ))::int AS accounts_received_cheques
        ${resultJoins(scope)}
        ${progressWhere}`,
       progressParams,
@@ -1103,6 +1207,8 @@ resultsRouter.get(
     // The Accounts Queue card's cheque figure -- its GRN count and amount are
     // summary.progress.RETURNED_BY_CSD above.
     summary.accountsQueueCheques = p.accounts_queue_cheques ?? 0;
+    // And the Accounts Received card's -- summary.progress.ACCOUNTS_RECEIVED.
+    summary.accountsReceivedCheques = p.accounts_received_cheques ?? 0;
 
     /*
      * How many cheques those prepared GRNs are spread across.
@@ -1178,6 +1284,13 @@ resultsRouter.get(
       return res.status(400).json({ error: `Unknown status "${req.query.progress}".` });
     }
 
+    // The Action filter -- where the row has got to -- narrowing on top of
+    // `progress`, which is the card's. See ACTION_KEYS.
+    const action = String(req.query.action || '').toUpperCase();
+    if (action && !ACTION_SET.has(action)) {
+      return res.status(400).json({ error: `Unknown action "${req.query.action}".` });
+    }
+
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || 50));
 
@@ -1195,15 +1308,32 @@ resultsRouter.get(
     // the account is not allowed to see.
     const chequeNo = String(req.query.chequeNo || '').trim();
 
+    // The Action dropdown's counts, when the view asking shows that dropdown
+    // (`actionCounts=1`). Never for the Action column's own cheque lookup
+    // (`chequeNo`), which only wants the rows.
+    const withActionCounts = String(req.query.actionCounts || '') === '1' && !chequeNo;
+
     // The Accounts Department's Cheque view: one row per cheque rather than per GRN.
     if (String(req.query.view || '').toLowerCase() === CHEQUE_VIEW) {
       return res.json(
-        await chequeRows(req, scope, { status, progress, dept, deptJoin, chequeNo, page, pageSize }),
+        await chequeRows(req, scope, {
+          status,
+          progress,
+          action,
+          dept,
+          deptJoin,
+          chequeNo,
+          page,
+          pageSize,
+          withActionCounts,
+        }),
       );
     }
 
     const params = [];
-    const where = whereFrom([
+    // Every filter bar the Action one, which is added on top below -- kept
+    // apart so the Action dropdown's counts can be taken over the rest.
+    const scopeClauses = [
       batchFilter(scope, params),
       statusFilter(status, params),
       searchFilter(req.query.q, params),
@@ -1212,7 +1342,8 @@ resultsRouter.get(
       chequeFilter(chequeNo, params),
       BRANCH_SCOPE,
       ...branchClauses(req, params),
-    ]);
+    ];
+    const where = whereFrom([...scopeClauses, actionFilter(action)]);
 
     const { rows: countRows } = await query(
       `SELECT COUNT(*)::int AS total ${resultJoins(scope)} ${deptJoin} ${where}`,
@@ -1226,11 +1357,27 @@ resultsRouter.get(
       [...params, pageSize, (page - 1) * pageSize],
     );
 
+    // How many rows each Action value would leave, with every other filter as
+    // it stands -- so the number beside an option is what picking it shows,
+    // inside whichever card is selected.
+    let actionCounts;
+    if (withActionCounts) {
+      const { rows: counted } = await query(
+        `SELECT ${ACTION_KEYS.map(
+          (key) => `(COUNT(*) FILTER (WHERE ${ACTIONS[key]}))::int AS ${key.toLowerCase()}`,
+        ).join(', ')}
+         ${resultJoins(scope)} ${deptJoin} ${whereFrom(scopeClauses)}`,
+        params,
+      );
+      actionCounts = actionCountsFrom(counted[0]);
+    }
+
     return res.json({
       page,
       pageSize,
       total,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
+      ...(actionCounts ? { actionCounts } : {}),
       rows: rows.map(mapRow),
     });
   }),
@@ -1524,7 +1671,7 @@ const BPAD_COLUMNS_SQL = `
          b.pending_with_user, b.pend_reason,
          ${BPAD_AGEING_SQL} AS ageing,
          ${BPAD_BRANCH_DIVISION_CODE} AS branch_division_code,
-         ${vendorMsmeNo('b.vendor_code')} AS vendor_msme_no
+         ${vendorColumns('b.vendor_code')}
 `;
 
 /**
@@ -1539,15 +1686,21 @@ const BPAD_COLUMNS_SQL = `
  * whose GRN report the rows were matched against in the first place.
  *
  * What the tab means by "this upload" is that upload's GRNs, so that is what
- * it asks for: the rows for the GRNs this batch's report carried. Where it
- * carried no report -- a register uploaded on its own, which is ordinary --
- * every row, because there is no report here to take the question from. Which
- * is the same either/or grnMatchKeys applies in routes/batches.js when it
- * decides which GRNs to keep the register's rows for, and it has to be: a row
- * kept under one rule and hidden under the other would be stored and then
- * never shown.
+ * it asks for: the rows for the GRNs whose stored row this upload brought. A
+ * GRN row is replaced by the next report that carries it, the same way (see
+ * saveBatch in services/ingest.js), so an upload whose GRNs have all come
+ * round again since has none left and shows nothing -- the same answer the
+ * results views give for it (batchFilter). Where the upload carried no GRN
+ * report at all -- a register uploaded on its own, which is ordinary -- every
+ * row, because there is no report here to take the question from. Which is the
+ * same either/or grnMatchKeys applies in routes/batches.js when it decides
+ * which GRNs to keep the register's rows for, and it has to be: a row kept
+ * under one rule and hidden under the other would be stored and then never
+ * shown.
  *
- * Both halves read grn_transactions by (batch_id, dpr_no_key), which is
+ * Only the API offers one upload at a time; the screens always ask for all.
+ *
+ * The first half reads grn_transactions by (batch_id, dpr_no_key), which is
  * idx_grn_batch_key exactly.
  */
 function bpadBatchFilter(scope, params) {
@@ -1559,7 +1712,7 @@ function bpadBatchFilter(scope, params) {
       SELECT 1 FROM grn_transactions bg
       WHERE bg.batch_id = ${batch} AND bg.dpr_no_key = b.grn_no_key
     )
-    OR NOT EXISTS (SELECT 1 FROM grn_transactions bg WHERE bg.batch_id = ${batch})
+    OR EXISTS (SELECT 1 FROM upload_batches ub WHERE ub.id = ${batch} AND ub.grn_file_name IS NULL)
   )`;
 }
 
@@ -1603,9 +1756,10 @@ function mapBpadRow(r) {
     warehouse: r.warehouse,
     vendorCode: r.vendor_code,
     vendorName: r.vendor_name,
-    // The vendor's MSME No and MSME Status -- see services/vendorMsme.js. The
-    // register's vendor codes are HIS's, the same as the GRN report's.
-    ...msmeFields(r.vendor_msme_no),
+    // The vendor's MSME No, MSME Status, Inter and Supply Type -- see
+    // services/vendorMsme.js. The register's vendor codes are HIS's, the same
+    // as the GRN report's.
+    ...vendorFields(r),
     invNo: r.inv_no,
     invDate: r.inv_date,
     grnNo: r.grn_no,
@@ -1874,7 +2028,7 @@ const TURNAROUND_COLUMNS = `
          a.cheque_no, a.payment_doc_no,
          ${CHEQUE_COLUMNS},
          ${CSD_DATES},
-         ${VENDOR_MSME_NO} AS vendor_msme_no
+         ${VENDOR_COLUMNS}
 `;
 
 const turnaroundSelect = (scope) => `
@@ -1919,8 +2073,9 @@ function mapTurnaroundRow(r) {
     divisionCode: r.division_code,
     vendorName: r.vendor_name,
     vendorCode: r.vendor_code,
-    // The vendor's MSME No and MSME Status -- see services/vendorMsme.js.
-    ...msmeFields(r.vendor_msme_no),
+    // The vendor's MSME No, MSME Status, Inter and Supply Type -- see
+    // services/vendorMsme.js.
+    ...vendorFields(r),
     location: r.location,
     // The GRN report's own amount breakdown, ahead of PayableAmount -- the
     // ageing report's own figure, which they add up to on the stores' side.

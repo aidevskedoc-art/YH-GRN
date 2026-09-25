@@ -57,11 +57,11 @@ function emptyBucket() {
  * Pair one GRN row against its ageing row, or against `undefined` when none
  * was found, and return the reconciliation verdict for that pair alone.
  *
- * Split out from reconcile() so ingest.js can run the identical verdict for a
- * pair that spans two different uploads -- a GRN stored by one upload matched
- * against an ageing row that arrived in a later one (or the other way round).
- * reconcile() below is still the whole story for two files uploaded together;
- * this is the one piece of it ingest.js also needs on its own.
+ * Split out from reconcile() because this is the verdict that is stored:
+ * ingest.js pairs every GRN an upload touches with the first ageing row on file
+ * for it -- whichever upload either side came from -- and judges the pair here
+ * (see linkResults there). reconcile() below pairs the two files of one upload
+ * with each other only, for the summary the upload answers with.
  */
 export function matchGrnAgeingPair(grn, ageing) {
   if (!ageing) {

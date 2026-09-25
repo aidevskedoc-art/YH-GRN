@@ -3,10 +3,12 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
+import { singlePress } from '../services/press.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
   ACCOUNTS_GRN_VIEW,
   ACCOUNTS_QUEUE_CARD,
+  ACCOUNTS_RECEIVED_CARD,
   ACCOUNTS_ROW,
   ACCOUNTS_TAB,
   ALL_GRNS,
@@ -28,6 +30,7 @@ import {
   deptLabel,
   isAccountsDept,
   progressCardFigures,
+  actionFilterOptions,
   progressFilterOptions,
   sectionSheets,
 } from '../services/resultsViews.js';
@@ -40,6 +43,7 @@ import LocationFilter from '../components/LocationFilter.jsx';
 import MsmeFilter from '../components/MsmeFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import { IconArrowRight, IconX } from '../components/icons.jsx';
+import BackButton, { useSectionTrail } from '../components/BackButton.jsx';
 
 /** How long the search box waits for the typing to stop before it asks. */
 const SEARCH_DELAY_MS = 300;
@@ -100,19 +104,6 @@ const TABS = [
 const CARD_TABS = TABS.filter((t) => t.card !== false);
 
 /**
- * The CSD stages, as cards beside Valid GRNs.
- *
- * They count THIS upload's GRNs at each stage -- same batch and same search as
- * every other card in the row -- rather than the whole CSD queue, so the row
- * describes one population throughout. The CSD screen's own cards count the
- * queue across every upload, which is the right scope there.
- *
- * Pressing one opens the CSD screen with that stage already chosen. The cards
- * report; the dropdown beside the search box is what filters this table. They
- * are deliberately not wired to each other, so neither lights up because of the
- * other.
- */
-/**
  * The Total GRNS tab's own filter: which half of the tab to show.
  *
  * It stands where the CSD stage dropdown stands on every other tab, because on
@@ -134,7 +125,9 @@ const MATCH_FILTERS = [
  * The Status column's own filter values, their wording and their order, live
  * in services/resultsViews.js: the Accounts Department offers the same dropdown
  * over the same rows, and two copies of this list would be two vocabularies
- * for one column. progressFilterOptions builds the options from the summary.
+ * for one column. progressFilterOptions builds the Status dropdown's options
+ * from the summary, and actionFilterOptions the Action dropdown's from the
+ * counts the rows come back with.
  */
 
 /*
@@ -225,9 +218,10 @@ const TOTAL_ROW = [ALL_GRNS, MISSING, BPAD, 'PENDING'];
  * One thing the old arrangement bought that this does not: with the same four
  * cards in the same order everywhere, a press could never move a different
  * card under the pointer. Rows differ per view now, so a second press after a
- * view change lands on whatever the new row put in that position -- on
- * Accounts, a CSD card, which leaves the screen. Worth knowing before adding
- * anything else that navigates.
+ * view change lands on whatever the new row put in that position. Every card
+ * takes singlePress (services/press.js) so that the second click of a
+ * double-click is dropped rather than pressing that card -- worth keeping on
+ * anything else added to the row.
  */
 const CARDS_FOR = {
   [ALL_GRNS]: TOTAL_ROW,
@@ -257,6 +251,7 @@ const CARD_BY_ID = Object.fromEntries([
   ...CSD_CARDS.map((card) => [card.stage, { kind: 'csd', ...card }]),
   ...CHEQUE_CARDS.map((card) => [card.progress, { kind: 'progress', ...card }]),
   [ACCOUNTS_QUEUE_CARD.progress, { kind: 'progress', ...ACCOUNTS_QUEUE_CARD }],
+  [ACCOUNTS_RECEIVED_CARD.progress, { kind: 'progress', ...ACCOUNTS_RECEIVED_CARD }],
   // The GRNs the register has no entry for -- still at the GRN store rather
   // than pending at a desk. Filed under the register's own filter value, and
   // named here so the card and its sheet in the workbook cannot drift apart.
@@ -311,6 +306,11 @@ export default function Results() {
   // Deliberately not part of `status`: it cuts across the reconciliation
   // buckets rather than being one of them.
   const [progress, setProgress] = useState('');
+  // Where the rows have got to -- Sent to CSD, Accounts received, Sent to
+  // Bank -- or '' for anywhere: the Action dropdown beside the search box. It
+  // narrows on top of the card's `progress` rather than replacing it, so a
+  // card and an action together are the rows answering both.
+  const [action, setAction] = useState('');
   // How the Accounts view's table is read: a row per GRN, or a row per cheque
   // with its bills' PayableAmount summed -- the same switch as the Accounts
   // Department's. Only the Accounts view has it; everywhere else is by GRN.
@@ -432,6 +432,10 @@ export default function Results() {
         pageSize,
         q,
         progress,
+        action,
+        // Only the Accounts view shows the Action dropdown, so only it needs
+        // the counts beside its options.
+        actionCounts: status === VALID,
         location,
         msme,
         dept: pendingDept,
@@ -440,7 +444,7 @@ export default function Results() {
       .then(setData)
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
-  }, [batchId, status, rowStatus, page, pageSize, q, progress, location, msme, pendingDept, byCheque]);
+  }, [batchId, status, rowStatus, page, pageSize, q, progress, action, location, msme, pendingDept, byCheque]);
 
   useEffect(loadRows, [loadRows]);
 
@@ -450,7 +454,7 @@ export default function Results() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [batchId, rowStatus, page, pageSize, q, progress, location, msme, pendingDept, byCheque]);
+  }, [batchId, rowStatus, page, pageSize, q, progress, action, location, msme, pendingDept, byCheque]);
 
   /*
    * The three things "Select multiple" can batch, mirroring the row's own
@@ -629,7 +633,11 @@ export default function Results() {
     setPage(1);
     // These values only ever appear on a GRN that reached accounts, so carrying
     // the filter onto Pending would show an empty tab with no visible reason why.
-    if (next !== VALID) setProgress('');
+    // The Action filter the same: its dropdown is only on the Accounts view.
+    if (next !== VALID) {
+      setProgress('');
+      setAction('');
+    }
     // The match filter belongs to Total GRNS and its dropdown is only rendered
     // there, so leaving it set would go on narrowing the next view invisibly.
     if (next !== ALL_GRNS) setMatchFilter('');
@@ -726,6 +734,27 @@ export default function Results() {
     }
   }
 
+  /**
+   * Narrow the rows to where they have got to, inside whichever card is
+   * selected -- or '' for anywhere. The card stays as it is: the two answer
+   * different questions, and together they are the rows answering both.
+   *
+   * Picking one from the GRN age view moves to Accounts, the one view whose
+   * rows have an Action column for it to be about.
+   */
+  function selectAction(next) {
+    if (next && status !== VALID) selectStatus(VALID);
+    setAction(next);
+    setPage(1);
+  }
+
+  // The views this page has shown, for the Back button -- the view only. A
+  // card or dropdown narrowing it is not a step Back walks through; returning
+  // opens the view the way the View dropdown does, unnarrowed. Total GRNS is
+  // where the page opens, so Back is not offered there.
+  const sectionTrail = useSectionTrail(status, selectStatus, ALL_GRNS);
+  const describeSection = (s) => TABS.find((tab) => tab.status === s)?.label ?? s;
+
   if (batches.length === 0 && !loading) {
     return (
       <div className="empty empty--page">
@@ -738,9 +767,14 @@ export default function Results() {
     );
   }
 
-  // The progress dropdown's own options, built from the summary the page just
+  // The Status dropdown's own options, built from the summary the page just
   // loaded rather than from a fixed list -- see progressFilterOptions.
-  const progressFilters = progressFilterOptions(summary);
+  const progressFilters = progressFilterOptions(summary, progress);
+
+  // The Action dropdown's options, with the counts the rows came back with --
+  // how many each leaves inside the card as it stands. Only the Accounts
+  // view's rows carry them; anywhere else the rows on hand are another view's.
+  const actionFilters = actionFilterOptions(status === VALID ? data?.actionCounts : null);
 
   // The cards this view shows, in the order CARDS_FOR names them.
   //
@@ -762,7 +796,7 @@ export default function Results() {
     // Not in BPAD leads, ahead of the desks, because it is the exception --
     // the same reason the table itself lists those rows first. Every card here
     // is a filter on the rows below: pressing one narrows the tab to it, and
-    // pressing the one already showing goes back to everything. The two kinds
+    // the BPAD card heading the row goes back to everything. The two kinds
     // are mutually exclusive, because a GRN the register never knew has no
     // desk to be sitting at.
     //
@@ -932,9 +966,8 @@ export default function Results() {
    * Two views have such a row now. Pending's desk cards divide it by where
    * each bill is sitting; Accounts' CSD cards divide it by how far through the
    * handover each row has got. On both, the leading card is where "All" sits
-   * in any other row of filters -- and a card that looks like the head of a
-   * breakdown but ignores a press while the ones beside it toggle is the kind
-   * of dead control people press twice and then stop trusting.
+   * in any other row of filters. The cards beside it stay on when pressed
+   * again, so this is the one way back to every row of the breakdown.
    *
    * `on` is whether anything is narrowing that row at the moment, which is
    * what pressing changes and therefore what the ring should follow. Every
@@ -952,10 +985,17 @@ export default function Results() {
       return { on: Boolean(pendingDept), noun: 'GRN', clear: () => selectPendingDept('') };
     }
     if (rowStatus === VALID) {
-      // The cheque pair and the four CSD stages all set `progress`, so that one
-      // value is what narrows this row and clearing it is what "all of them"
-      // means here.
-      return { on: Boolean(progress), noun: 'GRN in accounts', clear: () => selectProgress('') };
+      // The cheque pair and the four CSD stages all set `progress`, and the
+      // Action dropdown narrows on top of it -- so either is what narrows this
+      // row, and clearing both is what "all of them" means here.
+      return {
+        on: Boolean(progress || action),
+        noun: 'GRN in accounts',
+        clear: () => {
+          selectProgress('');
+          setAction('');
+        },
+      };
     }
     if (rowStatus === BPAD) {
       // The desk cards set `dept` and Not in BPAD sets `register`, and the two
@@ -1007,6 +1047,17 @@ export default function Results() {
       ? `Show every ${head.noun} again`
       : `Showing every ${head.noun} — press a card beside this to narrow it`;
   };
+
+  /**
+   * The name on the card heading the row showing -- Total GRNS, Pending,
+   * Accounts or BPAD. The narrowing cards beside it do not toggle: pressing the
+   * one already showing leaves it showing, the same as picking the option a
+   * dropdown already has, and the head card is the one way back to every row.
+   * A press that undid itself also undid itself on a double-click, which read
+   * as the card throwing you back to the row's head. So their tooltips name
+   * the head card rather than promising "press again".
+   */
+  const headLabel = () => (CARD_BY_ID[rowStatus] ? bucketLabel(CARD_BY_ID[rowStatus]) : 'the first card');
 
   return (
     <>
@@ -1098,6 +1149,11 @@ export default function Results() {
         </div>
       )}
 
+      {/* Back to the view before this one -- see BackButton. Not on Total
+          GRNS. Outside the cards' own condition so it is still there on a
+          view with no cards to stand over. */}
+      <BackButton trail={sectionTrail} describe={describeSection} />
+
       {summary && cards.length > 0 && (
         /* A row of one or two -- Pending with no register uploaded -- keeps the
            cards their own size rather than stretching them across the width the
@@ -1119,14 +1175,13 @@ export default function Results() {
                    register's "no entry for this GRN" is the same question the
                    rows' own desk filter answers with NOT_IN_BPAD (see
                    PENDING_DEPT in routes/results.js), so pressing it filters
-                   the view showing, and pressing it again clears it. */
-                onClick={() =>
-                  selectPendingDept(pendingDept === NOT_IN_BPAD ? '' : NOT_IN_BPAD)
-                }
+                   the view showing. Pressing it again keeps it -- the head
+                   card is what clears it; see headLabel. */
+                onClick={singlePress(() => selectPendingDept(NOT_IN_BPAD))}
                 aria-pressed={pendingDept === NOT_IN_BPAD}
                 title={
                   pendingDept === NOT_IN_BPAD
-                    ? 'Showing only the GRNs with no register entry — press again for every row'
+                    ? `Showing only the GRNs with no register entry — press ${headLabel()} for every row`
                     : 'Show only the GRNs the BPAD register has no entry for'
                 }
               >
@@ -1160,7 +1215,7 @@ export default function Results() {
                 key={`dept:${card.dept}`}
                 type="button"
                 className="card stat stat--valid stat--go"
-                onClick={() => selectStatus(VALID)}
+                onClick={singlePress(() => selectStatus(VALID))}
                 title="Open the Accounts section — the same as choosing Accounts in the View dropdown"
               >
                 <IconArrowRight size={15} className="stat__go" />
@@ -1174,11 +1229,11 @@ export default function Results() {
                 key={`dept:${card.dept}`}
                 type="button"
                 className={`card stat stat--dept ${dept === card.dept ? 'is-active' : ''}`}
-                onClick={() => selectDept(dept === card.dept ? '' : card.dept)}
+                onClick={singlePress(() => selectDept(card.dept))}
                 aria-pressed={dept === card.dept}
                 title={
                   dept === card.dept
-                    ? `Showing ${deptLabel(card.dept)} only — press again for every department`
+                    ? `Showing ${deptLabel(card.dept)} only — press ${headLabel()} for every department`
                     : `Show only the bills pending with ${deptLabel(card.dept)}`
                 }
               >
@@ -1191,9 +1246,10 @@ export default function Results() {
               </button>
             ) : card.kind === 'pendingDept' ? (
               /* One desk's share of the pending queue. Pressing it narrows the
-                 table to that desk; pressing the one already showing goes back
-                 to all of them -- the same gesture as the BPAD tab's own desk
-                 cards, because it is the same column being asked about.
+                 table to that desk, and pressing it again keeps it there -- the
+                 Pending card heading the row goes back to all of them. The
+                 same gesture as the BPAD tab's own desk cards, because it is
+                 the same column being asked about.
 
                  The bucket for the GRNs the register cannot place takes the
                  Not in BPAD colouring rather than a desk's, since that is what
@@ -1204,11 +1260,11 @@ export default function Results() {
                 className={`card stat ${
                   card.dept === NOT_IN_BPAD ? 'stat--missing' : 'stat--dept'
                 } ${pendingDept === card.dept ? 'is-active' : ''}`}
-                onClick={() => selectPendingDept(pendingDept === card.dept ? '' : card.dept)}
+                onClick={singlePress(() => selectPendingDept(card.dept))}
                 aria-pressed={pendingDept === card.dept}
                 title={
                   pendingDept === card.dept
-                    ? `Showing ${deptLabel(card.dept)} only — press again for every pending GRN`
+                    ? `Showing ${deptLabel(card.dept)} only — press ${headLabel()} for every pending GRN`
                     : card.dept === NOT_IN_BPAD
                       ? 'Show only the pending GRNs the BPAD register cannot place'
                       : `Show only the pending GRNs sitting with ${deptLabel(card.dept)}`
@@ -1236,11 +1292,11 @@ export default function Results() {
                 className={`card stat stat--${card.tone ?? 'dept'} ${
                   progress === card.progress ? 'is-active' : ''
                 }`}
-                onClick={() => selectProgress(progress === card.progress ? '' : card.progress)}
+                onClick={singlePress(() => selectProgress(card.progress))}
                 aria-pressed={progress === card.progress}
                 title={
                   progress === card.progress
-                    ? `Showing ${card.label} only — press again for every row`
+                    ? `Showing ${card.label} only — press ${headLabel()} for every row`
                     : `Show only the ${card.label} rows`
                 }
               >
@@ -1257,16 +1313,15 @@ export default function Results() {
               </button>
             ) : card.kind === 'csd' ? (
               /* One CSD stage's share of the rows below. Pressing it narrows
-                 the table to that stage; pressing the one already showing goes
-                 back to every row -- the same gesture as the desk cards on the
-                 pending row.
+                 the table to that stage, and pressing it again keeps it there
+                 -- the Accounts card heading the row goes back to every row.
+                 The same gesture as the desk cards on the pending row.
 
-                 It sets `progress`, which is the Status column's own filter and
-                 already knows these four stages by name (see PROGRESS in
-                 routes/results.js). So the dropdown under the cards moves with
-                 the card, and the card lights up when the dropdown is used --
-                 one filter with two ways in, rather than a second filter that
-                 happens to mean the same thing.
+                 It sets `progress` (see PROGRESS in routes/results.js), which
+                 the Status dropdown shows under this card's name while it is
+                 set -- see progressFilterOptions. The same stages are also
+                 Action dropdown options, which narrow on top of whatever card
+                 is chosen rather than lighting one -- see selectAction.
 
                  These used to leave for the CSD screen instead. That was the
                  one press on this row that took you off the page, and it left
@@ -1278,11 +1333,11 @@ export default function Results() {
                 className={`card stat stat--${card.tone} ${
                   progress === card.stage ? 'is-active' : ''
                 }`}
-                onClick={() => selectProgress(progress === card.stage ? '' : card.stage)}
+                onClick={singlePress(() => selectProgress(card.stage))}
                 aria-pressed={progress === card.stage}
                 title={
                   progress === card.stage
-                    ? `Showing ${card.label} only — press again for every row`
+                    ? `Showing ${card.label} only — press ${headLabel()} for every row`
                     : `Show only the ${card.label} rows`
                 }
               >
@@ -1302,8 +1357,10 @@ export default function Results() {
                  the card under the pointer was the same card after the press
                  and a second click could not land on a different one. That no
                  longer holds -- Pending and Accounts show their own count only
-                 -- so a double press after a view change lands on whatever the
-                 new row put in that position. See the note on CARDS_FOR.
+                 -- so the second click of a double-click, after a view change,
+                 would land on whatever the new row put in that position. Every
+                 card on this row takes singlePress for that reason. See the
+                 note on CARDS_FOR, and services/press.js.
 
                  `aria-pressed` because the ring is the only thing saying which
                  view is showing, and a ring reaches nobody using a screen
@@ -1319,7 +1376,7 @@ export default function Results() {
                 className={`card stat stat--${card.status.toLowerCase()} ${
                   bucketActive(card) ? 'is-active' : ''
                 }`}
-                onClick={() => pressBucket(card)}
+                onClick={singlePress(() => pressBucket(card))}
                 aria-pressed={bucketActive(card)}
                 title={bucketTitle(card)}
               >
@@ -1341,14 +1398,15 @@ export default function Results() {
               view's own dropdown, since it narrows the whole page (cards,
               rows and export) where that one narrows the table. */}
           <MsmeFilter value={msme} onChange={selectMsme} />
-          {/* One dropdown, three questions -- whichever the view underneath
-              can answer. Total GRNS is the mixed list, so there it asks which
-              half; Accounts is already one bucket and the open question there
-              is how far through CSD its rows have got; BPAD is the register's
-              own table, so it asks the register's own question -- which desk
-              the bill is sitting at. Pending GRNS has no ageing entry and so
-              no Status column for any of them to be about, so it alone gets no
-              dropdown. */}
+          {/* The view's own dropdown, asking whichever question the view
+              underneath can answer. Total GRNS is the mixed list, so there it
+              asks which half; Accounts is already one bucket, so it asks
+              whether a cheque has been drawn up, with the Action dropdown
+              beside it for how far along its rows have got; BPAD is the
+              register's own table, so it asks the register's own question --
+              which desk the bill is sitting at. Pending GRNS has no ageing
+              entry and so no Status column for any of them to be about, so it
+              alone gets no dropdown. */}
           {status === BPAD ? (
             /* The register's Pending With Dept. column, offered as the values
                it actually holds. The count beside an option is the number of
@@ -1395,31 +1453,59 @@ export default function Results() {
               ))}
             </select>
           ) : status === 'PENDING' ? null : (
-            /* Choosing a value takes the table to Valid GRNS itself rather
-               than being hidden until you get there. The counts come from the
-               same clauses the filter uses, so the number beside an option is
-               the number of rows picking it yields. */
-            <select
-              className="field__input stage-filter"
-              value={progress}
-              onChange={(e) => selectProgress(e.target.value)}
-              aria-label="Filter the table by what the Status column says"
-            >
-              <option value="">All </option>
-              {progressFilters.map((f) => (
-                <option key={f.value} value={f.value}>
-                  {f.label}
-                  {summary?.progress?.[f.value] ? ` (${summary.progress[f.value].count})` : ''}
-                </option>
-              ))}
-            </select>
+            <>
+              {/* Whether a cheque has been drawn up -- where the rows have got
+                  to is the Action dropdown's, beside it. Choosing a value takes
+                  the table to Valid GRNS itself rather than being hidden until
+                  you get there. It sets the cards' own `progress`, so a card
+                  and this move together -- see progressFilterOptions for how a
+                  CSD or Accounts card shows here -- and its counts are the
+                  cards' figures: GRNs, over the search and branch, before any
+                  Action is chosen. */}
+              <select
+                className="field__input stage-filter"
+                value={progress}
+                onChange={(e) => selectProgress(e.target.value)}
+                aria-label="Filter the table by whether a cheque has been prepared"
+              >
+                <option value="">All statuses</option>
+                {progressFilters.map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}
+                    {summary?.progress?.[f.value]
+                      ? ` (${summary.progress[f.value].count.toLocaleString('en-IN')})`
+                      : ''}
+                  </option>
+                ))}
+              </select>
+              {/* The Action filter, a dropdown of its own: where the rows have
+                  got to, inside whichever card or status is selected -- see
+                  selectAction. The counts come back with the rows, taken
+                  inside the card and search as they stand, so the number
+                  beside an option is the number of rows picking it shows. */}
+              <select
+                className="field__input stage-filter"
+                value={action}
+                onChange={(e) => selectAction(e.target.value)}
+                aria-label="Filter the table by where the rows have got to, inside the card selected"
+                title="Filter by action, inside the card selected"
+              >
+                <option value="">All actions</option>
+                {actionFilters.map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}
+                    {f.count !== null ? ` (${f.count.toLocaleString('en-IN')})` : ''}
+                  </option>
+                ))}
+              </select>
+            </>
           )}
           <input
             className="field__input search"
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search vendor, GRN, bill or cheque no."
+            placeholder="Search vendor, vendor code, GRN, bill or cheque no."
             aria-label="Search by vendor name, GRN number, bill number or cheque number"
           />
 
@@ -1535,9 +1621,13 @@ export default function Results() {
             <div className="pager">
               <span className="pager__info">
                 {data.total === 0
-                  ? q
-                    ? `Nothing matches "${q}"`
-                    : 'No rows'
+                  ? action
+                    ? // A card and an action that share no rows -- say which
+                      // filter emptied the table, and how to undo it.
+                      `No rows at ${actionFilters.find((f) => f.value === action)?.label ?? action} here — choose All actions to see the rest`
+                    : q
+                      ? `Nothing matches "${q}"`
+                      : 'No rows'
                   : `Showing ${(data.page - 1) * data.pageSize + 1}–${Math.min(
                       data.page * data.pageSize,
                       data.total,

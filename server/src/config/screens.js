@@ -54,17 +54,21 @@ export const SCREENS = [
     hint: 'Branch codes, locations and bank accounts, and which branches are in scope.',
   },
   {
-    // What has been uploaded, file by file. Its own grant now rather than
-    // coming with `upload`; deleting an upload or a file stays administrator-only.
-    key: 'uploads',
-    label: 'Uploaded files',
-    hint: 'Every upload and its files. Deleting them stays with administrators.',
+    // Every vendor the HIS vendor master -- the correct data -- has ever
+    // listed, with its latest details, filled by each HIS vs FOCUS Reco; first
+    // under the Vendor Reco dropdown. Read-only, and its own grant: someone
+    // can be given the master to look vendors up in without the reco, or the
+    // other way round.
+    key: 'vendor-master',
+    label: 'Vendor Master',
+    hint: 'Every HIS vendor with its latest details, kept up to date by each HIS vs FOCUS Reco. Read-only.',
   },
   {
     // The HIS vendor master against the Accounts vendor list. Its own grant
     // and its own dropdown in the sidebar: it reads neither report the GRN
     // screens do, so holding it says nothing about them, or they about it.
-    // Deleting a run stays administrator-only, as deleting an upload does.
+    // A run cannot be deleted: the Vendor Master it fills keeps one row per
+    // vendor, so uploading again only updates what changed.
     key: 'msme-reco',
     label: 'HIS vs FOCUS Reco',
     hint: 'HIS vendor master against the FOCUS (Accounts) vendor list: PAN, GST, drug licence, MSME and bank details.',

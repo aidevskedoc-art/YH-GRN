@@ -11,17 +11,21 @@
  * Excel file is plain and relies on Remarks (see services/msmeReco.js on the
  * server for the rules).
  *
- * Runs are stored, so the page opens on the latest one and earlier ones stay
- * in the selector until an administrator deletes them.
+ * Runs are stored, but there is no picking one: the page shows every vendor
+ * at once, each once, from the latest reco that had it -- so uploading the
+ * same files again replaces those rows rather than adding a second set. The
+ * line over the table describes the latest reco, and each row says which
+ * reco it came from. There is no deleting a run either: the HIS vendor master
+ * each brought is merged into the Vendor Master, which keeps one row per
+ * vendor.
  */
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
-import { useAuth } from '../context/AuthContext.jsx';
 import FileDrop from '../components/FileDrop.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
-import { useConfirm } from '../components/ConfirmDialog.jsx';
-import { IconAlert, IconArrowRight, IconPlus, IconTrash } from '../components/icons.jsx';
+import { IconAlert, IconArrowRight, IconPlus } from '../components/icons.jsx';
 import { exportMsmeReco, MSME_STATUS_LABELS } from '../services/exporter.js';
+import { singlePress } from '../services/press.js';
 
 /** Matches the other screens' search boxes. */
 const SEARCH_DELAY_MS = 300;
@@ -29,7 +33,8 @@ const SEARCH_DELAY_MS = 300;
 /**
  * The cards, in the order they stand: the vendor master whole, then its three
  * verdicts. Every vendor master row is stored; the Accounts codes it lacks are
- * only counted, and shown in the note under the run bar with no rows to open.
+ * only counted, and the latest reco's count is shown in the note under the
+ * line over the table, with no rows to open.
  * `tone` borrows an existing card colour.
  */
 const ALL_VIEW = 'ALL';
@@ -55,6 +60,13 @@ function formatStamp(value) {
   const at = new Date(value);
   if (!Number.isFinite(at.getTime())) return '';
   return `${at.toLocaleDateString('en-GB')} ${at.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+/** dd/MM/yyyy from a timestamp -- the Reco date column. */
+function formatDay(value) {
+  if (!value) return '';
+  const at = new Date(value);
+  return Number.isFinite(at.getTime()) ? at.toLocaleDateString('en-GB') : '';
 }
 
 const count = (n) => (n ?? 0).toLocaleString('en-IN');
@@ -104,13 +116,6 @@ function PairCells({ row, fieldKey }) {
 }
 
 export default function MsmeReco() {
-  const { isAdmin } = useAuth();
-  const [confirm, confirmDialog] = useConfirm();
-
-  // --- Runs --------------------------------------------------------------
-  const [runs, setRuns] = useState(null);
-  const [fields, setFields] = useState([]);
-  const [runId, setRunId] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
 
   // --- The upload form ---------------------------------------------------
@@ -119,7 +124,7 @@ export default function MsmeReco() {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
 
-  // --- The run on screen -------------------------------------------------
+  // --- What is on screen -------------------------------------------------
   const [data, setData] = useState(null);
   const [view, setView] = useState(ALL_VIEW);
   const [field, setField] = useState('');
@@ -127,45 +132,12 @@ export default function MsmeReco() {
   const [q, setQ] = useState('');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = usePageSize();
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-  // The runs, once. The newest is opened; with none yet, the form is.
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .listMsmeRuns()
-      .then(({ runs: list, fields: compared }) => {
-        if (cancelled) return;
-        setRuns(list);
-        setFields(compared ?? []);
-        setRunId((current) => current ?? list[0]?.id ?? null);
-        if (list.length === 0) setShowUpload(true);
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setRuns([]);
-          setError(err.message);
-          // The form still works when the list could not be read -- a run
-          // uploaded from it is added to the page -- so it is not left
-          // unreachable behind the error.
-          setShowUpload(true);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // With no run on screen, the newest one left takes over; with none left at
-  // all, the form opens, since uploading is the only thing left to do.
-  useEffect(() => {
-    if (runs === null) return;
-    if (runs.length === 0) setShowUpload(true);
-    else if (runId === null) setRunId(runs[0].id);
-  }, [runs, runId]);
+  // Bumped after an upload, so the rows are read again even when every filter
+  // is already where the upload leaves it.
+  const [reloads, setReloads] = useState(0);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -178,25 +150,28 @@ export default function MsmeReco() {
   // Page 7 of one view is rarely a page of the next.
   useEffect(() => {
     setPage(1);
-  }, [runId, view, field]);
+  }, [view, field]);
 
   const load = useCallback(() => {
-    if (!runId) {
-      setData(null);
-      return () => {};
-    }
     // A newer request supersedes an older one still in flight, so a quick run
     // of card clicks cannot end on the rows of a card that is no longer picked.
     let cancelled = false;
     setLoading(true);
     setError('');
     api
-      .msmeRows(runId, { view, field, q, page, pageSize })
+      .msmeRows({ view, field, q, page, pageSize })
       .then((result) => {
-        if (!cancelled) setData(result);
+        if (cancelled) return;
+        setData(result);
+        // No reco yet: the form opens, since uploading is the only thing to do.
+        if (!result.latestRun) setShowUpload(true);
       })
       .catch((err) => {
-        if (!cancelled) setError(err.message);
+        if (cancelled) return;
+        setError(err.message);
+        // The form still works when the rows could not be read, so it is not
+        // left unreachable behind the error.
+        setShowUpload(true);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -204,7 +179,7 @@ export default function MsmeReco() {
     return () => {
       cancelled = true;
     };
-  }, [runId, view, field, q, page, pageSize]);
+  }, [view, field, q, page, pageSize, reloads]);
 
   useEffect(load, [load]);
 
@@ -236,13 +211,14 @@ export default function MsmeReco() {
 
     setUploading(true);
     try {
-      const { run } = await api.runMsmeReco(formData);
-      setRuns((list) => [run, ...(list ?? [])]);
-      setRunId(run.id);
+      await api.runMsmeReco(formData);
+      // Back to every vendor, first page, with the new reco's rows in place.
       setView(ALL_VIEW);
       setField('');
       setSearch('');
       setQ('');
+      setPage(1);
+      setReloads((n) => n + 1);
       setVendorFile(null);
       setAccountFile(null);
       setShowUpload(false);
@@ -253,43 +229,13 @@ export default function MsmeReco() {
     }
   }
 
-  async function handleDelete() {
-    const run = runs?.find((r) => r.id === runId);
-    if (!run) return;
-    const ok = await confirm({
-      title: 'Delete this reco?',
-      message: [
-        `${run.vendorFileName} against ${run.accountFileName}, run ${formatStamp(run.uploadedAt)}.`,
-        'Its rows are removed with it. The two files themselves are not touched, and can be uploaded again.',
-      ],
-      confirmLabel: 'Delete reco',
-    });
-    if (!ok) return;
-
-    setDeleting(true);
-    setError('');
-    try {
-      await api.deleteMsmeRun(run.id);
-      // From the list as it is now, not as it was when Delete was pressed: an
-      // upload can finish while the dialog is open, and its run must survive.
-      // Which run takes over is settled by the effect below.
-      setRuns((list) => (list ?? []).filter((r) => r.id !== run.id));
-      setRunId((current) => (current === run.id ? null : current));
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setDeleting(false);
-    }
-  }
-
   async function handleExport() {
-    if (!runId) return;
     setExporting(true);
     setError('');
     try {
       // One workbook, a sheet per card -- the cards themselves are the list,
       // so the file always has the sheets the screen has.
-      await exportMsmeReco(runId, {
+      await exportMsmeReco({
         q,
         cards: VIEWS.map((v) => ({ label: v.label, status: v.key === ALL_VIEW ? null : v.key })),
       });
@@ -308,17 +254,17 @@ export default function MsmeReco() {
     setPage(1);
   }
 
-  const run = runs?.find((r) => r.id === runId) ?? null;
-  const shownFields = data?.fields ?? fields;
+  // The latest reco: what the line over the table describes. Everything below
+  // the form waits for there to be one.
+  const run = data?.latestRun ?? null;
+  const shownFields = data?.fields ?? [];
   const anyFilter = Boolean(q || field || view !== ALL_VIEW);
-  const chipsShown = FIELD_VIEWS.has(view) && data && shownFields.length > 0;
-  // Vendor Code, Warehouse, Status, two per field, Remarks.
-  const colSpan = shownFields.length * 2 + 4;
+  const chipsShown = FIELD_VIEWS.has(view) && run && shownFields.length > 0;
+  // Vendor Code, Warehouse, Status, two per field, Remarks, Reco date.
+  const colSpan = shownFields.length * 2 + 5;
 
   return (
     <>
-      {confirmDialog}
-
       <div className="page__head page__head--row">
         <div>
           <h2 className="page__title">HIS vs FOCUS Reco</h2>
@@ -328,7 +274,7 @@ export default function MsmeReco() {
           </p>
         </div>
         <div className="page__actions">
-          {runs?.length > 0 && (
+          {run && (
             <button
               className={showUpload ? 'ghost' : 'primary'}
               type="button"
@@ -368,7 +314,7 @@ export default function MsmeReco() {
             <FileDrop
               step={1}
               label="HIS Vendor Master"
-              hint="Matched on VENDOR_CODE. The Active sheet is read when the workbook has one."
+              hint="The correct data: matched on VENDOR_CODE, and added to the Vendor Master — new vendors added, known ones updated. The reco reads the Active sheet when the workbook has one."
               example="00. VendorMasterReport from HIS.xlsx"
               file={vendorFile}
               onSelect={pickFile(setVendorFile)}
@@ -427,47 +373,28 @@ export default function MsmeReco() {
         </form>
       )}
 
-      {runs === null && !error && <div className="loading">Loading…</div>}
+      {loading && !data && <div className="loading">Loading…</div>}
 
+      {/* No picking a reco: every vendor is on screen once, from the latest
+          reco that had it. This line is the latest reco itself. */}
       {run && (
         <div className="msme-runbar">
-          <label className="msme-runbar__pick">
-            <span>Reco</span>
-            <select
-              className="field__input stage-filter"
-              value={runId ?? ''}
-              onChange={(e) => setRunId(Number(e.target.value))}
-              aria-label="Choose a reco"
-            >
-              {runs.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {runLabel(r)}
-                </option>
-              ))}
-            </select>
-          </label>
           <span className="msme-runbar__meta">
-            {run.vendorSheetName ? `Sheet “${run.vendorSheetName}” · ` : ''}
-            {count(run.vendorRowCount)} HIS vendors · {count(run.accountRowCount)} FOCUS rows
+            Latest reco {runLabel(run)}
+            {run.vendorSheetName ? ` · Sheet “${run.vendorSheetName}”` : ''} · {count(run.vendorRowCount)} HIS
+            vendors · {count(run.accountRowCount)} FOCUS rows
             {run.uploadedBy ? ` · by ${run.uploadedBy}` : ''}
+            {run.vendorMaster
+              ? ` · Vendor Master: ${count(run.vendorMaster.added)} new, ${count(run.vendorMaster.updated)} updated`
+              : ''}
+            {data.runCount > 1 ? ` · ${count(data.runCount)} recos in all, each vendor shown once` : ''}
           </span>
-          {isAdmin && (
-            <button
-              type="button"
-              className="ghost danger ghost--sm msme-runbar__delete"
-              onClick={handleDelete}
-              disabled={deleting}
-              title="Delete this reco"
-            >
-              <IconTrash size={14} /> {deleting ? 'Deleting…' : 'Delete'}
-            </button>
-          )}
         </div>
       )}
 
-      {/* The Accounts codes the vendor master lacks: counted when the reco
-          ran, not stored, so there is nothing to open -- a line of
-          information, not a card. */}
+      {/* The Accounts codes the vendor master lacks, in the latest reco:
+          counted when it ran, not stored, so there is nothing to open -- a
+          line of information, not a card. */}
       {run && run.counts?.NOT_IN_HIS > 0 && (
         <p className="table__note">
           Not stored: {count(run.counts.NOT_IN_HIS)} FOCUS code{run.counts.NOT_IN_HIS === 1 ? '' : 's'} not in
@@ -475,14 +402,14 @@ export default function MsmeReco() {
         </p>
       )}
 
-      {data && (
+      {run && (
         <div className="cards">
           {VIEWS.map((v) => (
             <button
               key={v.key}
               type="button"
               className={`card stat stat--${v.tone} ${view === v.key ? 'is-active' : ''}`}
-              onClick={() => pickView(v.key)}
+              onClick={singlePress(() => pickView(v.key))}
               aria-pressed={view === v.key}
               title={
                 view === v.key && v.key !== ALL_VIEW
@@ -509,7 +436,7 @@ export default function MsmeReco() {
                 key={f.key}
                 type="button"
                 className={`msme-chip${active ? ' is-active' : ''}`}
-                onClick={() => setField(active ? '' : f.key)}
+                onClick={singlePress(() => setField(active ? '' : f.key))}
                 aria-pressed={active}
                 disabled={n === 0 && !active}
                 title={`${f.his} (HIS) against ${f.acc} (FOCUS)`}
@@ -527,7 +454,7 @@ export default function MsmeReco() {
           <p className="msme-legend">
             Laid out as the Excel file is: each field has an <strong>HIS</strong> column and a{' '}
             <strong>FOCUS</strong> column. Here, values that differ are marked in red; in the Excel file,
-            Remarks says what differs.
+            Remarks says what differs. <strong>Reco date</strong> is the reco each vendor&rsquo;s row comes from.
           </p>
           <div className="toolbar__actions">
             <input
@@ -549,9 +476,7 @@ export default function MsmeReco() {
 
       {error && <div className="alert alert--error">{error}</div>}
 
-      {run && loading && !data && <div className="loading">Loading…</div>}
-
-      {run && data && (
+      {run && (
         <>
           <div className={`table-wrap table-wrap--sticky${loading ? ' is-loading' : ''}`}>
             <table className="table msme-table">
@@ -585,6 +510,9 @@ export default function MsmeReco() {
                   <th rowSpan={2} className="msme-table__lead msme-table__remarks">
                     Remarks
                   </th>
+                  <th rowSpan={2} className="msme-table__lead">
+                    Reco date
+                  </th>
                 </tr>
                 <tr>
                   {shownFields.map((f) => (
@@ -606,7 +534,7 @@ export default function MsmeReco() {
                 {data.rows.length === 0 && (
                   <tr>
                     <td className="table__empty" colSpan={colSpan}>
-                      {anyFilter ? 'No vendors match these filters' : 'No rows in this reco'}
+                      {anyFilter ? 'No vendors match these filters' : 'No vendors in the reco yet'}
                     </td>
                   </tr>
                 )}
@@ -623,6 +551,7 @@ export default function MsmeReco() {
                       <PairCells key={f.key} row={row} fieldKey={f.key} />
                     ))}
                     <td className="msme-remarks">{row.remarks}</td>
+                    <td>{formatDay(row.recoAt)}</td>
                   </tr>
                 ))}
               </tbody>

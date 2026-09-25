@@ -1,7 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
-import { api } from './api/client.js';
 import { BrandLockup } from './components/Brand.jsx';
 import {
   IconActivity,
@@ -16,11 +15,11 @@ import {
   IconMoon,
   IconPlus,
   IconReport,
-  IconSheet,
   IconSliders,
   IconSun,
   IconUpload,
   IconUsers,
+  IconVendorCard,
 } from './components/icons.jsx';
 import { useTheme, initials } from './theme.js';
 
@@ -84,14 +83,26 @@ const NAV = [
   },
   { to: '/csd', label: 'CS Department', icon: IconDepartment, end: true, screen: 'csd', group: 'grn' },
   { to: '/config', label: 'Configuration', icon: IconSliders, end: true, screen: 'config', group: 'grn' },
-  // Every entry below is its own tick box on User management now -- deleting
-  // an upload or file, and changing an administrator account, stay with the
-  // administrator role on the server.
-  { to: '/uploads', label: 'Uploaded files', icon: IconSheet, end: true, screen: 'uploads', group: 'grn' },
-  // The HIS vendor master against the Accounts vendor list. A dropdown of its
-  // own rather than a sixth GRN link: it reads neither GRN report, and a
-  // screen for chasing vendor master data does not belong under a heading
-  // about GRNs.
+  // No Uploaded files entry: every GRN is shown once, from its latest upload,
+  // so there are no uploads to manage one by one. Every entry below is its own
+  // tick box on User management -- changing an administrator account stays
+  // with the administrator role on the server.
+  //
+  // The Vendor Reco dropdown: neither screen reads a GRN report, and screens
+  // for chasing vendor master data do not belong under a heading about GRNs.
+  //
+  // Every vendor the HIS vendor master -- the correct data -- has ever listed,
+  // once each, with its latest details, first: it is the master the reco
+  // below holds FOCUS to, and each reco fills it. Read-only.
+  {
+    to: '/vendor-master',
+    label: 'Vendor Master',
+    icon: IconVendorCard,
+    end: true,
+    screen: 'vendor-master',
+    group: 'msme',
+  },
+  // The HIS vendor master against the Accounts vendor list.
   {
     to: '/msme-reco',
     label: 'HIS vs FOCUS Reco',
@@ -130,8 +141,6 @@ function RailLink({ item, collapsed }) {
 
 /** Title and breadcrumb for the top bar, derived from the active route. */
 function pageTitle(pathname) {
-  // Tested before /upload, which is a prefix of it.
-  if (pathname.startsWith('/uploads')) return { title: 'Uploaded files', crumb: 'Uploads / Files' };
   if (pathname.startsWith('/upload')) return { title: 'New reconciliation', crumb: 'Uploads / New' };
   if (pathname.startsWith('/results')) {
     return { title: 'Reconciliation results', crumb: 'Results / Pending vs accounts' };
@@ -139,6 +148,9 @@ function pageTitle(pathname) {
   if (pathname.startsWith('/csd')) return { title: 'CS Department', crumb: 'CSD / Handed over' };
   if (pathname.startsWith('/accounts-department')) {
     return { title: 'Accounts Department', crumb: 'Accounts / In accounts and ageing' };
+  }
+  if (pathname.startsWith('/vendor-master')) {
+    return { title: 'Vendor Master', crumb: 'Vendor Reco / HIS vendor master' };
   }
   if (pathname.startsWith('/msme-reco')) {
     return { title: 'HIS vs FOCUS Reco', crumb: 'Vendor Reco / HIS vendor master vs FOCUS' };
@@ -168,7 +180,6 @@ export default function AppShell() {
     Object.fromEntries(NAV_GROUPS.map((g) => [g.key, readGroupOpen(g.storageKey)])),
   );
   const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
-  const [batchCount, setBatchCount] = useState(0);
 
   // Which layout is on screen decides what the nav toggle does and what it
   // reports to assistive tech, so it has to follow a resize, not just a reload.
@@ -197,24 +208,6 @@ export default function AppShell() {
 
   // Tapping a link on a phone should leave the drawer behind.
   useEffect(() => setDrawer(false), [location.pathname]);
-
-  // The badge is re-read on navigation so it cannot go stale after an upload
-  // adds a batch or the results page deletes one.
-  useEffect(() => {
-    let cancelled = false;
-    api
-      .listBatches()
-      .then(({ batches }) => {
-        if (!cancelled) setBatchCount(batches.length);
-      })
-      .catch(() => {
-        // A failed count is not worth an error state in the chrome; the page
-        // itself will surface whatever went wrong.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [location.pathname]);
 
   const handleSignOut = useCallback(() => {
     logout();
@@ -391,11 +384,12 @@ export default function AppShell() {
 
             {/* Also gated on the grant, not just the current route: for an
                 account without Uploads the button would land on a screen the
-                router immediately redirects away from. Not on the HIS vs FOCUS
-                Reco screen either: it is a GRN reconciliation this starts, and
-                that screen has its own New reco button. */}
+                router immediately redirects away from. Not on the Vendor Reco
+                screens either: it is a GRN reconciliation this starts, and
+                the vendor files go in through HIS vs FOCUS Reco's New reco. */}
             {can('upload') &&
               !location.pathname.startsWith('/upload') &&
+              !location.pathname.startsWith('/vendor-master') &&
               !location.pathname.startsWith('/msme-reco') && (
               <button
                 type="button"

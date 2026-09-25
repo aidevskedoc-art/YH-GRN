@@ -265,14 +265,13 @@ export const CHEQUE_CARDS = [
 
 /**
  * The Accounts Queue: GRNs CSD has handed back that Accounts has not received
- * yet -- the rows whose Action column still reads Queued. The next thing
- * Accounts has to do, so it gets a card of its own, right after the cheque
- * cards (see ACCOUNTS_ROW).
+ * yet -- the rows whose Action column still reads Queued. It comes after the
+ * CSD four, being where a GRN lands once CSD are done with it (see
+ * ACCOUNTS_ROW).
  *
  * A `progress` card like the cheque pair, reading RETURNED_BY_CSD (see PROGRESS
- * in routes/results.js), so pressing it narrows the table the same way the
- * Status filter's own option does. Cheques and GRNs swap with the view, as on
- * Cheque Prepared.
+ * in routes/results.js) -- the same clause as the Action dropdown's "Accounts
+ * queue" option. Cheques and GRNs swap with the view, as on Cheque Prepared.
  */
 export const ACCOUNTS_QUEUE_CARD = {
   progress: 'RETURNED_BY_CSD',
@@ -286,8 +285,29 @@ export const ACCOUNTS_QUEUE_CARD = {
 };
 
 /**
- * What a `progress` card (the cheque pair, the Accounts Queue) prints, for the
- * view. A card with a cheque figure swaps it with the GRN count by view; one
+ * Accounts Received: the queue's next step. GRNs Accounts has acknowledged
+ * from CSD and not yet forwarded on to Bank, Vendor or Courier -- the rows
+ * whose Status reads "Accounts received". Last on the row, after the queue it
+ * is taken from.
+ *
+ * Same shape as the Accounts Queue, reading ACCOUNTS_RECEIVED (see PROGRESS in
+ * routes/results.js). The green of its own "Accounts received" pill in the
+ * Status column, as the queue card wears its pill's brand orange.
+ */
+export const ACCOUNTS_RECEIVED_CARD = {
+  progress: 'ACCOUNTS_RECEIVED',
+  label: 'Accounts Received',
+  tone: 'approved',
+  value: (summary) => summary?.accountsReceivedCheques ?? 0,
+  hint: (summary) => {
+    const grns = summary?.progress?.ACCOUNTS_RECEIVED?.count ?? 0;
+    return `${grns.toLocaleString('en-IN')} GRN${grns === 1 ? '' : 's'} received by Accounts`;
+  },
+};
+
+/**
+ * What a `progress` card (the cheque cards, the two Accounts cards) prints,
+ * for the view. A card with a cheque figure swaps it with the GRN count by view; one
  * without reads the same on both.
  */
 export function progressCardFigures(card, summary, byCheque) {
@@ -328,19 +348,23 @@ export function csdCardFigures(card, summary, byCheque) {
  *
  * Entries are the ids CARD_BY_ID files each card under on either page -- a
  * reconciliation status for the count, a `progress` key for the cheque cards
- * and the Accounts Queue, a CSD stage for the four.
+ * and the two Accounts cards, a CSD stage for the four.
  *
- * The Accounts Queue sits right after the cheque cards, ahead of the CSD four.
+ * The two Accounts cards close the row, Queue then Received: they are where a
+ * GRN goes once CSD hand it back, so they follow the CSD four in the order the
+ * work does.
  */
 export const ACCOUNTS_ROW = [
   VALID,
   ...CHEQUE_CARDS.map((card) => card.progress),
-  ACCOUNTS_QUEUE_CARD.progress,
   ...CSD_CARDS.map((card) => card.stage),
+  ACCOUNTS_QUEUE_CARD.progress,
+  ACCOUNTS_RECEIVED_CARD.progress,
 ];
 
 /**
- * The filter dropdown beside the search box: the Status column's own values.
+ * The Status column's own values, as the Action filter beside the search box
+ * names them.
  *
  * Every one of these is something that column says, spelled the way the pill
  * in it spells it -- so picking one asks for the rows showing it rather than
@@ -348,13 +372,20 @@ export const ACCOUNTS_ROW = [
  * of each key (see PROGRESS in routes/results.js); this is the wording and the
  * order they are offered in.
  *
- * The order follows a GRN's life rather than the alphabet: out to one of the
- * two destinations, then through CSD's answers, then paid.
+ * The order follows a GRN's life rather than the alphabet: ready to send, out
+ * to one of the two destinations, through CSD's answers, back with Accounts
+ * and on from there, then paid.
  *
  * They deliberately overlap, because the column does. A GRN whose cheque
  * cleared while it sat at CSD shows both, and is found under both.
  */
 export const PROGRESS_LABELS = {
+  // The rows whose Send picker offers Send to CSD: gone nowhere yet, with a
+  // cheque drawn up to hand over. The Action dropdown's alone: it is what the
+  // Action cell offers rather than anything the Status column says, so the
+  // server keeps it out of PROGRESS and the Status dropdown never sees it (see
+  // ACTIONS in routes/results.js). Plain "not sent" is not offered at all.
+  SEND_TO_CSD: 'Send to CSD (ready to send)',
   QUEUED: 'Sent to CSD',
   RECEIVED: 'CSD received',
   APPROVED: 'CSD approved',
@@ -366,11 +397,12 @@ export const PROGRESS_LABELS = {
   RETURNED_BY_CSD: 'Accounts queue (Handover by CSD)',
   ACCOUNTS_RECEIVED: 'Accounts received',
   // Where Accounts forwards a received GRN on to -- see forwardedLabel in
-  // ResultsTable.jsx for the same four labels.
+  // ResultsTable.jsx for the same labels.
   BANK: 'Sent to Bank',
   VENDOR: 'Sent to Vendor',
   PURCHASE_DEPT: 'Sent to Purchase Dept',
   OTHERS: 'Sent to Others',
+  COURIER: 'Sent to Courier',
   RECORDS: 'Sent to Records',
   // Ahead of Cheque cleared, which is the next thing that happens to a cheque
   // once it exists. Read off the ageing report's own cheque columns rather
@@ -394,28 +426,77 @@ function fallbackProgressLabel(key) {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
+/** PROGRESS_ORDER's order, then arrival for anything it has no wording for. */
+function byProgressOrder(a, b) {
+  const ia = PROGRESS_ORDER.indexOf(a);
+  const ib = PROGRESS_ORDER.indexOf(b);
+  if (ia === -1 && ib === -1) return 0;
+  if (ia === -1) return 1;
+  if (ib === -1) return -1;
+  return ia - ib;
+}
+
+/** The cheque cards' own keys: the cards' question, not a place a row gets to. */
+const CHEQUE_PROGRESS = new Set(CHEQUE_CARDS.map((card) => card.progress));
+
+/** What the other cards setting `progress` are called on the row. */
+const CARD_LABELS = Object.fromEntries([
+  ...CSD_CARDS.map((card) => [card.stage, card.label]),
+  [ACCOUNTS_QUEUE_CARD.progress, ACCOUNTS_QUEUE_CARD.label],
+  [ACCOUNTS_RECEIVED_CARD.progress, ACCOUNTS_RECEIVED_CARD.label],
+]);
+
 /**
- * The progress dropdown's options: every key the summary carries (see PROGRESS
- * in routes/results.js), not a fixed list copied out of it -- so a key added
- * there shows up the next time the summary loads, with no matching edit needed
- * here. Ordered by PROGRESS_ORDER where this file knows the wording, and by
- * arrival after that for anything it does not.
+ * The Status dropdown's options: whether a cheque has been drawn up -- the
+ * cheque keys the summary carries (see PROGRESS in routes/results.js), in
+ * PROGRESS_ORDER. Everything about where a row has got to is the Action
+ * dropdown's beside it (see actionFilterOptions), and offering it here as well
+ * would put the same question in two places.
  *
- * NOT_SENT is dropped: both screens offer this filter over the rows that have
- * gone somewhere.
+ * `selected` is the `progress` the page has set. A CSD or Accounts card sets
+ * a value this list does not offer, so while one is chosen it is added under
+ * the card's own name -- otherwise the dropdown would read "All statuses"
+ * over a table the card is narrowing.
  */
-export function progressFilterOptions(summary) {
-  return Object.keys(summary?.progress ?? {})
-    .filter((key) => key !== 'NOT_SENT')
-    .sort((a, b) => {
-      const ia = PROGRESS_ORDER.indexOf(a);
-      const ib = PROGRESS_ORDER.indexOf(b);
-      if (ia === -1 && ib === -1) return 0;
-      if (ia === -1) return 1;
-      if (ib === -1) return -1;
-      return ia - ib;
-    })
+export function progressFilterOptions(summary, selected = '') {
+  const options = Object.keys(summary?.progress ?? {})
+    .filter((key) => CHEQUE_PROGRESS.has(key))
+    .sort(byProgressOrder)
     .map((key) => ({ value: key, label: PROGRESS_LABELS[key] || fallbackProgressLabel(key) }));
+  if (selected && !options.some((option) => option.value === selected)) {
+    options.push({
+      value: selected,
+      label: CARD_LABELS[selected] || PROGRESS_LABELS[selected] || fallbackProgressLabel(selected),
+    });
+  }
+  return options;
+}
+
+/**
+ * The Action dropdown's options: where a row stands in its own journey. Its
+ * own dropdown, beside the Status one on the Accounts view.
+ *
+ * It narrows on top of whichever card or Status value is selected rather than
+ * replacing it -- Cheque Prepared on the cards, then CSD received here, is the
+ * bills with a cheque that CSD have received. So it offers every Status value
+ * but the cheque three, which are the cards' question.
+ *
+ * `counts` is the rows response's `actionCounts` (see ACTION_KEYS in
+ * routes/results.js): how many rows each option leaves inside the card and
+ * search as they stand, so the number beside an option is the number of rows
+ * picking it shows. Its keys are the options, so a value added on the server
+ * shows up with no edit here; until it arrives, the ones this file knows are
+ * offered without a count.
+ */
+export function actionFilterOptions(counts) {
+  const keys = counts ? Object.keys(counts) : PROGRESS_ORDER.filter((key) => !CHEQUE_PROGRESS.has(key));
+  return keys
+    .sort(byProgressOrder)
+    .map((key) => ({
+      value: key,
+      label: PROGRESS_LABELS[key] || fallbackProgressLabel(key),
+      count: counts?.[key] ?? null,
+    }));
 }
 
 /*

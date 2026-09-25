@@ -101,7 +101,7 @@ These screens can be granted, each keyed by the route it guards:
 | `accounts-department` | Accounts Department |
 | `csd` | CS Department |
 | `config` | Configuration |
-| `uploads` | Uploaded files |
+| `vendor-master` | Vendor Master (see [Vendor Master](#vendor-master)) |
 | `msme-reco` | HIS vs FOCUS Reco (see [HIS vs FOCUS Reco](#his-vs-focus-reco)) |
 | `users` | User management |
 | `logs` | Activity logs |
@@ -207,15 +207,36 @@ Of the 94 flagged rows, 2 are genuine bill-number typos
    The CSV gets no title row: a single cell above the header knocks every column out of alignment
    for anything reading the file as data rather than opening it in Excel.
 
-Each upload is stored as its own batch under the name you give it, so previous uploads stay available in
-the upload selector. The selector also carries an **All uploads** option, which reconciles every batch
-together — the cards, tabs, table, turnaround statistics and exports all widen to cover the lot.
+There is no choosing an upload. The results and Accounts screens always show every upload together:
+the cards, views, table, turnaround statistics and exports all cover the lot.
 
 A GRN still pending when one month's report is taken is uploaded again with the next, so the same GRN
-number appears in several uploads. The combined view keeps **one row per GRN number** and drops the
-rest: the most recently uploaded copy wins, since it carries the latest state of that GRN. Within a
-single upload the GRN number is already unique, so viewing one batch reads the table directly and pays
-nothing for the deduplication.
+number appears in several uploads. The database keeps **one copy of each GRN**: an upload replaces
+what is stored for the GRNs it carries instead of adding a second copy, and anything it says nothing
+about stays as it was.
+
+- **GRN report** — a GRN's row is replaced by the new report's row.
+- **Vendor Ageing report** — a GRN's ageing rows are replaced as a whole group. The report lists a GRN
+  once per cheque and adds rows as payments are made, so the new report's rows are its current
+  payment picture. A hand-typed cheque clearance date carries over to the new row for the same
+  cheque.
+- **Bank statement** — a transaction the new statement also carries (same dates, reference,
+  narration, amounts and closing balance) keeps only the new statement's copy.
+- **BPAD register** — a GRN's register rows are replaced, as before.
+
+Each GRN has one reconciliation result, rebuilt whenever an upload brings either side of it. So the
+two reports pair up whichever order they arrive in. A GRN paid by several cheques is paired with its
+first ageing row, which carries NetAmt and the payable amount.
+
+Uploading the same report again therefore stores no second copy. Only the values that moved change.
+The upload itself is still recorded. CSD and Records handovers are keyed on the GRN number, so they
+survive, with one exception: a handover CSD **rejected** is reopened whenever an upload carries that
+GRN again, even the same file. It is archived with CSD's reason, taken off the queue, and the GRN
+reads as unsent. Rows stored before this rule existed are cleaned up by `npm run migrate`: the
+newest copy of each GRN is kept, and each upload's other files stay.
+
+There is no Uploaded files screen and no deleting an upload. Each GRN is shown once, with its latest
+data, so there are no uploads to manage one by one.
 
 ### Searching
 
@@ -247,9 +268,11 @@ needs nothing else told about it. The row's gaps, the stage medians and p90s, th
 and both exports all recompute from the new date. Only those seven columns are writable; the rest of
 an ageing row stays exactly as uploaded.
 
-One thing to know: each upload stores its own copy of the ageing rows, so a correction applies to the
-row in the upload you are looking at. In **All uploads** that is the most recent copy — the one the
-deduplication keeps — which is the one on screen.
+One thing to know: the GRNS SPAN tab no longer offers this for the ageing report's own dates, which
+are corrected at source. Only `PATCH /api/ageing/:id/dates` still writes them. The next Vendor Ageing
+report that lists the GRN replaces its stored rows with the report's own dates, so a stage date
+written that way doesn't survive it. A cheque clearance date written that way does survive: it
+isn't one of the report's columns, so it carries over to the new row for the same cheque.
 
 ### How the Excel file looks
 
@@ -370,8 +393,15 @@ change a URL and a stored grant for no visible gain.
 - **`02. 010Account`**: the Accounts vendor list. Its header is on row 4, under a title, a group
   band and a row of internal names. The parser finds it by the column names.
 
-Upload both files with **New reco**. Each run is stored, so the screen opens on the latest one
-and earlier runs stay in the **Reco** selector. Only an administrator can delete a run.
+Upload both files with **New reco**. There is no choosing a reco: the screen shows every vendor at
+once, **each vendor once**, from the latest reco that included it. Uploading the same files again
+replaces those vendors' rows instead of adding a second set. A vendor that the latest file no
+longer lists keeps its last reco's result. The line over the table describes the latest reco, and
+each row's **Reco date** says which reco it came from. The HIS vendor master file is also applied
+to the [Vendor Master](#vendor-master): new vendors are added and the rest are updated.
+
+There is no Delete. Nothing piles up that would need removing: the screen shows each vendor once,
+and the Vendor Master keeps one row per vendor.
 
 ### How the matching works
 
@@ -425,7 +455,7 @@ On screen, in the Excel file and in the remarks, the Accounts side is called **F
 the Accounts list comes from.
 
 **Accounts codes that are not in the HIS vendor master are counted, not stored.** The count is kept
-on the run in `msme_reco_runs`, and the screen shows it in a note under the run selector. These codes
+on the run in `msme_reco_runs`, and the screen shows the latest reco's count in a note. These codes
 are most of the Accounts ledger (land, labour and staff accounts, and so on), so storing them would
 mean about 29,000 rows per run with no remark to read. `npm run migrate` removes any such rows left
 over from runs stored before this rule.
@@ -445,17 +475,17 @@ fixed on the left. Warehouse slides under them. On windows narrower than 1280px 
 and Status stay fixed, because four frozen columns would take up most of the table.
 
 The table on screen is laid out like the Excel file: Vendor Code, Warehouse and Status, then each
-field as an HIS column and a FOCUS column under a
-band naming the field, and Remarks last. The header uses the app's own theme, light or dark, like
-every other table. Values that differ are marked in pale red with bold dark-red text.
+field as an HIS column and a FOCUS column under a band naming the field, then Remarks and **Reco
+date**. The header uses the app's own theme, light or dark, like every other table. Values that
+differ are marked in pale red with bold dark-red text.
 
 **Export Excel** downloads one workbook with a sheet for each card, in the cards' order and under
 their names: **HIS vendors**, **Mismatched**, **Matched** and **Not in FOCUS**. A search on screen
 narrows every sheet, and its text goes into the file name. The field chips don't affect the export,
 because applied to every sheet they would leave **Matched** empty. On each sheet, each field is a
 pair of columns headed with the source files' own column names (`PAN_NO (HIS)`, `PAN No (FOCUS)`)
-under a band naming the field, and **Remarks** is the last column. The sheets are plain: bold
-headers, frozen above the data, and no colours. The Remarks column says what differs.
+under a band naming the field, followed by **Remarks** and **Reco date**. The sheets are plain:
+bold headers, frozen above the data, and no colours. The Remarks column says what differs.
 
 ### Sample files (September 2026)
 
@@ -475,6 +505,93 @@ npm run check-msme
 
 This reads both sample files from the project root and checks those counts, including the number of
 rows a run stores, without the database.
+
+## Vendor Master
+
+**Vendor Master** is the first link under the **Vendor Reco** dropdown, with its own screen grant
+(`vendor-master`). The HIS vendor master is the correct data. HIS vs FOCUS Reco shows what needs
+changing in the FOCUS (Accounts) vendor list to match it, and this screen shows the HIS vendor
+master itself: every vendor it has ever listed, **once each**, with its latest details.
+
+It has no upload of its own, and nothing can be deleted from it. Every time a reco is run, the HIS
+vendor master file uploaded with it is applied to the master:
+
+- **A vendor code already in the master** is updated with the file's values. Every column the file
+  has takes the file's value, a blank included. A column the file doesn't have keeps its last value.
+- **A new vendor code** is added.
+- **A vendor missing from the file** stays in the master as it was.
+- **A code listed twice in one file:** the last row is used.
+
+Codes are matched the way the reco matches them: trimmed, repeated spaces folded to one, and
+upper-cased. Uploading the same file again only updates the values that changed.
+
+The master reads the file's **All** sheet when the workbook has one with vendors in it, so a vendor
+switched off in HIS arrives with `STATUS` INACTIVE rather than simply going missing. Otherwise it
+reads the same sheet as the reco, which still reads **Active**. Every labelled column is kept under
+the file's own name. A repeated name gets a number (`REMARKS (2)`), and a row with no `VENDOR_CODE`
+is skipped. Dates read as `dd/mm/yyyy`, and long numbers such as bank account numbers are written
+out in full.
+
+After each reco, both screens say what it did to the master, for example *12 new, 30 updated, 1,855
+unchanged*.
+
+Recos are applied to the master one at a time, in the order they arrive. If two are uploaded
+together, the second waits for the first, so the latest file always wins. The newest file also sets
+the column order: its own columns first, then any column only an earlier file had.
+
+The tables are:
+
+- `vendor_master`: one row per vendor, its details as JSON keyed by column name, its cleaned MSME
+  number (`msme_no`), and the two details set on the screen: `supply_type` (REGULAR by default, or
+  STENTS) and `inter` (NO by default, or YES).
+- `vendor_master_columns`: the column order.
+- `vendor_master_applies`: one row per file applied: which reco, which sheet, and how many vendors it
+  added, updated or left unchanged.
+
+**MSME No, MSME Status, Inter and Supply Type on the GRN screens come from here.** That covers every
+GRN table (Total GRNS, Pending, Accounts, BPAD, PR-to-Bank and the CS Department queue), the MSME
+filter and the exports. Each looks up the GRN's vendor code in the master, matched the same way:
+
+- **MSME No** is the vendor's `MSME_NUMBER`, cleaned the way the reco cleans values, so `NA`, `-`
+  or `Not Applicable` counts as no number.
+- **MSME Status** is **MSME** when the vendor has a number and **Non-MSME** when it doesn't.
+- **Inter** and **Supply Type** are what is picked for the vendor on this screen.
+- **A vendor the master doesn't have** shows a dash in all four.
+
+Nothing is copied onto the GRNs. The four are looked up on every page load, so a change here shows on
+every GRN of that vendor straight away, both stored GRNs and future uploads. So does a new reco. A
+vendor that a later file leaves out keeps the number it last had.
+
+**Recos not yet applied** are applied oldest first by `npm run migrate`, when the server starts, and
+before each new reco. On the first migration, that means every reco run before the Vendor Master
+existed. It also covers a reco uploaded through a server that was still running older code after
+the migration. Their files weren't kept, so they can only bring the 13 columns the reco stores
+(`VENDOR_CODE`, `WAREHOUSE`, `STATUS`, `VENDOR_NAME`, `PAN_NO`, `GST_NUMBER`, `DRUG_LICENCE_NO`,
+`MSME_NUMBER`, `ENTERPRISE_TYPE`, `ENTERPRISE_ACTIVITY`, `BANK_ACCOUNT_NO`, `IFSC`, `PAYEE_NAME`). A
+late one never overwrites details a newer file already brought. Until a reco has brought a whole
+file, the screen says only those columns are there. The first such reco will count many vendors as
+updated, because it brings the columns and raw values the older runs couldn't.
+
+**To upgrade:** stop the server, run `npm run migrate`, then start it again. Don't upload or run a
+reco while the migration is running.
+
+The table shows the file's columns under their own names, except `CREATED_DATE`, which is kept but
+not shown, exported or searched. `VENDOR_CODE` and `VENDOR_NAME` come first and stay fixed on the
+left when you scroll sideways. Two columns follow them, each picked on this screen from a dropdown
+and saved at once:
+
+- **Inter**: **No** or **Yes**.
+- **Supply Type**: **Regular** or **Stents**.
+
+Every vendor starts as **No** and **Regular**, including those a later reco adds, until someone picks
+otherwise.
+
+No file carries either, so a later reco never changes them. Each change is recorded in the activity
+log under **Vendor Master**, with the value before (`PATCH /api/vendor-master/:id`).
+
+The search box looks in every column shown, Supply Type included. If the files use more than one
+`STATUS` value, there is a card for each. **Export Excel** downloads the vendors on screen, with the
+card and the search applied, as one plain sheet laid out like the screen.
 
 ---
 

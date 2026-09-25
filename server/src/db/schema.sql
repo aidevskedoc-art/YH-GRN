@@ -171,9 +171,11 @@ CREATE TABLE IF NOT EXISTS grn_transactions (
 
 CREATE INDEX IF NOT EXISTS idx_grn_batch_key ON grn_transactions (batch_id, dpr_no_key);
 
--- Cross-batch lookups (a later upload matching against an earlier one; see
--- findLatestByKey in services/ingest.js) filter on dpr_no_key alone, across
--- every batch, so they need this the other way round from the index above.
+-- An upload replaces a GRN's stored row by its number, and pairs a new ageing
+-- report with the GRNs already on file the same way (services/ingest.js), so
+-- lookups go by dpr_no_key alone, across every batch -- the other way round
+-- from the index above. One row per number since uploads started replacing --
+-- see idx_grn_one_per_key in the one-copy-per-GRN block further down.
 CREATE INDEX IF NOT EXISTS idx_grn_dpr_no_key ON grn_transactions (dpr_no_key, batch_id DESC);
 
 -- Rows from "02. Vendor ageing report", plus the branch code split out of GRN_NO.
@@ -220,8 +222,8 @@ CREATE TABLE IF NOT EXISTS vendor_ageing (
 
 CREATE INDEX IF NOT EXISTS idx_ageing_batch_key ON vendor_ageing (batch_id, grn_number_key);
 
--- Same reasoning as idx_grn_dpr_no_key above, for the other direction of the
--- cross-batch lookup.
+-- Same reasoning as idx_grn_dpr_no_key above: a GRN's ageing rows are
+-- replaced, and found for pairing, by GRN number.
 CREATE INDEX IF NOT EXISTS idx_ageing_grn_number_key ON vendor_ageing (grn_number_key, batch_id DESC);
 
 -- ---------------------------------------------------------------------------
@@ -300,7 +302,13 @@ CREATE TABLE IF NOT EXISTS reconciliation_results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_results_batch_status ON reconciliation_results (batch_id, status);
-CREATE INDEX IF NOT EXISTS idx_results_grn ON reconciliation_results (grn_transaction_id);
+-- The lookup by GRN row is the unique idx_results_one_per_grn, created by the
+-- one-copy-per-GRN block further down once the duplicates are gone.
+
+-- Replacing a GRN's ageing rows deletes them, and each delete has to find the
+-- results pointing at the row to clear their link (ON DELETE SET NULL). Without
+-- this that is a scan of every result per ageing row deleted.
+CREATE INDEX IF NOT EXISTS idx_results_ageing ON reconciliation_results (matched_ageing_id);
 
 -- --------------------------------------------------------------------------
 -- One handover to CSD: a GRN taken off the Valid GRNs tab and passed on.
@@ -703,6 +711,107 @@ WHERE b.batch_id < (
     AND b2.grn_no_key      IS NOT DISTINCT FROM b.grn_no_key
 );
 
+-- --------------------------------------------------------------------------
+-- One copy per GRN in the other tables too.
+--
+-- Uploads used to add rows beside the ones already stored, and the screens
+-- read only the newest copy of each GRN -- so the GRN report uploaded twice
+-- left 8,965 GRN rows and results describing 5,563 GRNs. An upload now
+-- replaces what is stored for the GRNs and transactions it carries (saveBatch
+-- in services/ingest.js), and this clears away what the old behaviour left:
+--
+--   GRN rows      the newest copy of each GRN number is kept;
+--   results       the newest for each GRN row is kept -- the one the screens
+--                 already showed;
+--   ageing rows   for each GRN number, the rows of the newest upload that
+--                 carried it -- all of them, one per cheque -- are kept, and a
+--                 hand-typed cheque clearance date on an older row moves to the
+--                 kept row for the same cheque;
+--   bank rows     a transaction a newer statement also carries is kept only as
+--                 that statement's copy.
+--
+-- Rows only, never an upload: an upload's other files stay whatever happens to
+-- its GRN report's rows -- one upload can hold the only copy of an ageing
+-- report or a statement.
+--
+-- A result that pointed at a cleared ageing row loses its link here (ON DELETE
+-- SET NULL); `npm run migrate` re-links every result right after this file
+-- runs -- see relinkStoredResults in services/ingest.js.
+--
+-- Idempotent, which it has to be: this file is re-run on every migrate. Once
+-- nothing is stored twice, it deletes nothing.
+-- --------------------------------------------------------------------------
+DELETE FROM grn_transactions g
+ USING grn_transactions n
+ WHERE n.dpr_no_key = g.dpr_no_key
+   AND g.dpr_no_key <> ''
+   AND (n.batch_id, n.id) > (g.batch_id, g.id);
+
+DELETE FROM reconciliation_results r
+ USING reconciliation_results n
+ WHERE n.grn_transaction_id = r.grn_transaction_id
+   AND (n.batch_id, n.id) > (r.batch_id, r.id);
+
+WITH newest AS (
+  SELECT grn_number_key, MAX(batch_id) AS batch_id
+    FROM vendor_ageing
+   WHERE grn_number_key <> ''
+   GROUP BY grn_number_key
+), carried AS (
+  SELECT DISTINCT ON (o.grn_number_key, o.cheque_no)
+         o.grn_number_key, o.cheque_no, o.cheque_clearance_override
+    FROM vendor_ageing o
+    JOIN newest w ON w.grn_number_key = o.grn_number_key
+   WHERE o.batch_id < w.batch_id
+     AND o.cheque_clearance_override IS NOT NULL
+     AND COALESCE(o.cheque_no, '') <> ''
+   ORDER BY o.grn_number_key, o.cheque_no, o.batch_id DESC, o.id DESC
+)
+UPDATE vendor_ageing n
+   SET cheque_clearance_override = c.cheque_clearance_override
+  FROM newest w, carried c
+ WHERE n.grn_number_key = w.grn_number_key
+   AND n.batch_id = w.batch_id
+   AND n.cheque_clearance_override IS NULL
+   AND c.grn_number_key = n.grn_number_key
+   AND c.cheque_no = n.cheque_no;
+
+DELETE FROM vendor_ageing o
+ USING (
+   SELECT grn_number_key, MAX(batch_id) AS batch_id
+     FROM vendor_ageing
+    WHERE grn_number_key <> ''
+    GROUP BY grn_number_key
+ ) w
+ WHERE o.grn_number_key = w.grn_number_key
+   AND o.batch_id < w.batch_id;
+
+-- The same test clearEarlierBankRows in services/ingest.js applies to a new
+-- statement: every column of the row, and the account where both uploads name
+-- one. The newer statement's copy stays, including a row it carries twice.
+DELETE FROM bank_statement_transactions o
+ USING bank_statement_transactions n, upload_batches ob, upload_batches nb
+ WHERE n.batch_id > o.batch_id
+   AND ob.id = o.batch_id
+   AND nb.id = n.batch_id
+   AND (ob.bank_account_no IS NULL OR nb.bank_account_no IS NULL OR ob.bank_account_no = nb.bank_account_no)
+   AND o.txn_date = n.txn_date
+   AND COALESCE(o.chq_ref_no, '') = COALESCE(n.chq_ref_no, '')
+   AND COALESCE(o.narration, '')  = COALESCE(n.narration, '')
+   AND o.value_date      IS NOT DISTINCT FROM n.value_date
+   AND o.withdrawal_amt  IS NOT DISTINCT FROM n.withdrawal_amt
+   AND o.deposit_amt     IS NOT DISTINCT FROM n.deposit_amt
+   AND o.closing_balance IS NOT DISTINCT FROM n.closing_balance;
+
+-- And the rule held from here on. A GRN number that folds to nothing ('') is
+-- left out: there is no telling two of those apart.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_grn_one_per_key
+  ON grn_transactions (dpr_no_key) WHERE dpr_no_key <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_results_one_per_grn
+  ON reconciliation_results (grn_transaction_id);
+-- The plain index this replaces.
+DROP INDEX IF EXISTS idx_results_grn;
+
 -- The BPAD register is optional, so a batch uploaded without one keeps a null
 -- file name and a zero count rather than being a different kind of batch.
 -- bpad_matched_count is what was kept; bpad_row_count is what was read, and
@@ -831,16 +940,14 @@ UPDATE users
  WHERE 'accounts-depot' = ANY(screens);
 
 -- --------------------------------------------------------------------------
--- Uploaded files became a screen grant of its own ('uploads'); it used to come
--- with 'upload'. Anyone who had the upload screen keeps the files screen.
--- One-off: it only runs while no account holds 'uploads' yet, so an
--- administrator who later unticks it for someone is not overruled by the next
--- migration.
+-- The Uploaded files screen ('uploads') is gone: the results screens show
+-- every GRN once, from its latest upload, so there are no uploads to manage
+-- or delete one by one. Its grant is taken off every account, so it cannot
+-- linger in the stored list. Idempotent: once removed, nothing matches.
 -- --------------------------------------------------------------------------
 UPDATE users
-   SET screens = array_append(screens, 'uploads')
- WHERE 'upload' = ANY(screens)
-   AND NOT EXISTS (SELECT 1 FROM users u2 WHERE 'uploads' = ANY(u2.screens));
+   SET screens = array_remove(screens, 'uploads')
+ WHERE 'uploads' = ANY(screens);
 
 -- --------------------------------------------------------------------------
 -- HIS vs FOCUS Reco (named msme_reco here, which is what it began as): the
@@ -915,12 +1022,159 @@ CREATE TABLE IF NOT EXISTS msme_reco_rows (
 
 CREATE INDEX IF NOT EXISTS idx_msme_rows_run_status ON msme_reco_rows (run_id, status, seq);
 CREATE INDEX IF NOT EXISTS idx_msme_rows_run_seq ON msme_reco_rows (run_id, seq);
--- A GRN's vendor, looked up in the latest run by code for the MSME No and
--- MSME Status columns on the results screen -- see VENDOR_MSME_NO in
--- routes/results.js, whose WHERE and ORDER BY this matches.
-CREATE INDEX IF NOT EXISTS idx_msme_rows_run_vendor ON msme_reco_rows (run_id, upper(btrim(vendor_code)), seq);
+-- The GRN screens' MSME No and MSME Status used to be looked up here, in the
+-- latest run, and this index was for that. They read the Vendor Master now
+-- (vendor_master.msme_no below), so it goes.
+DROP INDEX IF EXISTS idx_msme_rows_run_vendor;
 
 -- Runs stored before the Accounts-only codes stopped being kept still carry a
 -- row for each -- about 29,000 per run. The count on the run already records
 -- them, so the rows go. Idempotent: once cleared, nothing matches.
 DELETE FROM msme_reco_rows WHERE status = 'NOT_IN_HIS';
+
+-- --------------------------------------------------------------------------
+-- Vendor Master: every vendor the HIS vendor master has ever listed, once
+-- each, with its latest details.
+--
+-- The HIS vendor master is the correct data; the reco says what FOCUS
+-- (Accounts) needs changing to match it. It has no upload of its own: every
+-- HIS vs FOCUS Reco run applies its vendor master file here (see
+-- services/vendorMaster.js). A vendor code already here is updated with the
+-- file's values; a new one is added. Nothing is ever removed, and the app has
+-- no way to delete a reco run, so uploading the same file again only updates
+-- what changed.
+--
+-- `code_key` is what makes a vendor the same vendor from one file to the next:
+-- the code trimmed, runs of spaces folded to one and upper-cased, as the reco
+-- matches (codeKey in services/msmeReco.js). `data` is the vendor's details
+-- keyed by the file's own column names. An update merges the file's row over
+-- what is there, so every column the latest file has takes its value from it
+-- -- a blank included -- and a column it does not have keeps the last value
+-- given.
+--
+-- The three times are when a file was applied (see applied_at below): when the
+-- vendor was first added, when its details last changed, and when a file last
+-- carried it. `last_seen_at` is also what stops an older run, applied late,
+-- from undoing a newer one.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS vendor_master (
+  id            SERIAL PRIMARY KEY,
+  code_key      TEXT NOT NULL UNIQUE,
+  -- As the latest file spells it.
+  vendor_code   TEXT NOT NULL,
+  data          JSONB NOT NULL DEFAULT '{}',
+  last_run_id   INTEGER REFERENCES msme_reco_runs(id) ON DELETE SET NULL,
+  created_at    TIMESTAMPTZ NOT NULL,
+  updated_at    TIMESTAMPTZ NOT NULL,
+  last_seen_at  TIMESTAMPTZ NOT NULL,
+  msme_no       TEXT,
+  supply_type   TEXT NOT NULL DEFAULT 'REGULAR',
+  inter         TEXT NOT NULL DEFAULT 'NO'
+);
+
+-- The vendor's MSME number, out of `data` (its MSME_NUMBER column), cleaned
+-- the way the reco cleans a value -- a placeholder such as "NA" or "-" is NULL,
+-- so a filled one is a real number. What the MSME No and MSME Status columns on
+-- every GRN screen read (services/vendorMsme.js). Worked out in JavaScript, by
+-- the reco's own cleanValue, and so stored rather than derived in SQL: written
+-- with `data` on every apply, and filled for vendors stored before it by `npm
+-- run migrate` (see services/vendorMaster.js).
+ALTER TABLE vendor_master ADD COLUMN IF NOT EXISTS msme_no TEXT;
+
+-- The two details picked by hand on the Vendor Master screen, from a dropdown
+-- each (PATCH /api/vendor-master/:id): the vendor's supply type, STENTS or
+-- REGULAR, and whether it is Inter, YES or NO. Every vendor starts REGULAR and
+-- NO -- the ones here already and every one a reco adds -- until somebody
+-- picks otherwise. No HIS file carries either, so applying a file never
+-- touches them: a re-upload cannot undo a choice. The checks are dropped and
+-- re-added rather than guarded, so a value added to a list later reaches a
+-- database that already has the narrower check.
+ALTER TABLE vendor_master ADD COLUMN IF NOT EXISTS supply_type TEXT NOT NULL DEFAULT 'REGULAR';
+ALTER TABLE vendor_master ADD COLUMN IF NOT EXISTS inter TEXT NOT NULL DEFAULT 'NO';
+-- For columns added before they had a default: the vendors left unset read
+-- REGULAR and NO too, and a vendor already picked keeps its pick. Idempotent:
+-- once none is NULL, nothing matches.
+ALTER TABLE vendor_master ALTER COLUMN supply_type SET DEFAULT 'REGULAR';
+UPDATE vendor_master SET supply_type = 'REGULAR' WHERE supply_type IS NULL;
+ALTER TABLE vendor_master ALTER COLUMN supply_type SET NOT NULL;
+ALTER TABLE vendor_master ALTER COLUMN inter SET DEFAULT 'NO';
+UPDATE vendor_master SET inter = 'NO' WHERE inter IS NULL;
+ALTER TABLE vendor_master ALTER COLUMN inter SET NOT NULL;
+ALTER TABLE vendor_master DROP CONSTRAINT IF EXISTS vendor_master_supply_type_check;
+ALTER TABLE vendor_master ADD CONSTRAINT vendor_master_supply_type_check
+  CHECK (supply_type IN ('STENTS', 'REGULAR'));
+ALTER TABLE vendor_master DROP CONSTRAINT IF EXISTS vendor_master_inter_check;
+ALTER TABLE vendor_master ADD CONSTRAINT vendor_master_inter_check
+  CHECK (inter IN ('YES', 'NO'));
+
+-- The master's columns, in the order the screen and the export show them: the
+-- latest file's own order, then any column only an earlier file had.
+CREATE TABLE IF NOT EXISTS vendor_master_columns (
+  name      TEXT PRIMARY KEY,
+  position  INTEGER NOT NULL
+);
+
+-- One row per file applied to the master: which reco brought it, the sheet
+-- read, and how many vendors it added, updated, left unchanged, or skipped
+-- because a newer file had already carried them -- for the screens' "last
+-- updated" lines. Kept apart from msme_reco_runs, and run_id set to NULL rather
+-- than the row removed if a run is ever deleted in the database by hand: the
+-- master outlives its runs, and should still say where its details came from.
+--
+-- A run with no row here has not been applied yet -- one stored before the
+-- master existed, or by a server still running older code. applyPendingRuns
+-- (services/vendorMaster.js) applies those, oldest first: from migrate.js, at
+-- server start, and before each new reco. `full_file` is FALSE for them,
+-- since their files were not kept and only the columns the reco reads could
+-- be rebuilt.
+--
+-- `applied_at` is the time the master records for the file. For a new reco it
+-- is read under the master's lock, so files are ordered as they were applied;
+-- for a late one it is the run's own uploaded_at.
+CREATE TABLE IF NOT EXISTS vendor_master_applies (
+  id               SERIAL PRIMARY KEY,
+  run_id           INTEGER UNIQUE REFERENCES msme_reco_runs(id) ON DELETE SET NULL,
+  file_name        TEXT,
+  sheet_name       TEXT,
+  run_uploaded_at  TIMESTAMPTZ NOT NULL,
+  uploaded_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  applied_at       TIMESTAMPTZ NOT NULL,
+  added            INTEGER NOT NULL,
+  updated          INTEGER NOT NULL,
+  unchanged        INTEGER NOT NULL,
+  skipped          INTEGER NOT NULL,
+  full_file        BOOLEAN NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vendor_master_applies_at ON vendor_master_applies (applied_at DESC, id DESC);
+
+-- An earlier version of this screen recorded each apply on the run itself, in
+-- five vendor_master_* columns on msme_reco_runs. Those runs have been applied
+-- already -- the master holds their details -- so their counts move here as
+-- they are, timed as that version timed them (the run's own uploaded_at), and
+-- the columns go. Without this the runs would look unapplied and be applied
+-- again from the reco's columns, over the whole-file values they brought.
+-- Idempotent: once the columns are gone, nothing here runs.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_schema = current_schema() AND table_name = 'msme_reco_runs'
+                AND column_name = 'vendor_master_added') THEN
+    INSERT INTO vendor_master_applies
+      (run_id, file_name, sheet_name, run_uploaded_at, uploaded_by, applied_at,
+       added, updated, unchanged, skipped, full_file)
+    SELECT id, vendor_file_name, vendor_master_sheet, uploaded_at, uploaded_by, uploaded_at,
+           vendor_master_added, COALESCE(vendor_master_updated, 0), COALESCE(vendor_master_unchanged, 0), 0,
+           COALESCE(vendor_master_full, TRUE)
+      FROM msme_reco_runs
+     WHERE vendor_master_added IS NOT NULL
+    ON CONFLICT (run_id) DO NOTHING;
+
+    ALTER TABLE msme_reco_runs
+      DROP COLUMN IF EXISTS vendor_master_sheet,
+      DROP COLUMN IF EXISTS vendor_master_added,
+      DROP COLUMN IF EXISTS vendor_master_updated,
+      DROP COLUMN IF EXISTS vendor_master_unchanged,
+      DROP COLUMN IF EXISTS vendor_master_full;
+  END IF;
+END $$;

@@ -31,17 +31,21 @@ const ACCOUNTS_GRN_VIEW = 'grn';
 const ACCOUNTS_CHEQUE_VIEW = 'cheque';
 
 /**
- * The vendor's MSME registration off the HIS vendor master, beside the vendor
- * on every GRN sheet as on every GRN table -- see services/vendorMsme.js on the
- * server. Text: an Udyam number is an identifier. A blank status is a vendor
- * the vendor master has no row for, which is not the same as Non-MSME.
+ * The vendor's details off the Vendor Master, beside the vendor on every GRN
+ * sheet as on every GRN table -- see services/vendorMsme.js on the server: its
+ * MSME registration, and the Inter and Supply Type picked on the Vendor Master
+ * screen. Text: an Udyam number is an identifier. A blank is a vendor the
+ * Vendor Master has no row for, which is not the same as Non-MSME, No or
+ * Regular.
  *
  * `group` is for the ageing sheet, whose header carries a band over its
  * columns; every other sheet ignores it.
  */
-const MSME_COLUMNS = (group) => [
+const VENDOR_COLUMNS = (group) => [
   { key: 'msmeNo', label: 'MSME No', ...(group ? { group } : {}) },
   { key: 'msmeStatus', label: 'MSME Status', ...(group ? { group } : {}) },
+  { key: 'inter', label: 'Inter', ...(group ? { group } : {}) },
+  { key: 'supplyType', label: 'Supply Type', ...(group ? { group } : {}) },
 ];
 
 const COLUMNS = [
@@ -55,7 +59,7 @@ const COLUMNS = [
   { key: 'billDate', label: 'Bill Date', date: true },
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
-  ...MSME_COLUMNS(),
+  ...VENDOR_COLUMNS(),
   // The GRN report's own amount breakdown, in its source order -- see the
   // same four columns on GRN_COLUMNS below.
   { key: 'billAmount', label: 'Bill.Amount', numeric: true },
@@ -95,7 +99,7 @@ const MATCHED_COLUMNS = [
   { key: 'billDate', label: 'Bill Date', date: true },
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
-  ...MSME_COLUMNS(),
+  ...VENDOR_COLUMNS(),
   { key: 'ageingGrnNo', label: 'Focus doc_no' },
   { key: 'netAmt', label: 'NetAmt', numeric: true },
   { key: 'adjPurReturn', label: 'AdjPurReturn', numeric: true },
@@ -153,7 +157,7 @@ const ACCOUNTS_CHEQUE_COLUMNS = [
   { key: 'chequeGrnCount', label: 'GRNs', integer: true },
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
-  ...MSME_COLUMNS(),
+  ...VENDOR_COLUMNS(),
   { key: 'chqDate', label: 'Cheque Date', date: true },
   { key: 'chequeAmount', label: 'Cheque Amount', numeric: true },
   { key: 'paymentDocNo', label: 'PaymentDocNo' },
@@ -195,7 +199,7 @@ const GRN_COLUMNS = [
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
   // Not the GRN report's own -- an annotation beside its vendor, as on the tab.
-  ...MSME_COLUMNS(),
+  ...VENDOR_COLUMNS(),
   { key: 'billAmount', label: 'Bill.Amount', numeric: true },
   { key: 'transportAmount', label: 'Transport Amount', numeric: true },
   { key: 'totalAmount', label: ' Total Amount', numeric: true },
@@ -234,7 +238,7 @@ const BPAD_COLUMNS = [
   { key: 'vendorCode', label: 'Vendor Code' },
   { key: 'vendorName', label: 'Vendor Name' },
   // Not the register's own -- an annotation beside its vendor, as on the tab.
-  ...MSME_COLUMNS(),
+  ...VENDOR_COLUMNS(),
   { key: 'invNo', label: 'Inv.No.' },
   { key: 'invDate', label: 'Inv Date', date: true },
   { key: 'grnNo', label: 'GRN No' },
@@ -266,7 +270,7 @@ const TURNAROUND_PARTICULARS = [
   { key: 'billDate', label: 'Bill Date', date: true, group: 'Particulars' },
   { key: 'vendorName', label: 'Vendor', group: 'Particulars' },
   { key: 'vendorCode', label: 'Vendor Code', group: 'Particulars' },
-  ...MSME_COLUMNS('Particulars'),
+  ...VENDOR_COLUMNS('Particulars'),
   // The ageing report's own amount breakdown, ahead of PayableAmount -- the
   // same order as NetAmt through PayableAmount on the CSD and Valid GRNs tabs.
   { key: 'netAmt', label: 'NetAmt', numeric: true, group: 'Particulars' },
@@ -351,7 +355,7 @@ const CSD_COLUMNS = [
   { key: 'billDate', label: 'Bill Date', date: true },
   { key: 'vendorName', label: 'Vendor' },
   { key: 'vendorCode', label: 'Vendor Code' },
-  ...MSME_COLUMNS(),
+  ...VENDOR_COLUMNS(),
   { key: 'ageingGrnNo', label: 'Focus doc_no' },
   { key: 'netAmt', label: 'NetAmt', numeric: true },
   { key: 'adjPurReturn', label: 'AdjPurReturn', numeric: true },
@@ -380,7 +384,7 @@ const CSD_CHEQUE_COLUMNS = [
   { key: 'chequeGrnCount', label: 'GRNs', integer: true },
   { key: 'vendorName', label: 'Vendor' },
   { key: 'vendorCode', label: 'Vendor Code' },
-  ...MSME_COLUMNS(),
+  ...VENDOR_COLUMNS(),
   { key: 'chqDate', label: 'Cheque Date', date: true },
   { key: 'chequeAmount', label: 'Cheque Amount', numeric: true },
   { key: 'paymentDocNo', label: 'PaymentDocNo' },
@@ -805,17 +809,22 @@ export async function buildWorkbook(sheets) {
 /** The characters Excel will not have in a sheet name. */
 const SHEET_NAME_ILLEGAL = /[\\/?*:[\]]/g;
 
+/** The one sheet name Excel keeps for itself, whatever its case. */
+const SHEET_NAME_RESERVED = 'history';
+
 /**
  * A card's label, as a sheet name Excel will accept.
  *
- * Sheet names come from whatever the cards are called, and two of those are
+ * Sheet names come from whatever the cards are called, and some of those are
  * outside this file's control: the BPAD desks are the register's own wording
- * ("PURCHASE DEPARTMENT", and whatever the next upload spells), and a desk
- * named with a slash would have the workbook rejected outright rather than
- * renamed. So the illegal characters go, the 31-character cap is applied, and
- * a collision takes a number -- because Excel will not have two sheets of one
- * name either, and two desks whose names agree for 31 characters is a thing
- * a register can do.
+ * ("PURCHASE DEPARTMENT", and whatever the next upload spells), and the Vendor
+ * Master's cards are whatever STATUS values the HIS file uses. A name Excel
+ * refuses would have the workbook rejected outright rather than renamed. So
+ * the illegal characters go, the 31-character cap is applied, an apostrophe
+ * at either end goes (Excel refuses one there), and "History" or a collision
+ * takes a number -- because Excel will not have two sheets of one name either,
+ * and two desks whose names agree for 31 characters is a thing a register can
+ * do.
  */
 function uniqueSheetName(label, taken) {
   const base =
@@ -823,12 +832,14 @@ function uniqueSheetName(label, taken) {
       .replace(SHEET_NAME_ILLEGAL, ' ')
       .replace(/\s+/g, ' ')
       .trim()
-      .slice(0, 31) || 'Sheet';
+      .slice(0, 31)
+      // After the cap, so the cut cannot leave one at the end.
+      .replace(/^['\s]+|['\s]+$/g, '') || 'Sheet';
 
   // Excel compares sheet names case-insensitively, so the register's ACCOUNTS
   // and a tab's Accounts are the same name to it.
   const key = (name) => name.toLowerCase();
-  if (!taken.has(key(base))) {
+  if (key(base) !== SHEET_NAME_RESERVED && !taken.has(key(base))) {
     taken.add(key(base));
     return base;
   }
@@ -1133,14 +1144,17 @@ function msmeColumns(fields) {
       { key: `acc.${f.key}`, label: `${f.acc} (FOCUS)`, group: f.label },
     ]),
     { key: 'remarks', label: 'Remarks', width: 60, wrap: true },
+    // Every vendor is shown once, from the latest reco that had it, so the
+    // rows need not all come from the same one.
+    { key: 'recoDate', label: 'Reco date' },
   ];
 }
 
 /**
- * One run as one workbook: a sheet per card on the screen, in the cards'
- * order and under their names -- the whole vendor master first, then each
- * verdict on its own. Plain, with no colour anywhere: the Remarks column
- * already says what differs.
+ * The reco as one workbook -- every vendor once, as the screen shows it: a
+ * sheet per card on the screen, in the cards' order and under their names --
+ * the whole vendor master first, then each verdict on its own. Plain, with no
+ * colour anywhere: the Remarks column already says what differs.
  *
  * `cards` is the page's own card list, `[{ label, status }]` with `status`
  * null for the card that holds every row -- so a card renamed or added there
@@ -1150,14 +1164,15 @@ function msmeColumns(fields) {
  * Only the search narrows the sheets: the field chip is a way of looking at
  * one card, and applied to the whole workbook it would leave Matched empty.
  */
-export async function exportMsmeReco(runId, { q, cards = [] } = {}) {
-  const data = await api.msmeRows(runId, { q, all: true });
+export async function exportMsmeReco({ q, cards = [] } = {}) {
+  const data = await api.msmeRows({ q, all: true });
   const fields = data.fields ?? [];
 
   // Flattened, because toCell reads top-level keys only.
   const rows = data.rows.map((r) => ({
     ...r,
     msmeStatus: MSME_STATUS_LABELS[r.status] ?? r.status,
+    recoDate: dayOf(r.recoAt),
     ...Object.fromEntries(
       fields.flatMap((f) => [
         [`his.${f.key}`, r.his?.[f.key] ?? null],
@@ -1177,8 +1192,99 @@ export async function exportMsmeReco(runId, { q, cards = [] } = {}) {
     })),
   );
 
-  // A searched file is a different file from the whole run, so it says so.
+  // A searched file is a different file from the whole reco, so it says so.
   const fileName = `${['HIS_vs_FOCUS_Reco', q && slug(q), new Date().toISOString().slice(0, 10)]
+    .filter(Boolean)
+    .join('_')}.xlsx`;
+  save(blob, fileName);
+  return { count: rows.length };
+}
+
+/* -------------------------------------------------------------------------
+   Vendor Master: every HIS vendor, with its latest details.
+   ------------------------------------------------------------------------- */
+
+/** dd/MM/yyyy from a timestamp, in the browser's own zone -- the reco's Reco date. */
+function dayOf(value) {
+  if (!value) return null;
+  const at = new Date(value);
+  return Number.isFinite(at.getTime()) ? at.toLocaleDateString('en-GB') : null;
+}
+
+/**
+ * The two details picked by hand on the Vendor Master screen, each from a
+ * dropdown, by the name the API gives them -- with the values each can take,
+ * as stored, and how each reads. No HIS file carries them.
+ *
+ * Neither has a blank choice: every vendor has one of the values, starting at
+ * `fallback` (No, Regular) until somebody picks the other -- which is what the
+ * database gives a vendor it has nothing picked for. A row that somehow comes
+ * without a value reads as the fallback too, rather than as whichever option a
+ * browser would show first.
+ */
+export const VENDOR_PICKED = {
+  inter: { label: 'Inter', options: { NO: 'No', YES: 'Yes' }, fallback: 'NO' },
+  supplyType: { label: 'Supply Type', options: { REGULAR: 'Regular', STENTS: 'Stents' }, fallback: 'REGULAR' },
+};
+
+/** A vendor's value for one picked detail, the fallback standing in for none. */
+export function pickedValue(row, field) {
+  const spec = VENDOR_PICKED[field];
+  const value = row?.[field];
+  return value && value in spec.options ? value : spec.fallback;
+}
+
+/**
+ * The master's columns in the order the screen and the export both show them:
+ * VENDOR_CODE and VENDOR_NAME first -- the two every row is read by, which the
+ * screen holds at the left edge -- then the two picked ones (VENDOR_PICKED),
+ * then every other column in the stored order (the latest file's own).
+ *
+ * Each is `{ key, label, index }`, `index` pointing into `headers`; a picked
+ * one has index -1 and names its field as `picked`. Keys are by position
+ * (`c3`), not by header: the headers are the files' to choose, and one spelled
+ * like a key toCell treats specially ("status") must still come out as written.
+ */
+export function vendorMasterLayout({ headers = [], codeIndex = -1, nameIndex = -1 } = {}) {
+  const lead = [codeIndex, nameIndex].filter((i) => i >= 0);
+  return [
+    ...lead.map((index) => ({ key: `c${index}`, label: headers[index], index })),
+    ...Object.entries(VENDOR_PICKED).map(([field, spec]) => ({ key: `vm_${field}`, label: spec.label, index: -1, picked: field })),
+    ...headers.map((label, index) => ({ key: `c${index}`, label, index })).filter((c) => !lead.includes(c.index)),
+  ];
+}
+
+/**
+ * The master as one sheet, laid out as the screen is (vendorMasterLayout),
+ * with the card and the search on screen applied. Plain, as the HIS vs FOCUS
+ * workbook is.
+ *
+ * `view` is the card's key and `label` its name, which titles the sheet.
+ * Through buildWorkbook, which cleans the sheet name: a card is named after a
+ * STATUS value the file chose, and Excel refuses some characters in one.
+ */
+export async function exportVendorMaster({ view, label, q } = {}) {
+  const data = await api.vendorMasterRows({ view, q, all: true });
+  const layout = vendorMasterLayout(data);
+  const columns = layout.map(({ key, label: heading }) => ({ key, label: heading }));
+  const rows = (data.rows ?? []).map((r) =>
+    Object.fromEntries(
+      layout.map((c) => [
+        c.key,
+        c.picked ? VENDOR_PICKED[c.picked].options[pickedValue(r, c.picked)] : r.cells[c.index] ?? null,
+      ]),
+    ),
+  );
+
+  const title = label ? `Vendor Master - ${label}` : 'Vendor Master';
+  const blob = await buildWorkbook([{ sheetName: label || 'Vendor Master', rows, columns, title, plain: true }]);
+
+  const fileName = `${[
+    'Vendor_Master',
+    label && slug(label),
+    q && slug(q),
+    new Date().toISOString().slice(0, 10),
+  ]
     .filter(Boolean)
     .join('_')}.xlsx`;
   save(blob, fileName);

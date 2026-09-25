@@ -1952,6 +1952,13 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   justify-content: start;
 }
 
+/* The Back button over the cards (components/BackButton.jsx): the small ghost
+   button, with its arrow on the same line as the words, left-aligned on a
+   line of its own so it reads as a step back out of the row below rather
+   than as one of the page's actions. */
+.back-row { display: flex; margin-bottom: 12px; }
+.back-btn { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+
 .stat {
   --stat-tint: transparent;
   --stat-key: var(--border-strong);
@@ -2062,7 +2069,7 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 /* The one desk card that goes somewhere: Accounts, which opens the Accounts
    section rather than narrowing the register to itself. It takes that
    section's tone, so the card and the view it leads to are the same colour,
-   and an arrow says it leaves -- the row's other cards toggle in place, and a
+   and an arrow says it leaves -- the row's other cards narrow in place, and a
    card that quietly did something else would be found out by pressing it. */
 .stat--go .stat__go {
   position: absolute;
@@ -3306,9 +3313,7 @@ select.spans__select { width: auto; min-width: 150px; }
 .drops--two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 @media (max-width: 680px) { .drops--two { grid-template-columns: minmax(0, 1fr); } }
 
-/* Which run is on screen, what it read, and -- for an administrator -- the way
-   to remove it. One line while it fits; the meta drops under the picker when
-   it does not. */
+/* The line over the table: the latest reco, and what it read. */
 .msme-runbar {
   display: flex;
   align-items: center;
@@ -3316,11 +3321,7 @@ select.spans__select { width: auto; min-width: 150px; }
   gap: 10px 16px;
   margin-bottom: 18px;
 }
-.msme-runbar__pick { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
-.msme-runbar__pick > span { color: var(--muted); font-size: 12.5px; font-weight: 600; }
-.msme-runbar__pick select { max-width: min(560px, 100%); text-overflow: ellipsis; }
 .msme-runbar__meta { color: var(--muted); font-size: 12.5px; }
-.msme-runbar__delete { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; }
 
 /* Mismatches by field: a chip per compared field, with its count. Pressing
    one narrows the table to the vendors that disagree on it. Scoped under the
@@ -3491,5 +3492,54 @@ select.spans__select { width: auto; min-width: 150px; }
   white-space: normal;
   font-size: 12.5px;
   line-height: 1.45;
+}
+
+/* ==========================================================================
+   Vendor Master (pages/VendorMaster.jsx)
+   The run line and cards are the HIS vs FOCUS Reco's own; only the table is
+   new.
+   ========================================================================== */
+
+/* Every column of the vendor master, headed with its own names. Gridlines as
+   the sheet has them; a long value (an address, a bank's full name) wraps
+   rather than widening its column to the length of the longest one. */
+.table.vm-table td { border-right: 1px solid var(--border); }
+.table.vm-table td.vm-cell--long {
+  min-width: 220px;
+  max-width: 340px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* VENDOR_CODE and VENDOR_NAME hold the left edge; the rest travels under them.
+   Fixed widths, because a sticky `left` is a fixed offset -- see the
+   msme-pin rules above for the same arrangement. */
+.vm-table {
+  --pin-code-w: 130px;
+  --pin-name-w: 240px;
+}
+.table.vm-table th.vm-pin--code,
+.table.vm-table td.vm-pin--code {
+  left: 0;
+  width: var(--pin-code-w);
+  min-width: var(--pin-code-w);
+  max-width: var(--pin-code-w);
+}
+.table.vm-table th.vm-pin--name,
+.table.vm-table td.vm-pin--name {
+  left: var(--pin-code-w);
+  width: var(--pin-name-w);
+  min-width: var(--pin-name-w);
+  max-width: var(--pin-name-w);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  /* The seam between what is held and what is moving. */
+  border-right: 1px solid var(--border-strong);
+}
+/* On a narrow window two held columns are most of the table, so the name lets
+   go and only the code stays. */
+@media (max-width: 900px) {
+  .table.vm-table th.vm-pin--name,
+  .table.vm-table td.vm-pin--name { left: auto; }
 }
 

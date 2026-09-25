@@ -646,9 +646,19 @@ export function accountMasterFromGrid(grid) {
  * workbook has one; otherwise the first sheet carrying the header is. Which
  * one was read is returned, so the screen can say so rather than leave the
  * count to be puzzled over.
+ *
+ * `master` is the file again, every column of it cell for cell, for the Vendor
+ * Master (see services/vendorMaster.js and vendorMasterSheet below). It reads
+ * the "All" sheet when the workbook has one, not "Active": the master keeps
+ * every vendor it has ever been given and updates each from the latest file,
+ * so a vendor switched off in HIS has to arrive as INACTIVE -- read from
+ * "Active" it would simply stop arriving and stay ACTIVE for good. Without an
+ * "All" sheet with vendors in it, it reads the same sheet as the reco.
  */
 export function readVendorMaster(buffer) {
-  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false, cellNF: false });
+  // cellNF keeps each cell's number format, which is how `master` tells a date
+  // from any other number -- see cellText. `rows` reads raw values regardless.
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false, cellNF: true });
   const candidates = workbook.SheetNames.filter(
     (name) => findHeaderRow(headGrid(workbook.Sheets[name]), VENDOR_MASTER_SIGNATURE, true) !== -1,
   );
@@ -659,12 +669,106 @@ export function readVendorMaster(buffer) {
     );
   }
 
-  const sheetName = candidates.find((name) => name.trim().toUpperCase() === 'ACTIVE') ?? candidates[0];
-  return { sheetName, ...vendorMasterFromGrid(fullGrid(workbook.Sheets[sheetName])) };
+  const named = (wanted) => candidates.find((name) => name.trim().toUpperCase() === wanted);
+  const sheetName = named('ACTIVE') ?? candidates[0];
+  // Throws when the reco's own sheet has no vendors -- so past this point the
+  // reco's sheet always has some for the master to fall back to.
+  const reco = vendorMasterFromGrid(fullGrid(workbook.Sheets[sheetName]));
+
+  // An "All" sheet with the header and no vendors under it must not cost the
+  // reco its upload: the master reads the reco's sheet instead.
+  let masterSheet = named('ALL') ?? sheetName;
+  let master = vendorMasterSheet(workbook.Sheets[masterSheet]);
+  if (master.rows.length === 0 && masterSheet !== sheetName) {
+    masterSheet = sheetName;
+    master = vendorMasterSheet(workbook.Sheets[sheetName]);
+  }
+
+  return { sheetName, ...reco, master: { sheetName: masterSheet, ...master } };
 }
 
 /** Parse the Accounts vendor list ("02. 010Account"). One sheet. */
 export function readAccountMaster(buffer) {
   const { sheetName, grid } = readGrid(buffer);
   return { sheetName, ...accountMasterFromGrid(grid) };
+}
+
+/* ==========================================================================
+   The Vendor Master's copy of the HIS vendor master: every column the export
+   carries, not only the ones the HIS vs FOCUS reco compares. See `master` in
+   readVendorMaster above for which sheet.
+   ========================================================================== */
+
+/** dd/MM/yyyy, plus HH:mm when the cell carries a time, from an Excel serial. */
+function serialToText(serial) {
+  // Excel's day 0 is 1899-12-30 under the 1900 date system -- see toIsoDateString.
+  if (!Number.isFinite(serial) || serial <= 0 || serial > 2958465) return toText(serial);
+  const at = new Date(Date.UTC(1899, 11, 30) + Math.round(serial * 86400) * 1000);
+  const two = (n) => String(n).padStart(2, '0');
+  const day = `${two(at.getUTCDate())}/${two(at.getUTCMonth() + 1)}/${at.getUTCFullYear()}`;
+  if (at.getUTCHours() === 0 && at.getUTCMinutes() === 0) return day;
+  return `${day} ${two(at.getUTCHours())}:${two(at.getUTCMinutes())}`;
+}
+
+/**
+ * One cell as the sheet shows it. A number formatted as a date reads as the
+ * date rather than its serial; any other number is written out whole (see
+ * toText), so a bank account number does not become 1.23E+11. Excel's escaped
+ * carriage return is dropped, as the reco drops it.
+ */
+function cellText(cell) {
+  if (!cell || cell.t === 'z' || cell.t === 'e') return '';
+  if (cell.t === 'n' && cell.z && XLSX.SSF.is_date(cell.z)) return serialToText(cell.v);
+  if (cell.t === 'b') return cell.v ? 'TRUE' : 'FALSE';
+  return toText(cell.v)
+    .replace(/_x000d_/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Every labelled column of one vendor master sheet, and every vendor row under
+ * it, cell for cell.
+ *
+ * Columns are taken where they literally stand: the vendor master's header has
+ * no gaps to correct for, unlike the GRN report's (see indexHeaders). A repeated
+ * header label is numbered ("REMARKS (2)") so each column keeps a name of its
+ * own. A row with no VENDOR_CODE is not a vendor and is skipped, as the reco's
+ * reader skips it. A sheet with none left comes back with no rows rather than
+ * an error -- readVendorMaster decides what that means.
+ */
+function vendorMasterSheet(sheet) {
+  const range = XLSX.utils.decode_range(sheet['!ref']);
+  const headerR = range.s.r + findHeaderRow(headGrid(sheet), VENDOR_MASTER_SIGNATURE, true);
+  const at = (r, c) => sheet[XLSX.utils.encode_cell({ r, c })];
+
+  const columns = [];
+  const seen = new Map();
+  for (let c = range.s.c; c <= range.e.c; c += 1) {
+    const label = toText(at(headerR, c)?.v).replace(/\s+/g, ' ');
+    if (!label) continue;
+    const n = (seen.get(label.toUpperCase()) ?? 0) + 1;
+    seen.set(label.toUpperCase(), n);
+    columns.push({ c, label: n === 1 ? label : `${label} (${n})`, token: tightToken(label) });
+  }
+
+  const find = (token) => columns.findIndex((col) => col.token === token);
+  const codeAt = find('VENDOR_CODE');
+  const nameAt = find('VENDOR_NAME');
+  const statusAt = find('STATUS');
+
+  const rows = [];
+  for (let r = headerR + 1; r <= range.e.r; r += 1) {
+    const cells = columns.map((col) => cellText(at(r, col.c)));
+    if (!cells[codeAt]) continue;
+    rows.push({
+      sourceRowNo: r + 1,
+      vendorCode: cells[codeAt],
+      vendorName: nameAt === -1 ? '' : cells[nameAt],
+      status: statusAt === -1 ? '' : cells[statusAt],
+      cells,
+    });
+  }
+
+  return { headerRow: headerR + 1, headers: columns.map((col) => col.label), rows };
 }
