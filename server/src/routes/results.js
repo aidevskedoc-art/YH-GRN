@@ -14,7 +14,15 @@ import {
 } from '../services/branchScope.js';
 import { branchFor } from '../config/screens.js';
 import { logActivity } from '../services/activityLog.js';
-import { msmeFilter, vendorColumns, vendorFields } from '../services/vendorMsme.js';
+import {
+  SUPPLY_TYPE_CHOICES,
+  msmeFilter,
+  supplyTypeFilter,
+  vendorColumns,
+  vendorFields,
+  vendorInter,
+  vendorSupplyType,
+} from '../services/vendorMsme.js';
 
 export const resultsRouter = express.Router();
 
@@ -336,6 +344,37 @@ const NO_CHEQUE =
   `(a.cheque_no IS NULL OR a.cheque_no = '') AND a.chq_date IS NULL` +
   ` AND (a.payment_doc_no IS NULL OR a.payment_doc_no = '')`;
 
+/*
+ * Why a bill needs no cheque at all, whatever it has left to pay -- the rule
+ * behind the Cheque Not Required card. Either of two things:
+ *
+ *  - the vendor is Inter, as picked on the Vendor Master screen -- looked up
+ *    live, so re-marking a vendor there moves its bills on the next load;
+ *  - the BPAD register has the bill in Accounts (Pending With Dept.) with
+ *    "cash" in Pending With User/Status -- a cash bill, such as the desk the
+ *    register writes as LAKSHMI CASH BILLS. Pending With User/Status is read
+ *    only where the desk is Accounts.
+ *
+ * Both case-insensitive. A vendor the master does not have is not Inter: the
+ * COALESCE keeps a missing answer from turning NOT (...) into NULL, which
+ * would drop the bill out of every cheque card at once. Any of the GRN's
+ * register rows counts -- the register repeats a GRN across a split invoice,
+ * and every such row comes from the same upload (see clearBpadRecordsFor).
+ *
+ * `vendorCodeSql` and `grnKeySql` name the GRN's vendor code and GRN number key
+ * in whichever query asks.
+ */
+function chequeExemptSql(vendorCodeSql, grnKeySql) {
+  return `(COALESCE(${vendorInter(vendorCodeSql)} = 'YES', FALSE)
+      OR EXISTS (
+        SELECT 1 FROM bpad_records cx
+         WHERE cx.grn_no_key = ${grnKeySql}
+           AND upper(btrim(cx.pending_with_dept)) = 'ACCOUNTS'
+           AND cx.pending_with_user ILIKE '%cash%'))`;
+}
+
+const CHEQUE_EXEMPT = chequeExemptSql('g.vendor_code', 'g.dpr_no_key');
+
 const PROGRESS = {
   CLEARED: `${CHEQUE_CLEARED_ON} IS NOT NULL`,
   /*
@@ -351,31 +390,34 @@ const PROGRESS = {
    * Not the same question as CLEARED above, which is the bank's answer on a
    * cheque that already exists. Prepared is this side of the counter.
    *
-   * A bill with no cheque is one of two things, and PayableAmount says which.
+   * A bill with no cheque is one of three things. One no cheque is meant for
+   * -- an Inter vendor's, or a cash bill (CHEQUE_EXEMPT above) -- is Cheque
+   * not required, whatever it has left to pay. Otherwise PayableAmount says.
    * Zero or under a rupee -- the report leaves it blank when a bill nets to
    * nothing, and PAYABLE_AMOUNT reads that blank as the zero it is -- there is
    * nothing left to pay, so no cheque is ever coming and the bill is Payment
    * not required. Otherwise it is waiting on one, which is what Cheque not
-   * prepared means. So the three split the Accounts rows between them with
+   * prepared means. So the four split the Accounts rows between them with
    * nothing counted twice. A bill that does have a cheque stays Prepared
-   * whatever its payable says: the cheque exists, and that is the thing CSD
-   * are handed.
+   * whatever its payable or its vendor says: the cheque exists, and that is
+   * the thing CSD are handed.
    *
-   * `a.id IS NOT NULL` on all three, so a pending GRN falls in none. It has no
+   * `a.id IS NOT NULL` on all four, so a pending GRN falls in none. It has no
    * ageing entry at all, so "no cheque prepared" would be true of it for a
    * reason that has nothing to do with cheques -- and since a row has an
    * ageing entry exactly when it is one of the Accounts ones, carrying the
-   * clause here is what makes the three counts sum to the Accounts figure the
+   * clause here is what makes the four counts sum to the Accounts figure the
    * cards sit under rather than overshoot it by every pending row on file.
    */
   CHEQUE_PREPARED:
     `a.id IS NOT NULL AND (COALESCE(a.cheque_no, '') <> ''` +
     ` OR a.chq_date IS NOT NULL OR COALESCE(a.payment_doc_no, '') <> '')`,
+  CHEQUE_NOT_REQUIRED: `a.id IS NOT NULL AND ${NO_CHEQUE} AND ${CHEQUE_EXEMPT}`,
   // A PayableAmount with no figure at all fails `>= 1` as well, so it lands in
   // the next one rather than in neither.
-  CHEQUE_NOT_PREPARED: `a.id IS NOT NULL AND ${NO_CHEQUE} AND ${PAYABLE_AMOUNT} >= 1`,
+  CHEQUE_NOT_PREPARED: `a.id IS NOT NULL AND ${NO_CHEQUE} AND NOT ${CHEQUE_EXEMPT} AND ${PAYABLE_AMOUNT} >= 1`,
   PAYMENT_NOT_REQUIRED:
-    `a.id IS NOT NULL AND ${NO_CHEQUE}` +
+    `a.id IS NOT NULL AND ${NO_CHEQUE} AND NOT ${CHEQUE_EXEMPT}` +
     ` AND (${PAYABLE_AMOUNT} IS NULL OR ${PAYABLE_AMOUNT} < 1)`,
   QUEUED: "c.stage = 'QUEUED'",
   RECEIVED: "c.stage = 'RECEIVED'",
@@ -423,7 +465,12 @@ const PROGRESS_KEYS = Object.keys(PROGRESS);
  * same rule as canSend in ResultsTable.jsx. Not a PROGRESS key, so the Status
  * dropdown and the summary's counts are untouched by it.
  */
-const CHEQUE_PROGRESS = new Set(['CHEQUE_PREPARED', 'CHEQUE_NOT_PREPARED', 'PAYMENT_NOT_REQUIRED']);
+const CHEQUE_PROGRESS = new Set([
+  'CHEQUE_PREPARED',
+  'CHEQUE_NOT_REQUIRED',
+  'CHEQUE_NOT_PREPARED',
+  'PAYMENT_NOT_REQUIRED',
+]);
 const NOT_ACTIONS = new Set([...CHEQUE_PROGRESS, 'NOT_SENT']);
 const ACTIONS = {
   ...Object.fromEntries(
@@ -497,7 +544,7 @@ const ROW_COLUMNS = `
          r.bill_no_match,
          r.vendor_name_match,
          r.discrepancy_notes,
-         g.sl_no, g.warehouse, g.dpr_no, g.po_no, g.dpr_date, g.bill_no, g.bill_date,
+         g.sl_no, g.warehouse, g.dpr_no, g.dpr_no_key, g.po_no, g.dpr_date, g.bill_no, g.bill_date,
          g.dc_no, g.vendor_code, g.vendor_name,
          g.bill_amount, g.transport_amount, g.total_amount,
          g.location, g.add_amount, g.ded_amount,
@@ -554,12 +601,14 @@ const resultJoins = (scope) => `
   ${CHEQUE_MATCH}
 `;
 
-// The vendor's Vendor Master details ride on this select and not on
-// ROW_COLUMNS, which the Cheque view also builds on: that one reads every row
-// before it folds them into cheques, so it looks the vendor up afterwards, once
-// per cheque listed -- see chequeRows.
+// The vendor's Vendor Master details, and whether the bill needs a cheque at
+// all (CHEQUE_EXEMPT), ride on this select and not on ROW_COLUMNS, which the
+// Cheque view also builds on: that one reads every row before it folds them
+// into cheques, so it asks both afterwards, once per cheque listed -- see
+// chequeRows.
 const rowSelect = (scope) =>
-  `${ROW_COLUMNS}, ${VENDOR_COLUMNS} ${resultJoins(scope)} ${PRIOR_REJECTION_JOIN}`;
+  `${ROW_COLUMNS}, ${VENDOR_COLUMNS}, ${CHEQUE_EXEMPT} AS cheque_exempt
+   ${resultJoins(scope)} ${PRIOR_REJECTION_JOIN}`;
 
 function mapRow(r) {
   return {
@@ -605,6 +654,11 @@ function mapRow(r) {
     // The date the ageing report says the cheque was cut. Not the same as
     // chequeClearedOn below, which is the bank's answer on what happened to it.
     chqDate: r.chq_date,
+    // Whether no cheque is meant for this bill -- an Inter vendor's, or a cash
+    // bill (CHEQUE_EXEMPT). Only the reason: with no cheque drawn up, it is
+    // what puts the bill under Cheque Not Required -- see chequeNotRequired in
+    // the client's services/cheque.js.
+    chequeExempt: r.cheque_exempt ?? false,
     // The account this row's branch banks through, off the configuration
     // screen -- not read from any of the three reports. Null while the branch
     // has no account against it, or none is configured for the row at all.
@@ -855,6 +909,48 @@ async function pendingDepartments(req, scope) {
 }
 
 /**
+ * The Cheque Not Prepared GRNs by their vendor's Supply Type -- the Stents and
+ * Regular cards on the Cheque Not Prepared section, and NONE for a vendor the
+ * Vendor Master has no row for, so the three add up to that section's card.
+ *
+ * The same population and narrowing as the Cheque Not Prepared figure in the
+ * summary (scope, search, branch, location, MSME), and amounts from
+ * g.total_amount, the column that figure sums, so the cards agree with it to
+ * the rupee. Never narrowed by the Supply Type card chosen -- like the Pending
+ * breakdown and its desk, a card's own count must not fall to zero the moment
+ * another is picked.
+ *
+ * @returns {Promise<{STENTS: {count, amount}, REGULAR: {count, amount}, NONE: {count, amount}}>}
+ */
+async function chequeNotPreparedSupply(req, scope) {
+  const params = [];
+  const where = whereFrom([
+    batchFilter(scope, params),
+    searchFilter(req.query.q, params),
+    BRANCH_SCOPE,
+    ...branchClauses(req, params),
+    `(${PROGRESS.CHEQUE_NOT_PREPARED})`,
+  ]);
+
+  const { rows } = await query(
+    `SELECT COALESCE(${vendorSupplyType('g.vendor_code')}, 'NONE') AS supply_type,
+            COUNT(*)::int AS count,
+            COALESCE(SUM(g.total_amount), 0) AS amount
+     ${resultJoins(scope)}
+     ${where}
+     GROUP BY 1`,
+    params,
+  );
+
+  const out = Object.fromEntries([...SUPPLY_TYPE_CHOICES].map((key) => [key, { count: 0, amount: 0 }]));
+  for (const r of rows) out[r.supply_type] = { count: r.count, amount: Number(r.amount) };
+  return out;
+}
+
+/** The `supplyType` query parameter, upper-cased, or '' for none. */
+const supplyTypeParam = (req) => String(req.query.supplyType || '').trim().toUpperCase();
+
+/**
  * Every row paid by one cheque, or null when no cheque was asked for.
  *
  * An exact match, deliberately, where the search box's own `q` matches this
@@ -940,6 +1036,7 @@ async function chequeRows(
     action,
     dept,
     deptJoin = '',
+    supplyType,
     chequeNo,
     page = 1,
     pageSize = 50,
@@ -962,6 +1059,7 @@ async function chequeRows(
     searchFilter(req.query.q, params),
     progressFilter(progress),
     pendingDeptFilter(dept, params),
+    supplyTypeFilter(supplyType, 'g.vendor_code'),
   ].filter(Boolean);
   const hitClauses = [...scopeHitClauses, actionFilter(action)].filter(Boolean);
   // COALESCE because an ILIKE over a null column is null, not false, and a
@@ -984,7 +1082,8 @@ async function chequeRows(
   // is the representative bill's vendor, and asked here it is looked up once
   // per cheque listed rather than once per bill read.
   const { rows } = await query(
-    `SELECT z.*, ${vendorColumns('z.vendor_code')} FROM (
+    `SELECT z.*, ${vendorColumns('z.vendor_code')},
+            ${chequeExemptSql('z.vendor_code', 'z.dpr_no_key')} AS cheque_exempt FROM (
        SELECT q.*,
               SUM(q.payable_amount) OVER (PARTITION BY q.cheque_no) AS cheque_amount,
               (COUNT(*) OVER (PARTITION BY q.cheque_no))::int AS cheque_grn_count,
@@ -1263,6 +1362,9 @@ resultsRouter.get(
     // under the Pending view. Sums to summary.PENDING.count -- see
     // pendingDepartments for why that matters and what the last bucket is.
     summary.pendingDepartments = await pendingDepartments(req, scope);
+    // The Cheque Not Prepared section's Stents / Regular cards. Sums to
+    // summary.progress.CHEQUE_NOT_PREPARED -- see chequeNotPreparedSupply.
+    summary.chequeNotPreparedSupply = await chequeNotPreparedSupply(req, scope);
 
     res.json({ batchId: scope.id, name: scope.name, summary });
   }),
@@ -1289,6 +1391,14 @@ resultsRouter.get(
     const action = String(req.query.action || '').toUpperCase();
     if (action && !ACTION_SET.has(action)) {
       return res.status(400).json({ error: `Unknown action "${req.query.action}".` });
+    }
+
+    // The Cheque Not Prepared section's Stents / Regular cards: the vendor's
+    // Supply Type off the Vendor Master. Refused when unknown, so a typo cannot
+    // quietly list every row. See supplyTypeFilter.
+    const supplyType = supplyTypeParam(req);
+    if (supplyType && !SUPPLY_TYPE_CHOICES.has(supplyType)) {
+      return res.status(400).json({ error: `Unknown supply type "${req.query.supplyType}".` });
     }
 
     const page = Math.max(1, Number(req.query.page) || 1);
@@ -1322,6 +1432,7 @@ resultsRouter.get(
           action,
           dept,
           deptJoin,
+          supplyType,
           chequeNo,
           page,
           pageSize,
@@ -1339,6 +1450,7 @@ resultsRouter.get(
       searchFilter(req.query.q, params),
       progressFilter(progress),
       pendingDeptFilter(dept, params),
+      supplyTypeFilter(supplyType, 'g.vendor_code'),
       chequeFilter(chequeNo, params),
       BRANCH_SCOPE,
       ...branchClauses(req, params),
@@ -1384,15 +1496,16 @@ resultsRouter.get(
 );
 
 /**
- * GET /api/batches/:id/export?status=&q=&progress=&location=&dept=&register=
+ * GET /api/batches/:id/export?status=&q=&progress=&location=&dept=&register=&supplyType=
  *
  * Every row for a status, unpaginated, as JSON. The Excel and CSV files are
  * assembled in the browser (client/src/services/exporter.js), so this endpoint
  * only has to answer with data -- no workbook is ever built or buffered here.
  *
  * It takes the narrowing filters the cards on each view set -- `progress` for
- * the CSD stages and the cheque pair, `dept` for the Pending breakdown,
- * `register` for Not in BPAD -- because a section's workbook carries a sheet
+ * the CSD stages and the cheque cards, `dept` for the Pending breakdown,
+ * `register` for Not in BPAD, `supplyType` for the Cheque Not Prepared
+ * section's Stents / Regular -- because a section's workbook carries a sheet
  * per card and each sheet is that card's own rows. Filters left out narrow
  * nothing, which is the whole of a section's own sheet.
  */
@@ -1441,6 +1554,13 @@ resultsRouter.get(
       return res.status(400).json({ error: `Unknown status "${req.query.progress}".` });
     }
 
+    // The Stents / Regular card's sheet -- the same filter the rows endpoint
+    // takes, refused the same way when unknown.
+    const supplyType = supplyTypeParam(req);
+    if (supplyType && !SUPPLY_TYPE_CHOICES.has(supplyType)) {
+      return res.status(400).json({ error: `Unknown supply type "${req.query.supplyType}".` });
+    }
+
     // Which BPAD desk the rows are narrowed to -- the same filter the rows
     // endpoint takes, for the same reason: the Pending view's breakdown cards
     // set it, and a workbook with a sheet per card has to be able to ask for
@@ -1457,6 +1577,7 @@ resultsRouter.get(
         progress,
         dept,
         deptJoin,
+        supplyType,
         all: true,
       });
       return res.json({ batchId: scope.id, name: scope.name, status: status || null, rows: cheques });
@@ -1469,6 +1590,7 @@ resultsRouter.get(
       searchFilter(req.query.q, params),
       progressFilter(progress),
       pendingDeptFilter(dept, params),
+      supplyTypeFilter(supplyType, 'g.vendor_code'),
       BRANCH_SCOPE,
       ...branchClauses(req, params),
     ]);

@@ -238,6 +238,30 @@ newest copy of each GRN is kept, and each upload's other files stay.
 There is no Uploaded files screen and no deleting an upload. Each GRN is shown once, with its latest
 data, so there are no uploads to manage one by one.
 
+### Cheque cards
+
+In the Accounts view, four cards split the GRNs that reached Accounts by their cheque. Every GRN is
+in exactly one, so the four add up to the Accounts count:
+
+| Card | The bill |
+|---|---|
+| **Cheque Prepared** | The ageing report has a cheque number, cheque date or payment doc for it |
+| **Cheque Not Prepared** | None of those yet, and something left to pay |
+| **Cheque Not Required** | None of those, and no cheque is meant for it (see below) |
+| **Payment Not Required** | None of those, and PayableAmount is ₹0 or under ₹1 |
+
+No cheque is meant for a bill in either of two cases:
+
+- **Inter vendor:** the vendor is marked **Inter = Yes** on the Vendor Master screen.
+- **Cash bill:** the BPAD register has the bill with **Pending With Dept.** = Accounts, and
+  **Pending With User/Status** contains "cash" (for example `LAKSHMI CASH BILLS`). Pending With
+  User/Status is only checked when the department is Accounts.
+
+A bill with a cheque already prepared stays under Cheque Prepared either way. Both rules are
+checked on every page load, so marking a vendor Inter, or a new BPAD register, moves its bills
+straight away. Pressing a card filters the table to its GRNs. The Excel export's Cheque Prepared
+column uses the same four answers.
+
 ### Searching
 
 The toolbar carries a search box that filters the table by **vendor name**, **GRN number** or **bill
@@ -580,7 +604,8 @@ not shown, exported or searched. `VENDOR_CODE` and `VENDOR_NAME` come first and 
 left when you scroll sideways. Two columns follow them, each picked on this screen from a dropdown
 and saved at once:
 
-- **Inter**: **No** or **Yes**.
+- **Inter**: **No** or **Yes**. An Inter vendor's bills need no cheque (see **Cheque Not
+  Required** below).
 - **Supply Type**: **Regular** or **Stents**.
 
 Every vendor starts as **No** and **Regular**, including those a later reco adds, until someone picks

@@ -56,12 +56,17 @@ export function vendorMsmeNo(vendorCodeSql) {
  * The vendor's Inter and Supply Type, picked on the Vendor Master screen:
  * NO / YES and REGULAR / STENTS, or NULL when the master has no row for the
  * vendor. Scalar subqueries for the same reason as vendorMsmeNo.
+ *
+ * vendorInter is exported for the Cheque Not Required card, which counts an
+ * Inter vendor's bills as needing no cheque (routes/results.js).
  */
-function vendorInter(vendorCodeSql) {
+export function vendorInter(vendorCodeSql) {
   return `(SELECT vm.inter FROM vendor_master vm WHERE vm.code_key = ${codeKeyOf(vendorCodeSql)})`;
 }
 
-function vendorSupplyType(vendorCodeSql) {
+// Exported for the Cheque Not Prepared section's Stents / Regular breakdown
+// (routes/results.js), which groups by it.
+export function vendorSupplyType(vendorCodeSql) {
   return `(SELECT vm.supply_type FROM vendor_master vm WHERE vm.code_key = ${codeKeyOf(vendorCodeSql)})`;
 }
 
@@ -124,4 +129,31 @@ export function msmeFilter(value, vendorCodeSql) {
   if (value === 'MSME') return `${vendorMsmeNo(vendorCodeSql)} <> ''`;
   if (value === 'NON_MSME') return `${vendorMsmeNo(vendorCodeSql)} = ''`;
   return null;
+}
+
+/**
+ * The Supply Type choices a GRN list can be narrowed to -- the Stents and
+ * Regular cards on the Cheque Not Prepared section, and NONE for a vendor the
+ * Vendor Master has no row for, so the cards can add up to the section.
+ */
+export const SUPPLY_TYPE_CHOICES = new Set(['STENTS', 'REGULAR', 'NONE']);
+
+/**
+ * One of SUPPLY_TYPE_CHOICES as a WHERE clause, for the vendor code in
+ * `vendorCodeSql` -- or null for anything else, which narrows nothing. Callers
+ * refuse an unknown value first (400), so a typo cannot quietly widen a list.
+ *
+ * EXISTS rather than `(scalar lookup) = 'STENTS'`: the planner reads the
+ * semi-join's selectivity from the table, where it would guess one row in two
+ * hundred for the comparison -- the kind of misestimate that once turned a
+ * results query into a nested loop (see NO_CHEQUE in routes/results.js).
+ *
+ * No parameter to push: the value is one of a closed set, spelled here.
+ */
+export function supplyTypeFilter(value, vendorCodeSql) {
+  const wanted = String(value ?? '').trim().toUpperCase();
+  const key = codeKeyOf(vendorCodeSql);
+  if (wanted === 'NONE') return `NOT EXISTS (SELECT 1 FROM vendor_master vs WHERE vs.code_key = ${key})`;
+  if (wanted !== 'STENTS' && wanted !== 'REGULAR') return null;
+  return `EXISTS (SELECT 1 FROM vendor_master vs WHERE vs.code_key = ${key} AND vs.supply_type = '${wanted}')`;
 }

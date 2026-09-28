@@ -31,11 +31,31 @@ export function chequePrepared(row) {
 }
 
 /**
- * Whether a bill with no cheque needs none: its PayableAmount is zero or under
- * a rupee (or has no figure at all), so there is nothing left to pay. Word for
- * word the rule PAYMENT_NOT_REQUIRED counts by in routes/results.js -- which is
- * also why a bill that does have a cheque is never this, whatever its payable
- * says.
+ * Whether a bill with no cheque is one no cheque is meant for: an Inter
+ * vendor's (as picked on the Vendor Master screen), or a cash bill -- the BPAD
+ * register has it in Accounts with "cash" in Pending With User/Status. The
+ * server works that reason out (`chequeExempt` on the row, CHEQUE_EXEMPT in
+ * routes/results.js); this adds the "no cheque drawn up" half, so it is word
+ * for word the rule CHEQUE_NOT_REQUIRED counts by. A bill that does have a
+ * cheque is never this: the cheque exists.
+ *
+ * Null where chequePrepared is null, for the same reason.
+ *
+ * @returns {boolean|null}
+ */
+export function chequeNotRequired(row) {
+  const prepared = chequePrepared(row);
+  if (prepared === null) return null;
+  if (prepared) return false;
+  return Boolean(row.chequeExempt);
+}
+
+/**
+ * Whether a bill with no cheque needs none because there is nothing to pay:
+ * its PayableAmount is zero or under a rupee (or has no figure at all). Word
+ * for word the rule PAYMENT_NOT_REQUIRED counts by in routes/results.js --
+ * which is also why a bill that does have a cheque is never this, whatever its
+ * payable says, and nor is one chequeNotRequired already answers for.
  *
  * Null where chequePrepared is null, for the same reason.
  *
@@ -44,6 +64,6 @@ export function chequePrepared(row) {
 export function paymentNotRequired(row) {
   const prepared = chequePrepared(row);
   if (prepared === null) return null;
-  if (prepared) return false;
+  if (prepared || row.chequeExempt) return false;
   return row.payableAmount == null || Number(row.payableAmount) < 1;
 }

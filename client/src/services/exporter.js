@@ -20,7 +20,7 @@
  */
 import { api } from '../api/client.js';
 import { CHECKPOINTS, STAGE_KEYS, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
-import { chequePrepared, paymentNotRequired } from './cheque.js';
+import { chequeNotRequired, chequePrepared, paymentNotRequired } from './cheque.js';
 
 /*
  * The GRNs / Cheques switch's two values. Spelled here rather than imported
@@ -473,6 +473,10 @@ const TITLES = {
   TURNAROUND: 'GRN Age From GRN to Accounts Report',
   BPAD: 'BPAD Register Report',
   CSD: 'CSD GRN Report',
+  // The Cheque Not Prepared section (CHEQUE_NOT_PREPARED_VIEW in
+  // resultsViews.js, which cannot be imported here: it imports this file).
+  // Its sheets ask for Accounts rows, so this names the report only.
+  CHEQUE_NOT_PREPARED_VIEW: 'Cheque Not Prepared Report',
 };
 
 /**
@@ -559,8 +563,10 @@ function toCell(row, column) {
     const prepared = chequePrepared(row);
     if (prepared === null) return null;
     if (prepared) return 'Prepared';
-    // The same three answers as the cards, so a sheet taken off Payment Not
-    // Required does not read "Not prepared" all the way down.
+    // The same four answers as the cards, so a sheet taken off Cheque Not
+    // Required or Payment Not Required does not read "Not prepared" all the
+    // way down.
+    if (chequeNotRequired(row)) return 'Cheque not required';
     return paymentNotRequired(row) ? 'Payment not required' : 'Not prepared';
   }
   if (column.key === 'stage') {
@@ -886,6 +892,7 @@ async function sheetRows(batchId, spec, { q, location, msme, spans, view }) {
     progress: spec.progress,
     dept: spec.dept,
     register: spec.register,
+    supplyType: spec.supplyType,
     view,
   });
   const rows =

@@ -154,6 +154,81 @@ export function isAccountsDept(dept) {
 export const ACCOUNTS_TAB = { status: VALID, label: 'Accounts', hint: 'Found in the ageing report' };
 
 /**
+ * The Cheque Not Prepared section: the Accounts GRNs with something to pay and
+ * no cheque drawn up yet, divided by the vendor's Supply Type -- Stents or
+ * Regular, as the Vendor Master says. Opened by the Cheque Not Prepared card on
+ * the Accounts row (`opens` on CHEQUE_CARDS), and a view of its own on both
+ * screens, so Back returns to Accounts.
+ *
+ * Its own key, never the API's: the server knows no such status. Wherever the
+ * page asks for rows, it asks for `rowStatus` with `progress` -- VALID and
+ * CHEQUE_NOT_PREPARED, the Cheque Not Prepared card's own rows -- and so do the
+ * export's sheets (see sectionSheets). Distinct from that progress key too,
+ * which is already the card's id on the Accounts row.
+ */
+export const CHEQUE_NOT_PREPARED_VIEW = 'CHEQUE_NOT_PREPARED_VIEW';
+export const CHEQUE_NOT_PREPARED_TAB = {
+  status: CHEQUE_NOT_PREPARED_VIEW,
+  label: 'Cheque Not Prepared',
+  hint: 'Accounts GRNs with no cheque yet',
+  rowStatus: VALID,
+  progress: 'CHEQUE_NOT_PREPARED',
+  tone: 'dept',
+};
+
+/** The views whose rows are Accounts rows: Accounts itself, and the section inside it. */
+export const isAccountsSection = (status) => status === VALID || status === CHEQUE_NOT_PREPARED_VIEW;
+
+/**
+ * A view's count off the summary: its own figure, or -- for a view defined by
+ * a progress key, as Cheque Not Prepared is -- that key's.
+ */
+export function tabFigure(tab, summary) {
+  return tab.progress ? summary?.progress?.[tab.progress] : summary?.[tab.countKey ?? tab.status];
+}
+
+/**
+ * The Cheque Not Prepared section's cards past its own: one per Supply Type,
+ * as the Vendor Master stores it (the values the rows endpoint's `supplyType`
+ * takes), and one for vendors the master has no row for -- shown only while
+ * there are any, so the cards always add up to the section.
+ *
+ * `id` is the card's key on the page's CARD_BY_ID; prefixed so it cannot meet
+ * a status, stage or progress key there.
+ */
+export const SUPPLY_TYPE_CARDS = [
+  { id: 'SUPPLY_STENTS', supplyType: 'STENTS', label: 'Stents', hint: 'Supply Type Stents in the Vendor Master' },
+  { id: 'SUPPLY_REGULAR', supplyType: 'REGULAR', label: 'Regular', hint: 'Supply Type Regular in the Vendor Master' },
+  {
+    id: 'SUPPLY_NONE',
+    supplyType: 'NONE',
+    label: 'Not in Vendor Master',
+    hint: 'Vendor has no Supply Type',
+    onlyWhenAny: true,
+  },
+];
+
+/** The section's row: its own count, then the Supply Type cards. */
+export const CHEQUE_NOT_PREPARED_ROW = [CHEQUE_NOT_PREPARED_VIEW, ...SUPPLY_TYPE_CARDS.map((card) => card.id)];
+
+/** A Supply Type card's figure off the summary -- see chequeNotPreparedSupply on the server. */
+export function supplyCardFigure(card, summary) {
+  return summary?.chequeNotPreparedSupply?.[card.supplyType] ?? { count: 0, amount: 0 };
+}
+
+/**
+ * Whether a card belongs on the row as the summary stands (see `onlyWhenAny`).
+ *
+ * `selected` is the Supply Type the page is narrowed to: that card stays, even
+ * at zero -- a search or the MSME filter can empty it -- or the filter would
+ * go on emptying the table with nothing on screen saying so.
+ */
+export function cardShown(card, summary, selected = '') {
+  if (card?.kind !== 'supplyType' || !card.onlyWhenAny) return true;
+  return card.supplyType === selected || supplyCardFigure(card, summary).count > 0;
+}
+
+/**
  * The Accounts Department's two ways of reading its Accounts table.
  *
  * GRN view is a row per GRN, as the results screen shows it, without the
@@ -211,12 +286,13 @@ export const CSD_CARDS = [
 ];
 
 /**
- * Where each Accounts bill stands on its cheque, as three cards following the
- * Accounts count: a cheque drawn up, one still to come, or none needed at all
- * because there is nothing left to pay (a PayableAmount of zero or under a
- * rupee). The three are exhaustive over that row -- every Accounts GRN is in
- * exactly one -- so they sum to the Accounts count, which the CSD four do not.
- * See CHEQUE_PREPARED in routes/results.js for where the lines are drawn.
+ * Where each Accounts bill stands on its cheque, as four cards following the
+ * Accounts count: a cheque drawn up, one still to come, none meant for it (an
+ * Inter vendor's bill, or a cash bill), or none needed because there is
+ * nothing left to pay (a PayableAmount of zero or under a rupee). The four are
+ * exhaustive over that row -- every Accounts GRN is in exactly one -- so they
+ * sum to the Accounts count, which the CSD four do not. See CHEQUE_PREPARED in
+ * routes/results.js for where the lines are drawn.
  *
  * They read a `progress` key rather than a CSD stage, so `kind: 'progress'`
  * where the CSD cards are `kind: 'csd'`. Both set the same filter, which is
@@ -249,10 +325,23 @@ export const CHEQUE_CARDS = [
       return `For ${grns.toLocaleString('en-IN')} GRN${grns === 1 ? '' : 's'}`;
     },
   },
+  // Opens its own section (CHEQUE_NOT_PREPARED_TAB), split by Supply Type,
+  // rather than narrowing the table in place. Keeps its progress key, so it
+  // still counts off the summary and the Accounts workbook still gets its sheet.
   {
     progress: 'CHEQUE_NOT_PREPARED',
     label: 'Cheque Not Prepared',
-    hint: 'None of the three yet',
+    hint: 'Open by Stents / Regular',
+    opens: CHEQUE_NOT_PREPARED_VIEW,
+  },
+  // The bills no cheque is meant for, whatever they owe: the vendor is marked
+  // Inter on the Vendor Master screen, or the BPAD register has the bill in
+  // Accounts with "cash" in Pending With User/Status. Taken out of the two
+  // cards either side of it -- see CHEQUE_EXEMPT in routes/results.js.
+  {
+    progress: 'CHEQUE_NOT_REQUIRED',
+    label: 'Cheque Not Required',
+    hint: 'Inter vendor, or a cash bill in BPAD',
   },
   // The bills no cheque is coming for: nothing left to pay. Beside Cheque Not
   // Prepared because it is the other half of what that card used to count.
@@ -409,6 +498,7 @@ export const PROGRESS_LABELS = {
   // than recorded here -- see CHEQUE_PREPARED in routes/results.js.
   CHEQUE_PREPARED: 'Cheque prepared',
   CHEQUE_NOT_PREPARED: 'Cheque not prepared',
+  CHEQUE_NOT_REQUIRED: 'Cheque not required',
   PAYMENT_NOT_REQUIRED: 'Payment not required',
   CLEARED: 'Cheque cleared',
 };
@@ -608,9 +698,14 @@ function narrowedSheet(status, label, filters) {
 function cardSheet(card) {
   switch (card.kind) {
     // A view of its own, whole -- so no narrowing, and its own report title.
+    //
+    // A view defined by a progress key (Cheque Not Prepared) asks for the rows
+    // that key selects, under the status they live in -- see
+    // CHEQUE_NOT_PREPARED_TAB. The title stays the view's own.
     case 'bucket':
       return {
-        status: card.status,
+        status: card.rowStatus ?? card.status,
+        ...(card.progress ? { progress: card.progress } : {}),
         sheetName: card.label,
         title: titleForStatus(card.status),
         // Except BPAD, whose card counts the register's entries while the view
@@ -646,6 +741,16 @@ function cardSheet(card) {
     // register's table, which is a different population.
     case 'missing':
       return narrowedSheet(ALL_GRNS, deptLabel(NOT_IN_BPAD), { dept: NOT_IN_BPAD });
+    // The Cheque Not Prepared section's Supply Type cards: that section's rows,
+    // narrowed by the vendor's Supply Type, under that section's title.
+    case 'supplyType':
+      return {
+        ...narrowedSheet(CHEQUE_NOT_PREPARED_TAB.rowStatus, card.label, {
+          progress: CHEQUE_NOT_PREPARED_TAB.progress,
+          supplyType: card.supplyType,
+        }),
+        title: `${titleForStatus(CHEQUE_NOT_PREPARED_VIEW)} — ${card.label}`,
+      };
     default:
       return null;
   }
@@ -702,7 +807,14 @@ export function sectionSheets(tab, cards, options = {}) {
     pendingInBpad && sheet.status === 'PENDING' && !sheet.dept ? { ...sheet, dept: IN_BPAD } : sheet;
 
   const ownCard = { kind: 'bucket', ...tab };
-  const own = { status: tab.status, sheetName: tab.label, title: titleForStatus(tab.status) };
+  // A view defined by a progress key asks for that key's rows under the status
+  // they live in -- see CHEQUE_NOT_PREPARED_TAB -- and keeps its own title.
+  const own = {
+    status: tab.rowStatus ?? tab.status,
+    ...(tab.progress ? { progress: tab.progress } : {}),
+    sheetName: tab.label,
+    title: titleForStatus(tab.status),
+  };
   if (tab.status === TURNAROUND) return [own];
   const rest = (cards ?? [])
     .map((card) => {
@@ -717,7 +829,8 @@ export function sectionSheets(tab, cards, options = {}) {
       ({ sheet, card }) =>
         !(
           sheet.status === own.status &&
-          (card.kind === 'bucket' || (!sheet.progress && !sheet.dept && !sheet.register))
+          sheet.progress === own.progress &&
+          (card.kind === 'bucket' || (!sheet.dept && !sheet.register && !sheet.supplyType))
         ),
     )
     .map(({ sheet, card }) => placed(rename(sheet, card)));

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -14,14 +14,22 @@ import {
   ALL_GRNS,
   BPAD,
   CHEQUE_CARDS,
+  CHEQUE_NOT_PREPARED_ROW,
+  CHEQUE_NOT_PREPARED_TAB,
+  CHEQUE_NOT_PREPARED_VIEW,
   CSD_CARDS,
   MISSING,
   NOT_IN_BPAD,
+  SUPPLY_TYPE_CARDS,
   TURNAROUND,
   TURNAROUND_SCOPE,
   TURNAROUND_TAB,
   VALID,
   bulkCategory as bulkCategoryOf,
+  cardShown,
+  isAccountsSection,
+  supplyCardFigure,
+  tabFigure,
   bulkCsdEligible,
   canHandToCsd,
   bulkForwardEligible,
@@ -82,6 +90,9 @@ const TABS = [
   // beside the others has to be a card to be seen at all.
    { status: BPAD, label: 'BPAD', hint: 'Entries in the register', countKey: 'bpadRegister' },
    ACCOUNTS_TAB,
+  // Inside Accounts: its Cheque Not Prepared card opens it. Shared with the
+  // Accounts Department screen -- see CHEQUE_NOT_PREPARED_TAB.
+  CHEQUE_NOT_PREPARED_TAB,
   { status: 'PENDING', label: 'Pending GRNS', hint: 'Not yet in accounts' },
   // Imported, not spelled out here: the Accounts Department screen offers the same
   // two views and must label them identically.
@@ -232,6 +243,8 @@ const CARDS_FOR = {
   // stages -- imported, because the Accounts Department shows this same row and the
   // two must not drift into different orders. See ACCOUNTS_ROW.
   [VALID]: ACCOUNTS_ROW,
+  // Its own count, then the Supply Type cards that divide it.
+  [CHEQUE_NOT_PREPARED_VIEW]: CHEQUE_NOT_PREPARED_ROW,
   [BPAD]: [],
   [TURNAROUND]: BUCKET_CARDS,
 };
@@ -256,6 +269,8 @@ const CARD_BY_ID = Object.fromEntries([
   // than pending at a desk. Filed under the register's own filter value, and
   // named here so the card and its sheet in the workbook cannot drift apart.
   [MISSING, { kind: 'missing', label: 'Pending GRNs at GRN Store' }],
+  // The Cheque Not Prepared section's Stents / Regular cards.
+  ...SUPPLY_TYPE_CARDS.map((card) => [card.id, { kind: 'supplyType', ...card }]),
 ]);
 
 /**
@@ -315,7 +330,15 @@ export default function Results() {
   // with its bills' PayableAmount summed -- the same switch as the Accounts
   // Department's. Only the Accounts view has it; everywhere else is by GRN.
   const [accountsView, setAccountsView] = useState(ACCOUNTS_GRN_VIEW);
+  // Accounts only: the Cheque Not Prepared section lists bills with no cheque,
+  // which a row per cheque can never show, so it is always by GRN.
   const byCheque = status === VALID && accountsView === ACCOUNTS_CHEQUE_VIEW;
+  // The Cheque Not Prepared section, opened from its card on the Accounts row.
+  const inChequeNotPrepared = status === CHEQUE_NOT_PREPARED_VIEW;
+  // Which Supply Type that section is narrowed to by its cards -- STENTS,
+  // REGULAR, NONE -- or '' for all of it. Cleared on the way out, like the
+  // Pending desks' pendingDept below.
+  const [supplyType, setSupplyType] = useState('');
   // Which half of Total GRNS is showing, or '' for both. Meaningless on the
   // other tabs, and cleared on the way out of this one.
   const [matchFilter, setMatchFilter] = useState('');
@@ -417,34 +440,73 @@ export default function Results() {
   // same everywhere except Total GRNS with its filter set, where the tab decides
   // the layout and the filter decides the population.
   const rowStatus = status === ALL_GRNS && matchFilter ? matchFilter : status;
+  // What the API is asked for. The same as rowStatus and the progress filter
+  // everywhere but the Cheque Not Prepared section, which is no status of the
+  // server's: it is the Accounts rows its card selects -- see
+  // CHEQUE_NOT_PREPARED_TAB.
+  const apiStatus = inChequeNotPrepared ? CHEQUE_NOT_PREPARED_TAB.rowStatus : rowStatus;
+  const apiProgress = inChequeNotPrepared ? CHEQUE_NOT_PREPARED_TAB.progress : progress;
+  // Which rows request is the latest -- see loadRows.
+  const rowsRequest = useRef(0);
 
   const loadRows = useCallback(() => {
     if (!batchId) return;
+    // Every call supersedes the one before: an answer for a request that is no
+    // longer the latest -- the view left before it landed, say, Accounts left
+    // for its Cheque Not Prepared section -- is dropped rather than drawn under
+    // the view that replaced it.
+    const request = ++rowsRequest.current;
+    const latest = () => request === rowsRequest.current;
     // Neither Turnaround nor BPAD is a reconciliation status -- /results would
     // reject either as an unknown filter. Both tabs fetch their own data, in
     // TurnaroundView and BpadView.
-    if (status === TURNAROUND || status === BPAD) return;
+    if (status === TURNAROUND || status === BPAD) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     api
       .results(batchId, {
-        status: rowStatus,
+        status: apiStatus,
         page,
         pageSize,
         q,
-        progress,
+        progress: apiProgress,
         action,
-        // Only the Accounts view shows the Action dropdown, so only it needs
+        // Only the Accounts views show the Action dropdown, so only they need
         // the counts beside its options.
-        actionCounts: status === VALID,
+        actionCounts: isAccountsSection(status),
         location,
         msme,
         dept: pendingDept,
+        supplyType: inChequeNotPrepared ? supplyType : undefined,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
       })
-      .then(setData)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [batchId, status, rowStatus, page, pageSize, q, progress, action, location, msme, pendingDept, byCheque]);
+      .then((result) => {
+        if (latest()) setData(result);
+      })
+      .catch((err) => {
+        if (latest()) setError(err.message);
+      })
+      .finally(() => {
+        if (latest()) setLoading(false);
+      });
+  }, [
+    batchId,
+    status,
+    apiStatus,
+    page,
+    pageSize,
+    q,
+    apiProgress,
+    action,
+    location,
+    msme,
+    pendingDept,
+    inChequeNotPrepared,
+    supplyType,
+    byCheque,
+  ]);
 
   useEffect(loadRows, [loadRows]);
 
@@ -454,7 +516,7 @@ export default function Results() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [batchId, rowStatus, page, pageSize, q, progress, action, location, msme, pendingDept, byCheque]);
+  }, [batchId, rowStatus, page, pageSize, q, progress, action, location, msme, pendingDept, supplyType, byCheque]);
 
   /*
    * The three things "Select multiple" can batch, mirroring the row's own
@@ -629,15 +691,25 @@ export default function Results() {
     // rows under the Accounts layout until the reload lands, which reads as
     // the page having filtered rather than moved.
     if (status === BPAD || status === TURNAROUND) setData(null);
+    // The Cheque Not Prepared section is a narrowing of Accounts: entering or
+    // leaving it would otherwise draw the other one's rows under this one's
+    // cards until the reload lands.
+    if (next !== status && (next === CHEQUE_NOT_PREPARED_VIEW || status === CHEQUE_NOT_PREPARED_VIEW)) {
+      setData(null);
+    }
     setStatus(next);
     setPage(1);
     // These values only ever appear on a GRN that reached accounts, so carrying
     // the filter onto Pending would show an empty tab with no visible reason why.
-    // The Action filter the same: its dropdown is only on the Accounts view.
-    if (next !== VALID) {
+    // The Action filter the same: its dropdown is only on the Accounts views.
+    // Cleared on any change of view as well, so an Action picked inside the
+    // Cheque Not Prepared section does not follow Back out to Accounts.
+    if (next !== VALID || next !== status) {
       setProgress('');
       setAction('');
     }
+    // The Supply Type cards belong to the Cheque Not Prepared section.
+    if (next !== CHEQUE_NOT_PREPARED_VIEW) setSupplyType('');
     // The match filter belongs to Total GRNS and its dropdown is only rendered
     // there, so leaving it set would go on narrowing the next view invisibly.
     if (next !== ALL_GRNS) setMatchFilter('');
@@ -662,6 +734,12 @@ export default function Results() {
    */
   function selectPendingDept(next) {
     setPendingDept(next);
+    setPage(1);
+  }
+
+  /** Narrow the Cheque Not Prepared section to one Supply Type, or '' for all of it. */
+  function selectSupplyType(next) {
+    setSupplyType(next);
     setPage(1);
   }
 
@@ -726,11 +804,21 @@ export default function Results() {
    * would answer the question with an empty table.
    */
   function selectProgress(next) {
+    // Cheque not prepared has a section of its own, which its card opens -- so
+    // choosing it here opens that too, rather than narrowing Accounts in place
+    // with no card on the row to show for it.
+    if (next === CHEQUE_NOT_PREPARED_TAB.progress) {
+      selectStatus(CHEQUE_NOT_PREPARED_VIEW);
+      return;
+    }
     setProgress(next);
     setPage(1);
     if (next && status !== VALID) {
       setStatus(VALID);
       setMatchFilter('');
+      // Not through selectStatus, so its clearing is repeated here for the one
+      // narrowing that belongs to another Accounts view.
+      setSupplyType('');
     }
   }
 
@@ -743,7 +831,8 @@ export default function Results() {
    * rows have an Action column for it to be about.
    */
   function selectAction(next) {
-    if (next && status !== VALID) selectStatus(VALID);
+    // The Cheque Not Prepared section is Accounts rows too, so it stays.
+    if (next && !isAccountsSection(status)) selectStatus(VALID);
     setAction(next);
     setPage(1);
   }
@@ -774,7 +863,7 @@ export default function Results() {
   // The Action dropdown's options, with the counts the rows came back with --
   // how many each leaves inside the card as it stands. Only the Accounts
   // view's rows carry them; anywhere else the rows on hand are another view's.
-  const actionFilters = actionFilterOptions(status === VALID ? data?.actionCounts : null);
+  const actionFilters = actionFilterOptions(isAccountsSection(status) ? data?.actionCounts : null);
 
   // The cards this view shows, in the order CARDS_FOR names them.
   //
@@ -788,7 +877,10 @@ export default function Results() {
       .filter(Boolean)
       // Nothing in the register yet: a Not in BPAD card would report a zero
       // about a file nobody has uploaded. Same suppression the BPAD row makes.
-      .filter((card) => card.kind !== 'missing' || summary?.bpad?.count > 0),
+      .filter((card) => card.kind !== 'missing' || summary?.bpad?.count > 0)
+      // The Cheque Not Prepared section's "Not in Vendor Master" card, only
+      // while there are such GRNs -- see SUPPLY_TYPE_CARDS.
+      .filter((card) => cardShown(card, summary, supplyType)),
     // The BPAD view's whole row, built here rather than in CARDS_FOR because
     // it is the register's own data: whatever desks the uploaded file happens
     // to name, and whether it knew each GRN at all.
@@ -866,7 +958,7 @@ export default function Results() {
     // `summary` is null until the first load lands, and these run before it
     // -- the export's sheet list is built on every render, not only once the
     // cards are on screen.
-    const own = summary?.[card.countKey ?? card.status] ?? { count: 0, amount: 0 };
+    const own = tabFigure(card, summary) ?? { count: 0, amount: 0 };
     if (card.status !== 'PENDING' || !(summary?.bpad?.count > 0)) return own;
     const placed = (summary?.pendingDepartments ?? []).filter((d) => d.dept !== NOT_IN_BPAD);
     if (placed.length === 0) return own;
@@ -943,14 +1035,15 @@ export default function Results() {
     setExporting(true);
     setError('');
     try {
-      // The Accounts view's sheets follow the GRNs / Cheques switch; every
-      // other view exports as before.
+      // The Accounts view's sheets follow the GRNs / Cheques switch; the Cheque
+      // Not Prepared section's are always by GRN, since a cheque view of bills
+      // with no cheque is empty; every other view exports as before.
       await exportSection(batchId, exportSheets, {
         q,
         location,
         msme,
         spans,
-        accountsView: status === VALID ? accountsView : undefined,
+        accountsView: status === VALID ? accountsView : inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : undefined,
       });
     } catch (err) {
       setError(err.message);
@@ -993,6 +1086,18 @@ export default function Results() {
         noun: 'GRN in accounts',
         clear: () => {
           selectProgress('');
+          setAction('');
+        },
+      };
+    }
+    if (rowStatus === CHEQUE_NOT_PREPARED_VIEW) {
+      // The Supply Type cards set `supplyType`, and the Action dropdown narrows
+      // on top of it -- clearing both is "all of them" here.
+      return {
+        on: Boolean(supplyType || action),
+        noun: 'GRN with no cheque prepared',
+        clear: () => {
+          selectSupplyType('');
           setAction('');
         },
       };
@@ -1096,7 +1201,7 @@ export default function Results() {
               aria-label="Choose what the table below shows"
             >
               {TABS.map((tab) => {
-                const bucket = summary?.[tab.countKey ?? tab.status];
+                const bucket = tabFigure(tab, summary);
                 return (
                   <option key={tab.status} value={tab.status}>
                     {tab.label}
@@ -1279,6 +1384,56 @@ export default function Results() {
                     : 'Pending at this desk'}
                 </div>
               </button>
+            ) : card.kind === 'progress' && card.opens ? (
+              /* Cheque Not Prepared: opens its own section, split by the
+                 vendor's Supply Type, rather than narrowing this table -- the
+                 same kind of card as the BPAD row's Accounts desk (see
+                 .stat--go), so no aria-pressed. Its count and its sheet in the
+                 Accounts workbook are still the progress key's. */
+              <button
+                key={card.progress}
+                type="button"
+                className={`card stat stat--${card.tone ?? 'dept'} stat--go`}
+                onClick={singlePress(() => selectStatus(card.opens))}
+                title={`Open the ${card.label} section — split by Stents and Regular`}
+              >
+                <IconArrowRight size={15} className="stat__go" />
+                <div className="stat__label">{card.label}</div>
+                <div className="stat__value">
+                  {progressCardFigures(card, summary, byCheque).value.toLocaleString('en-IN')}
+                </div>
+                <div className="stat__amount">
+                  ₹ {formatAmount(summary.progress?.[card.progress]?.amount ?? 0)}
+                </div>
+                <div className="stat__hint">{progressCardFigures(card, summary, byCheque).hint}</div>
+              </button>
+            ) : card.kind === 'supplyType' ? (
+              /* One Supply Type's share of the Cheque Not Prepared section --
+                 the vendor's, off the Vendor Master. Pressing it narrows the
+                 table to it and pressing it again keeps it there; the section's
+                 own card at the head of the row goes back to all of them. The
+                 same gesture as the Pending desks. */
+              <button
+                key={card.id}
+                type="button"
+                className={`card stat ${card.supplyType === 'NONE' ? 'stat--missing' : 'stat--dept'} ${
+                  supplyType === card.supplyType ? 'is-active' : ''
+                }`}
+                onClick={singlePress(() => selectSupplyType(card.supplyType))}
+                aria-pressed={supplyType === card.supplyType}
+                title={
+                  supplyType === card.supplyType
+                    ? `Showing ${card.label} only — press ${headLabel()} for every GRN with no cheque prepared`
+                    : `Show only the ${card.label} GRNs with no cheque prepared`
+                }
+              >
+                <div className="stat__label">{card.label}</div>
+                <div className="stat__value">
+                  {supplyCardFigure(card, summary).count.toLocaleString('en-IN')}
+                </div>
+                <div className="stat__amount">₹ {formatAmount(supplyCardFigure(card, summary).amount ?? 0)}</div>
+                <div className="stat__hint">{card.hint}</div>
+              </button>
             ) : card.kind === 'progress' ? (
               /* Cheque prepared / not prepared. Same control as the CSD cards
                  beside it and the same filter behind it -- these two just name
@@ -1373,7 +1528,7 @@ export default function Results() {
               <button
                 key={card.status}
                 type="button"
-                className={`card stat stat--${card.status.toLowerCase()} ${
+                className={`card stat stat--${card.tone ?? card.status.toLowerCase()} ${
                   bucketActive(card) ? 'is-active' : ''
                 }`}
                 onClick={singlePress(() => pressBucket(card))}
@@ -1452,7 +1607,43 @@ export default function Results() {
                 </option>
               ))}
             </select>
-          ) : status === 'PENDING' ? null : (
+          ) : status === 'PENDING' ? null : inChequeNotPrepared ? (
+            <>
+              {/* The Supply Type cards as a dropdown, the way BPAD's desks have
+                  one -- no Status dropdown here: the section IS one status
+                  (Cheque Not Prepared), and choosing another would leave it. */}
+              <select
+                className="field__input stage-filter"
+                value={supplyType}
+                onChange={(e) => selectSupplyType(e.target.value)}
+                aria-label="Filter the table by the vendor's Supply Type"
+              >
+                <option value="">All supply types</option>
+                {SUPPLY_TYPE_CARDS.filter((card) => cardShown({ kind: 'supplyType', ...card }, summary, supplyType)).map(
+                  (card) => (
+                    <option key={card.id} value={card.supplyType}>
+                      {card.label} ({supplyCardFigure(card, summary).count.toLocaleString('en-IN')})
+                    </option>
+                  ),
+                )}
+              </select>
+              <select
+                className="field__input stage-filter"
+                value={action}
+                onChange={(e) => selectAction(e.target.value)}
+                aria-label="Filter the table by where the rows have got to, inside the card selected"
+                title="Filter by action, inside the card selected"
+              >
+                <option value="">All actions</option>
+                {actionFilters.map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}
+                    {f.count !== null ? ` (${f.count.toLocaleString('en-IN')})` : ''}
+                  </option>
+                ))}
+              </select>
+            </>
+          ) : (
             <>
               {/* Whether a cheque has been drawn up -- where the rows have got
                   to is the Action dropdown's, beside it. Choosing a value takes
@@ -1517,7 +1708,9 @@ export default function Results() {
               toggle doubles as its own cancel: once a selection is open,
               pressing it again is the same button reading a cross rather
               than a second control beside it. */}
-          {status !== 'PENDING' && status !== TURNAROUND && status !== BPAD && (
+          {/* Not on Cheque Not Prepared either: every bulk action needs a
+              cheque drawn up or a CSD handover, and those rows have neither. */}
+          {status !== 'PENDING' && status !== TURNAROUND && status !== BPAD && !inChequeNotPrepared && (
             <>
               {multiMode && allSelectedCsd && (
                 <button
@@ -1608,15 +1801,19 @@ export default function Results() {
       ) : (
         data && (
           <>
+            {/* The Cheque Not Prepared section is Accounts rows, laid out as the
+                Accounts table's GRN view -- the cheque columns would be empty
+                on every one of them. `status`, not apiStatus: Total GRNS
+                narrowed to a half keeps its own wide layout. */}
             <ResultsTable
               rows={data.rows}
-              status={status}
+              status={inChequeNotPrepared ? VALID : status}
               batchId={batchId}
               onSent={loadRows}
               multiMode={multiMode}
               selected={selected}
               onToggleRow={toggleSelectRow}
-              accountsView={status === VALID ? accountsView : undefined}
+              accountsView={status === VALID ? accountsView : inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : undefined}
             />
             <div className="pager">
               <span className="pager__info">

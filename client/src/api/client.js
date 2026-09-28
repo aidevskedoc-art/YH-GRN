@@ -170,7 +170,21 @@ export const api = {
    */
   results: (
     id,
-    { status, page = 1, pageSize = 50, q, progress, action, actionCounts, location, msme, dept, chequeNo, view } = {},
+    {
+      status,
+      page = 1,
+      pageSize = 50,
+      q,
+      progress,
+      action,
+      actionCounts,
+      location,
+      msme,
+      dept,
+      supplyType,
+      chequeNo,
+      view,
+    } = {},
   ) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (status) params.set('status', status);
@@ -184,6 +198,10 @@ export const api = {
     // register's answer for where each pending bill stopped. Spelled the same
     // as the BPAD tab's own `dept` below, because it is the same column.
     if (dept) params.set('dept', dept);
+    // 'STENTS', 'REGULAR' or 'NONE': the Cheque Not Prepared section's Supply
+    // Type cards -- the vendor's, off the Vendor Master. Never sent to the
+    // summary, so the cards keep their counts whichever one is chosen.
+    if (supplyType) params.set('supplyType', supplyType);
     // One cheque's bills, matched exactly rather than searched for. The Action
     // column asks for this before it acts, so that a send moves the whole
     // cheque and not just the bill on screen -- see chequeGroup in
@@ -413,7 +431,7 @@ export const api = {
    * the cheque pair), `dept` one BPAD desk, `register` the 'missing' rows.
    * Anything left out narrows nothing.
    */
-  exportRows: (id, status, { q, progress, location, msme, dept, register, view } = {}) => {
+  exportRows: (id, status, { q, progress, location, msme, dept, register, supplyType, view } = {}) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     // 'cheque' for the Accounts view's Cheque view sheet -- see chequeRows.
@@ -424,6 +442,7 @@ export const api = {
     if (msme) params.set('msme', msme);
     if (dept) params.set('dept', dept);
     if (register) params.set('register', register);
+    if (supplyType) params.set('supplyType', supplyType);
     return request(`/batches/${id}/export?${params}`);
   },
 };

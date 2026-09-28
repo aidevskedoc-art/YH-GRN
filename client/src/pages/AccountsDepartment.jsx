@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -12,11 +12,19 @@ import {
   ACCOUNTS_ROW,
   ACCOUNTS_TAB,
   CHEQUE_CARDS,
+  CHEQUE_NOT_PREPARED_ROW,
+  CHEQUE_NOT_PREPARED_TAB,
+  CHEQUE_NOT_PREPARED_VIEW,
   CSD_CARDS,
+  SUPPLY_TYPE_CARDS,
   TURNAROUND,
   TURNAROUND_TAB,
   VALID,
   bulkCategory as bulkCategoryOf,
+  cardShown,
+  isAccountsSection,
+  supplyCardFigure,
+  tabFigure,
   bulkCsdEligible,
   canHandToCsd,
   bulkForwardEligible,
@@ -32,7 +40,7 @@ import TurnaroundView from '../components/TurnaroundView.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import MsmeFilter from '../components/MsmeFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
-import { IconX } from '../components/icons.jsx';
+import { IconArrowRight, IconX } from '../components/icons.jsx';
 import BackButton, { useSectionTrail } from '../components/BackButton.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import { expandCheques, resultsChequeBills } from '../services/chequeGroups.js';
@@ -65,9 +73,10 @@ const SEARCH_DELAY_MS = 300;
  * long it took to get there and onward.
  *
  * Both entries are the shared ones, so the view dropdown, the stat cards and
- * the export sheet names match the results screen exactly.
+ * the export sheet names match the results screen exactly. The Cheque Not
+ * Prepared section sits between them: its card on the Accounts row opens it.
  */
-const TABS = [ACCOUNTS_TAB, TURNAROUND_TAB];
+const TABS = [ACCOUNTS_TAB, CHEQUE_NOT_PREPARED_TAB, TURNAROUND_TAB];
 
 /**
  * Which cards each view shows.
@@ -90,6 +99,8 @@ const CARDS_FOR = {
   // stages -- imported, because the results screen shows this same row and the
   // two must not drift into different orders. See ACCOUNTS_ROW.
   [VALID]: ACCOUNTS_ROW,
+  // Its own count, then the Supply Type cards that divide it.
+  [CHEQUE_NOT_PREPARED_VIEW]: CHEQUE_NOT_PREPARED_ROW,
   [TURNAROUND]: [],
 };
 
@@ -102,19 +113,21 @@ const CARDS_FOR = {
  * ways: the cheque and CSD cards each narrow the rows below to themselves,
  * reading their counts from different halves of the summary, while the count at
  * the head of the row is the "all of them" that clears whichever of them is
- * set. Still nothing that navigates -- unlike the results screen, this one has
- * no other view for a card to open.
+ * set. One card navigates: Cheque Not Prepared opens its own section (`opens`),
+ * whose Supply Type cards narrow it in turn.
  */
 const CARD_BY_ID = Object.fromEntries([
-  // The count at the head of the row. `kind: 'bucket'` as on the results
+  // The count at the head of each row. `kind: 'bucket'` as on the results
   // screen, where the same tag marks a card that reports a whole view rather
-  // than a slice of one -- here there is only ever this one, since the ageing
-  // view shows no cards at all.
+  // than a slice of one -- Accounts, and the Cheque Not Prepared section; the
+  // ageing view shows no cards at all.
   [ACCOUNTS_TAB.status, { kind: 'bucket', ...ACCOUNTS_TAB }],
+  [CHEQUE_NOT_PREPARED_TAB.status, { kind: 'bucket', ...CHEQUE_NOT_PREPARED_TAB }],
   ...CSD_CARDS.map((card) => [card.stage, { kind: 'csd', ...card }]),
   ...CHEQUE_CARDS.map((card) => [card.progress, { kind: 'progress', ...card }]),
   [ACCOUNTS_QUEUE_CARD.progress, { kind: 'progress', ...ACCOUNTS_QUEUE_CARD }],
   [ACCOUNTS_RECEIVED_CARD.progress, { kind: 'progress', ...ACCOUNTS_RECEIVED_CARD }],
+  ...SUPPLY_TYPE_CARDS.map((card) => [card.id, { kind: 'supplyType', ...card }]),
 ]);
 
 /**
@@ -153,7 +166,15 @@ export default function AccountsDepartment() {
   // bills' PayableAmount summed. The cards follow it -- GRN counts first on GRN
   // view, cheque counts first on Cheque view.
   const [accountsView, setAccountsView] = useState(ACCOUNTS_GRN_VIEW);
-  const byCheque = accountsView === ACCOUNTS_CHEQUE_VIEW;
+  // The Cheque Not Prepared section, opened from its card on the Accounts row.
+  // Always by GRN: its bills have no cheque, so a row per cheque would be empty.
+  const inChequeNotPrepared = status === CHEQUE_NOT_PREPARED_VIEW;
+  const byCheque = !inChequeNotPrepared && accountsView === ACCOUNTS_CHEQUE_VIEW;
+  // Which Supply Type that section is narrowed to by its cards -- STENTS,
+  // REGULAR, NONE -- or '' for all of it. Cleared on the way out.
+  const [supplyType, setSupplyType] = useState('');
+  // Which rows request is the latest -- see loadRows.
+  const rowsRequest = useRef(0);
   // One branch, by the name the configuration screen gives it, or '' for every
   // branch in scope. It narrows the whole page together -- rows, cards, option
   // counts and the export -- because it is a scope rather than a question
@@ -226,28 +247,46 @@ export default function AccountsDepartment() {
   }, [batchId, q, location, msme]);
 
   const loadRows = useCallback(() => {
+    // Every call supersedes the one before: an answer for a request that is no
+    // longer the latest -- the view left before it landed, say, Accounts left
+    // for its Cheque Not Prepared section -- is dropped rather than drawn under
+    // the view that replaced it.
+    const request = ++rowsRequest.current;
+    const latest = () => request === rowsRequest.current;
     // The ageing view is not a reconciliation status -- /results would reject
     // it as an unknown filter. It fetches its own rows, in TurnaroundView.
-    if (status === TURNAROUND) return;
+    if (status === TURNAROUND) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     api
       .results(batchId, {
-        status,
+        // The Cheque Not Prepared section is no status of the server's: it is
+        // the Accounts rows its card selects -- see CHEQUE_NOT_PREPARED_TAB.
+        status: inChequeNotPrepared ? CHEQUE_NOT_PREPARED_TAB.rowStatus : status,
         page,
         pageSize,
         q,
-        progress,
+        progress: inChequeNotPrepared ? CHEQUE_NOT_PREPARED_TAB.progress : progress,
         action,
         // The counts beside the Action dropdown's options -- see selectAction.
         actionCounts: true,
         location,
         msme,
+        supplyType: inChequeNotPrepared ? supplyType : undefined,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
       })
-      .then(setData)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [batchId, status, page, pageSize, q, progress, action, location, msme, byCheque]);
+      .then((result) => {
+        if (latest()) setData(result);
+      })
+      .catch((err) => {
+        if (latest()) setError(err.message);
+      })
+      .finally(() => {
+        if (latest()) setLoading(false);
+      });
+  }, [batchId, status, inChequeNotPrepared, page, pageSize, q, progress, action, location, msme, supplyType, byCheque]);
 
   useEffect(loadRows, [loadRows]);
 
@@ -257,7 +296,7 @@ export default function AccountsDepartment() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [batchId, status, page, pageSize, q, progress, action, location, msme, accountsView]);
+  }, [batchId, status, page, pageSize, q, progress, action, location, msme, supplyType, accountsView]);
 
   /*
    * The three things "Select multiple" can batch, mirroring the row's own
@@ -419,18 +458,33 @@ export default function AccountsDepartment() {
     }
   }
 
-  /** Show one of the two views. */
+  /** Show one of the views. */
   function selectStatus(next) {
+    // The Cheque Not Prepared section is a narrowing of Accounts: entering or
+    // leaving it would otherwise draw the other one's rows under this one's
+    // cards until the reload lands.
+    if (next !== status && (next === CHEQUE_NOT_PREPARED_VIEW || status === CHEQUE_NOT_PREPARED_VIEW)) {
+      setData(null);
+    }
     setStatus(next);
     setPage(1);
     // The card and Action filters belong to the Accounts rows. The ageing view
     // has no such columns and does not apply them, so carrying them across
     // would leave the dropdown naming a stage over a table showing every row
-    // regardless.
-    if (next !== VALID) {
+    // regardless. Cleared on any change of view as well, so an Action picked
+    // inside the Cheque Not Prepared section does not follow Back to Accounts.
+    if (next !== VALID || next !== status) {
       setProgress('');
       setAction('');
     }
+    // The Supply Type cards belong to the Cheque Not Prepared section.
+    if (next !== CHEQUE_NOT_PREPARED_VIEW) setSupplyType('');
+  }
+
+  /** Narrow the Cheque Not Prepared section to one Supply Type, or '' for all of it. */
+  function selectSupplyType(next) {
+    setSupplyType(next);
+    setPage(1);
   }
 
   /** Switch the Accounts table between a row per GRN and a row per cheque. */
@@ -465,9 +519,21 @@ export default function AccountsDepartment() {
    * question with a table that ignored it.
    */
   function selectProgress(next) {
+    // Cheque not prepared has a section of its own, which its card opens -- so
+    // choosing it here opens that too, rather than narrowing Accounts in place
+    // with no card on the row to show for it.
+    if (next === CHEQUE_NOT_PREPARED_TAB.progress) {
+      selectStatus(CHEQUE_NOT_PREPARED_VIEW);
+      return;
+    }
     setProgress(next);
     setPage(1);
-    if (next && status !== VALID) setStatus(VALID);
+    if (next && status !== VALID) {
+      setStatus(VALID);
+      // Not through selectStatus, so its clearing is repeated here for the one
+      // narrowing that belongs to another Accounts view.
+      setSupplyType('');
+    }
   }
 
   /**
@@ -479,7 +545,8 @@ export default function AccountsDepartment() {
   function selectAction(next) {
     setAction(next);
     setPage(1);
-    if (next && status !== VALID) setStatus(VALID);
+    // The Cheque Not Prepared section is Accounts rows too, so it stays.
+    if (next && !isAccountsSection(status)) setStatus(VALID);
   }
 
   // The views this page has shown, for the Back button -- the view only. A
@@ -513,10 +580,14 @@ export default function AccountsDepartment() {
   // The Action dropdown's options, with the counts the rows came back with --
   // how many each leaves inside the card as it stands. The ageing view's rows
   // are not these, so it offers them without counts.
-  const actionFilters = actionFilterOptions(status === VALID ? data?.actionCounts : null);
+  const actionFilters = actionFilterOptions(isAccountsSection(status) ? data?.actionCounts : null);
 
-  // The cards this view shows, in the order CARDS_FOR names them.
-  const cards = (CARDS_FOR[status] ?? []).map((id) => CARD_BY_ID[id]).filter(Boolean);
+  // The cards this view shows, in the order CARDS_FOR names them -- the "Not
+  // in Vendor Master" card only while there are such GRNs (SUPPLY_TYPE_CARDS).
+  const cards = (CARDS_FOR[status] ?? [])
+    .map((id) => CARD_BY_ID[id])
+    .filter(Boolean)
+    .filter((card) => cardShown(card, summary, supplyType));
 
   /** The view showing, as its own TABS entry -- the export's first sheet. */
   const section = TABS.find((tab) => tab.status === status) ?? TABS[0];
@@ -547,13 +618,14 @@ export default function AccountsDepartment() {
     setExporting(true);
     setError('');
     try {
-      // The Accounts sheets follow the GRNs / Cheques switch -- see exportSection.
+      // The Accounts sheets follow the GRNs / Cheques switch -- see
+      // exportSection. The Cheque Not Prepared section's are always by GRN.
       await exportSection(batchId, exportSheets, {
         q,
         location,
         msme,
         spans,
-        accountsView: status === VALID ? accountsView : undefined,
+        accountsView: status === VALID ? accountsView : inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : undefined,
       });
     } catch (err) {
       setError(err.message);
@@ -596,7 +668,7 @@ export default function AccountsDepartment() {
               aria-label="Choose what the table below shows"
             >
               {TABS.map((tab) => {
-                const bucket = summary?.[tab.countKey ?? tab.status];
+                const bucket = tabFigure(tab, summary);
                 return (
                   <option key={tab.status} value={tab.status}>
                     {tab.label}
@@ -639,44 +711,105 @@ export default function AccountsDepartment() {
 
       {summary && cards.length > 0 && (
         <div className="cards">
-          {cards.map((card) =>
-            card.kind === 'bucket' ? (
-              /* How many GRNs are in accounts at all -- the count at the head
-                 of the row, and the "All" of it.
+          {cards.map((card) => {
+            if (card.kind === 'bucket') {
+              /* The count at the head of the row, and the "All" of it: every
+                 GRN in accounts on Accounts, every GRN with no cheque prepared
+                 on the Cheque Not Prepared section.
 
-                 Every other card on this row sets `progress`, and the Action
-                 dropdown narrows on top of it, so pressing this one clears
-                 both and the table goes back to every Accounts row. The ring
-                 follows that rather than saying which view is showing
-                 -- there is only one view with cards here, so a ring that never
-                 went out would say nothing. The cards beside it stay on when
-                 pressed again, so this is the one way back to every row -- a
-                 head card that ignored a press would leave no way back at all;
-                 same reasoning as the results screen's rowHead. */
+                 Every other card on the row narrows it -- `progress` on
+                 Accounts, `supplyType` on Cheque Not Prepared -- and the Action
+                 dropdown narrows on top, so pressing this one clears both and
+                 the table goes back to every row of the view. The ring follows
+                 that rather than saying which view is showing. The cards beside
+                 it stay on when pressed again, so this is the one way back to
+                 every row -- a head card that ignored a press would leave no way
+                 back at all; same reasoning as the results screen's rowHead. */
+              const head = inChequeNotPrepared
+                ? {
+                    on: Boolean(supplyType || action),
+                    noun: 'GRN with no cheque prepared',
+                    clear: () => {
+                      selectSupplyType('');
+                      setAction('');
+                    },
+                  }
+                : {
+                    on: Boolean(progress || action),
+                    noun: 'GRN in accounts',
+                    clear: () => {
+                      selectProgress('');
+                      setAction('');
+                    },
+                  };
+              const figure = tabFigure(card, summary) ?? { count: 0, amount: 0 };
+              return (
+                <button
+                  key={card.status}
+                  type="button"
+                  className={`card stat stat--${card.tone ?? card.status.toLowerCase()} ${head.on ? '' : 'is-active'}`}
+                  onClick={head.clear}
+                  aria-pressed={!head.on}
+                  title={
+                    head.on
+                      ? `Show every ${head.noun} again`
+                      : `Showing every ${head.noun} — press a card beside this to narrow it`
+                  }
+                >
+                  <div className="stat__label">{card.label}</div>
+                  <div className="stat__value">{(figure.count ?? 0).toLocaleString('en-IN')}</div>
+                  <div className="stat__amount">₹ {formatAmount(figure.amount ?? 0)}</div>
+                  <div className="stat__hint">{card.hint}</div>
+                </button>
+              );
+            }
+            return card.kind === 'progress' && card.opens ? (
+              /* Cheque Not Prepared: opens its own section, split by the
+                 vendor's Supply Type, rather than narrowing this table -- the
+                 same kind of card as the results screen's (see .stat--go), so no
+                 aria-pressed. Its count and its sheet in the Accounts workbook
+                 are still the progress key's. */
               <button
-                key={card.status}
+                key={card.progress}
                 type="button"
-                className={`card stat stat--${card.status.toLowerCase()} ${
-                  progress || action ? '' : 'is-active'
+                className={`card stat stat--${card.tone ?? 'dept'} stat--go`}
+                onClick={singlePress(() => selectStatus(card.opens))}
+                title={`Open the ${card.label} section — split by Stents and Regular`}
+              >
+                <IconArrowRight size={15} className="stat__go" />
+                <div className="stat__label">{card.label}</div>
+                <div className="stat__value">
+                  {progressCardFigures(card, summary, byCheque).value.toLocaleString('en-IN')}
+                </div>
+                <div className="stat__amount">
+                  ₹ {formatAmount(summary.progress?.[card.progress]?.amount ?? 0)}
+                </div>
+                <div className="stat__hint">{progressCardFigures(card, summary, byCheque).hint}</div>
+              </button>
+            ) : card.kind === 'supplyType' ? (
+              /* One Supply Type's share of the Cheque Not Prepared section --
+                 the vendor's, off the Vendor Master. Pressing it narrows the
+                 table to it; the section's own card at the head of the row goes
+                 back to all of them. */
+              <button
+                key={card.id}
+                type="button"
+                className={`card stat ${card.supplyType === 'NONE' ? 'stat--missing' : 'stat--dept'} ${
+                  supplyType === card.supplyType ? 'is-active' : ''
                 }`}
-                onClick={() => {
-                  selectProgress('');
-                  setAction('');
-                }}
-                aria-pressed={!progress && !action}
+                onClick={singlePress(() => selectSupplyType(card.supplyType))}
+                aria-pressed={supplyType === card.supplyType}
                 title={
-                  progress || action
-                    ? 'Show every GRN in accounts again'
-                    : 'Showing every GRN in accounts — press a card beside this to narrow it'
+                  supplyType === card.supplyType
+                    ? `Showing ${card.label} only — press ${CHEQUE_NOT_PREPARED_TAB.label} for every row`
+                    : `Show only the ${card.label} GRNs with no cheque prepared`
                 }
               >
                 <div className="stat__label">{card.label}</div>
                 <div className="stat__value">
-                  {(summary[card.countKey ?? card.status]?.count ?? 0).toLocaleString('en-IN')}
+                  {supplyCardFigure(card, summary).count.toLocaleString('en-IN')}
                 </div>
-                <div className="stat__amount">
-                  ₹ {formatAmount(summary[card.countKey ?? card.status]?.amount ?? 0)}
-                </div>
+                <div className="stat__amount">₹ {formatAmount(supplyCardFigure(card, summary).amount ?? 0)}</div>
                 <div className="stat__hint">{card.hint}</div>
               </button>
             ) : card.kind === 'progress' ? (
@@ -747,8 +880,8 @@ export default function AccountsDepartment() {
                 <div className="stat__amount">₹ {formatAmount(summary.csd?.[card.stage]?.amount ?? 0)}</div>
                 <div className="stat__hint">{csdCardFigures(card, summary, byCheque).hint}</div>
               </button>
-            ),
-          )}
+            );
+          })}
         </div>
       )}
 
@@ -764,23 +897,43 @@ export default function AccountsDepartment() {
               a card and this move together -- see progressFilterOptions for
               how a CSD or Accounts card shows here -- and its counts are the
               cards' figures: GRNs, over the search and branch, before any
-              Action is chosen. */}
-          <select
-            className="field__input stage-filter"
-            value={progress}
-            onChange={(e) => selectProgress(e.target.value)}
-            aria-label="Filter the table by whether a cheque has been prepared"
-          >
-            <option value="">All statuses</option>
-            {progressFilters.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}
-                {summary?.progress?.[f.value]
-                  ? ` (${summary.progress[f.value].count.toLocaleString('en-IN')})`
-                  : ''}
-              </option>
-            ))}
-          </select>
+              Action is chosen.
+
+              On the Cheque Not Prepared section the Supply Type cards stand in
+              its place, as a dropdown: that section IS one status, and choosing
+              another would leave it. */}
+          {inChequeNotPrepared ? (
+            <select
+              className="field__input stage-filter"
+              value={supplyType}
+              onChange={(e) => selectSupplyType(e.target.value)}
+              aria-label="Filter the table by the vendor's Supply Type"
+            >
+              <option value="">All supply types</option>
+              {SUPPLY_TYPE_CARDS.filter((card) => cardShown({ kind: 'supplyType', ...card }, summary, supplyType)).map((card) => (
+                <option key={card.id} value={card.supplyType}>
+                  {card.label} ({supplyCardFigure(card, summary).count.toLocaleString('en-IN')})
+                </option>
+              ))}
+            </select>
+          ) : (
+            <select
+              className="field__input stage-filter"
+              value={progress}
+              onChange={(e) => selectProgress(e.target.value)}
+              aria-label="Filter the table by whether a cheque has been prepared"
+            >
+              <option value="">All statuses</option>
+              {progressFilters.map((f) => (
+                <option key={f.value} value={f.value}>
+                  {f.label}
+                  {summary?.progress?.[f.value]
+                    ? ` (${summary.progress[f.value].count.toLocaleString('en-IN')})`
+                    : ''}
+                </option>
+              ))}
+            </select>
+          )}
 
           {/* The Action filter, a dropdown of its own: where the rows have got
               to, inside whichever card or status is selected -- see
@@ -823,7 +976,9 @@ export default function AccountsDepartment() {
 
               Not on the ageing view, which has no Action column and no rows of
               this shape to tick. */}
-          {status !== TURNAROUND && (
+          {/* Nor on Cheque Not Prepared: every bulk action needs a cheque drawn
+              up or a CSD handover, and those rows have neither. */}
+          {status !== TURNAROUND && !inChequeNotPrepared && (
             <>
               {multiMode && allSelectedCsd && (
                 <button type="button" className="primary" onClick={sendSelectedToCsd} disabled={bulkSending}>
@@ -894,15 +1049,17 @@ export default function AccountsDepartment() {
       ) : (
         data && (
           <>
+            {/* The Cheque Not Prepared section is Accounts rows, laid out as the
+                GRN view -- the cheque columns would be empty on every one. */}
             <ResultsTable
               rows={data.rows}
-              status={status}
+              status={inChequeNotPrepared ? VALID : status}
               batchId={batchId}
               onSent={loadRows}
               multiMode={multiMode}
               selected={selected}
               onToggleRow={toggleSelectRow}
-              accountsView={accountsView}
+              accountsView={inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : accountsView}
             />
             <div className="pager">
               <span className="pager__info">
