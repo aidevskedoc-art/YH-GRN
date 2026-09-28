@@ -20,7 +20,15 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
-import { VENDOR_PICKED, exportVendorMaster, pickedValue, vendorMasterLayout } from '../services/exporter.js';
+import Sheet from '../components/Sheet.jsx';
+import {
+  VENDOR_PICKED,
+  exportVendorMaster,
+  pickedValue,
+  vendorAddress,
+  vendorMasterLayout,
+} from '../services/exporter.js';
+import { printAddress } from '../services/printAddress.js';
 import { singlePress } from '../services/press.js';
 
 /** Matches the other screens' search boxes. */
@@ -75,6 +83,103 @@ function cardsFor(counts) {
   ];
 }
 
+/**
+ * The Address popup: the vendor's address to edit, save and print.
+ *
+ * Opens on the address the column shows -- the one saved here, or the HIS
+ * file's own ADDRESS until one is. Saving the HIS address unchanged (or
+ * clearing the box) saves nothing of its own, so the column keeps following
+ * the HIS file as later recos update it; anything else is kept as typed.
+ *
+ * Print prints what is in the box, saved or not.
+ */
+function AddressDialog({ row, name, code, onClose, onSaved }) {
+  const hisAddress = row.hisAddress || '';
+  const [text, setText] = useState(() => vendorAddress(row));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  // Whether two addresses are the same as they would print: line by line, so
+  // an address broken onto new lines is a change worth saving even when its
+  // words are the HIS file's. Only spaces at the ends of a line are ignored --
+  // printing drops those anyway (see printAddress).
+  const tidy = (s) =>
+    String(s ?? '')
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join('\n');
+  const same = (a, b) => tidy(a) === tidy(b);
+
+  async function save(e) {
+    e.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      // The HIS address as it stands is not an address of this screen's own.
+      const address = !text.trim() || same(text, hisAddress) ? null : text;
+      const saved = await api.updateVendor(row.id, { address });
+      onSaved(saved.address ?? null);
+    } catch (err) {
+      setError(err.message);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Sheet label={`Address of ${name || code}`} narrow onClose={busy ? () => {} : onClose}>
+      <form className="sheet__form" onSubmit={save}>
+        <div className="sheet__head">
+          <h2>Address</h2>
+          <p className="sheet__lead">
+            {name}
+            {code ? ` · ${code}` : ''}
+          </p>
+        </div>
+
+        <div className="sheet__body">
+          {error && <div className="alert alert--error">{error}</div>}
+          <label className="field">
+            <span className="field__label">Address, as it should be printed</span>
+            <textarea
+              className="field__input"
+              rows={7}
+              maxLength={1000}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="House / building, street, area, city, state, PIN"
+              autoFocus
+            />
+          </label>
+          {hisAddress && !same(text, hisAddress) && (
+            <button type="button" className="ghost ghost--sm" onClick={() => setText(hisAddress)} disabled={busy}>
+              Use the HIS address
+            </button>
+          )}
+        </div>
+
+        <div className="sheet__foot">
+          <button type="button" className="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="ghost"
+            onClick={() => printAddress({ name, address: text })}
+            disabled={!text.trim()}
+          >
+            Print
+          </button>
+          <button type="submit" className="primary" disabled={busy}>
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+        </div>
+      </form>
+    </Sheet>
+  );
+}
+
 export default function VendorMaster() {
   const { can } = useAuth();
   const navigate = useNavigate();
@@ -90,6 +195,8 @@ export default function VendorMaster() {
   const [exporting, setExporting] = useState(false);
   // The vendors with a pick on its way to the server, by id.
   const [saving, setSaving] = useState({});
+  // The vendor whose address popup is open, or null.
+  const [addressFor, setAddressFor] = useState(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -229,8 +336,8 @@ export default function VendorMaster() {
         <div>
           <h2 className="page__title">Vendor Master</h2>
           <p className="page__lead">
-            Every vendor from the HIS vendor master, which is the correct data, once each. Each HIS vs FOCUS Reco adds
-            its new vendors and updates the rest with the latest values. What needs changing in the FOCUS (Accounts)
+            Every vendor from the HIS vendor master, which is the correct data, once each. Each HIS vendor master
+            uploaded on the HIS vs FOCUS Reco screen adds its new vendors and updates the rest with the latest values. What needs changing in the FOCUS (Accounts)
             vendor list to match is on the HIS vs FOCUS Reco screen.
           </p>
         </div>
@@ -257,7 +364,7 @@ export default function VendorMaster() {
           <span className="msme-runbar__meta">
             {count(data.vendorCount)} vendors · {count(headers.length)} columns
             {lastApply &&
-              ` · Last updated by the reco of ${formatStamp(lastApply.uploadedAt)} (${lastApply.fileName}` +
+              ` · Last updated by the HIS file uploaded ${formatStamp(lastApply.uploadedAt)} (${lastApply.fileName}` +
                 `${lastApply.sheetName ? `, sheet “${lastApply.sheetName}”` : ''}` +
                 `${lastApply.uploadedBy ? `, by ${lastApply.uploadedBy}` : ''}): ` +
                 `${count(lastApply.added)} new, ${count(lastApply.updated)} updated, ` +
@@ -369,6 +476,42 @@ export default function VendorMaster() {
                           </td>
                         );
                       }
+                      if (c.address) {
+                        // The address -- the one saved here, or the HIS file's
+                        // until one is (see vendorAddress) -- with Edit, which
+                        // opens it in the popup, and Print, which prints it.
+                        const address = vendorAddress(row);
+                        const name = nameAt >= 0 ? row.cells[nameAt] : '';
+                        return (
+                          <td key={c.key} className="vm-address">
+                            <div
+                              className="vm-address__text"
+                              title={row.address ? 'Saved on this screen' : 'From the HIS vendor master'}
+                            >
+                              {address || <span className="table__miss">&mdash;</span>}
+                            </div>
+                            <div className="vm-address__actions">
+                              <button
+                                type="button"
+                                className="ghost ghost--sm"
+                                onClick={() => setAddressFor(row)}
+                                title={`Edit ${name || 'this vendor'}'s address`}
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                className="ghost ghost--sm"
+                                onClick={() => printAddress({ name, address })}
+                                disabled={!address}
+                                title={address ? `Print: ${address}` : 'No address to print yet'}
+                              >
+                                Print
+                              </button>
+                            </div>
+                          </td>
+                        );
+                      }
                       const value = c.index >= 0 ? row.cells[c.index] : null;
                       const long = value && value.length > LONG_CELL;
                       const className = `${pinClass(c.index)}${c.index >= 0 && c.index === codeAt ? ' table__mono' : ''}${
@@ -425,6 +568,19 @@ export default function VendorMaster() {
             </div>
           </div>
         </>
+      )}
+
+      {addressFor && (
+        <AddressDialog
+          row={addressFor}
+          name={nameAt >= 0 ? addressFor.cells[nameAt] : ''}
+          code={codeAt >= 0 ? addressFor.cells[codeAt] : ''}
+          onClose={() => setAddressFor(null)}
+          onSaved={(address) => {
+            patchRow(addressFor.id, { address });
+            setAddressFor(null);
+          }}
+        />
       )}
     </>
   );

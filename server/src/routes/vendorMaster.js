@@ -35,11 +35,15 @@ const NO_STATUS_VIEW = 'NO_STATUS';
 const token = (label) => String(label ?? '').toUpperCase().replace(/\s+/g, '');
 
 /**
- * File columns kept in the master but not shown, exported or searched, by
+ * File columns kept in the master but not shown as columns of their own, by
  * token. CREATED_DATE is when the vendor was set up in HIS, which nobody
- * reading this screen needs.
+ * reading this screen needs. ADDRESS is shown -- as the Address column's
+ * starting value, until one is saved there (see HIS_ADDRESS) -- but not twice.
  */
-const HIDDEN_COLUMNS = ['CREATED_DATE'];
+const HIDDEN_COLUMNS = ['CREATED_DATE', 'ADDRESS'];
+
+/** The HIS file's own address column, by token -- the Address column's default. */
+const HIS_ADDRESS = 'ADDRESS';
 
 /**
  * The details picked by hand on the screen, each from a dropdown, by the name
@@ -54,6 +58,17 @@ const PICKED = {
   supplyType: { column: 'supply_type', label: 'Supply Type', values: { REGULAR: 'Regular', STENTS: 'Stents' } },
   inter: { column: 'inter', label: 'Inter', values: { NO: 'No', YES: 'Yes' } },
 };
+
+/**
+ * The address typed on the screen for printing -- free text rather than a
+ * choice, at most ADDRESS_MAX characters. Empty clears it, which hands the
+ * screen back to the HIS file's own ADDRESS. See vendor_master.address.
+ */
+const ADDRESS = { column: 'address', label: 'Address' };
+const ADDRESS_MAX = 1000;
+
+/** Every column PATCH can write, for its RETURNING list. */
+const WRITABLE = [...Object.values(PICKED), ADDRESS];
 
 /** The `view` query parameter as one of the views above, or a STATUS key. */
 function parseView(value) {
@@ -73,15 +88,24 @@ function parseView(value) {
  * is not, or a vendor could match on a value the screen does not show. Each
  * value is matched on its own, so a term cannot match across the edge of two.
  */
-function searchFilter(term, params, hidden) {
+function searchFilter(term, params, hidden, hisAddressColumn) {
   const trimmed = String(term || '').trim();
   if (!trimmed) return null;
   params.push(`%${trimmed.replace(/[\\%_]/g, '\\$&')}%`);
   const like = `$${params.length}`;
   params.push(hidden);
+  const hiddenParam = `$${params.length}`;
+  // The Address column as it reads: the saved address, else the HIS one --
+  // hidden as a column of its own, but still what the screen shows.
+  let address = 'address';
+  if (hisAddressColumn) {
+    params.push(hisAddressColumn);
+    address = `COALESCE(address, data->>$${params.length})`;
+  }
   return `(EXISTS (SELECT 1 FROM jsonb_each_text(data) AS kv
-                    WHERE kv.value ILIKE ${like} AND NOT (kv.key = ANY($${params.length}::text[])))
-           OR supply_type ILIKE ${like})`;
+                    WHERE kv.value ILIKE ${like} AND NOT (kv.key = ANY(${hiddenParam}::text[])))
+           OR supply_type ILIKE ${like}
+           OR ${address} ILIKE ${like})`;
 }
 
 /**
@@ -131,7 +155,9 @@ async function lastApply() {
  * master, so a card does not vanish when a search leaves it empty.
  *
  * `headers` leaves out HIDDEN_COLUMNS. Each row carries its `supplyType`
- * (REGULAR or STENTS) and `inter` (NO or YES) beside its cells.
+ * (REGULAR or STENTS), `inter` (NO or YES), `address` (the one saved on the
+ * screen for printing, or null) and `hisAddress` (the HIS file's own ADDRESS,
+ * which the Address column shows until one is saved) beside its cells.
  */
 vendorMasterRouter.get(
   '/rows',
@@ -139,6 +165,7 @@ vendorMasterRouter.get(
     const { rows: columnRows } = await query('SELECT name FROM vendor_master_columns ORDER BY position, name');
     const hidden = columnRows.map((c) => c.name).filter((name) => HIDDEN_COLUMNS.includes(token(name)));
     const headers = columnRows.map((c) => c.name).filter((name) => !hidden.includes(name));
+    const hisAddressColumn = columnRows.map((c) => c.name).find((name) => token(name) === HIS_ADDRESS) ?? null;
 
     // The cards read the STATUS column, wherever the files put it: its value
     // trimmed and upper-cased, or NULL. Pushes the column name only where the
@@ -156,7 +183,7 @@ vendorMasterRouter.get(
     // --- The cards: per status, search only.
     const countParams = [];
     const countStatus = statusOf(countParams);
-    const countSearch = searchFilter(req.query.q, countParams, hidden);
+    const countSearch = searchFilter(req.query.q, countParams, hidden, hisAddressColumn);
     const { rows: statusRows } = await query(
       `SELECT ${countStatus} AS status, COUNT(*)::int AS total,
               COUNT(*) FILTER (WHERE ${countSearch ?? 'TRUE'})::int AS n
@@ -178,7 +205,7 @@ vendorMasterRouter.get(
       params.push(view);
       where.push(`${status} = $${params.length}`);
     }
-    const search = searchFilter(req.query.q, params, hidden);
+    const search = searchFilter(req.query.q, params, hidden, hisAddressColumn);
     if (search) where.push(search);
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -189,7 +216,7 @@ vendorMasterRouter.get(
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || 20));
 
     const { rows } = await query(
-      `SELECT id, data, supply_type, inter FROM vendor_master ${whereSql} ORDER BY code_key
+      `SELECT id, data, supply_type, inter, address FROM vendor_master ${whereSql} ORDER BY code_key
        ${wantsAll ? '' : `LIMIT $${params.length + 1} OFFSET $${params.length + 2}`}`,
       wantsAll ? params : [...params, pageSize, (page - 1) * pageSize],
     );
@@ -208,6 +235,8 @@ vendorMasterRouter.get(
         id: r.id,
         supplyType: r.supply_type,
         inter: r.inter,
+        address: r.address,
+        hisAddress: hisAddressColumn ? r.data?.[hisAddressColumn] ?? null : null,
         cells: headers.map((h) => r.data?.[h] ?? null),
       })),
       total,
@@ -217,11 +246,13 @@ vendorMasterRouter.get(
 );
 
 /**
- * PATCH /api/vendor-master/:id  { supplyType?: 'REGULAR' | 'STENTS', inter?: 'NO' | 'YES' }
+ * PATCH /api/vendor-master/:id
+ *   { supplyType?: 'REGULAR' | 'STENTS', inter?: 'NO' | 'YES', address?: string | null }
  *
- * Set a vendor's Supply Type and/or Inter -- whichever the body names. Neither
- * can be cleared: a vendor always has one of the values. Open to anyone given
- * this screen, like the rest of it.
+ * Set a vendor's Supply Type, Inter and/or Address -- whichever the body names.
+ * Supply Type and Inter cannot be cleared: a vendor always has one of the
+ * values. Address can: empty or null goes back to the HIS file's own ADDRESS.
+ * Open to anyone given this screen, like the rest of it.
  * Kept in their own columns, which applying a HIS file never touches, so a
  * later reco cannot undo them. Each change is logged, with what it was before.
  */
@@ -244,8 +275,20 @@ vendorMasterRouter.patch(
       }
       changes.push({ field, spec, value });
     }
+    // The address: free text, its line breaks kept as typed. Empty clears it.
+    if ('address' in (req.body ?? {})) {
+      const raw = req.body.address;
+      if (raw != null && typeof raw !== 'string') {
+        return res.status(400).json({ error: 'Address must be text.' });
+      }
+      const value = (raw ?? '').replace(/\r\n?/g, '\n').trim();
+      if (value.length > ADDRESS_MAX) {
+        return res.status(400).json({ error: `Address can be at most ${ADDRESS_MAX} characters.` });
+      }
+      changes.push({ field: 'address', spec: ADDRESS, value: value || null });
+    }
     if (changes.length === 0) {
-      return res.status(400).json({ error: `Nothing to change: send ${Object.keys(PICKED).join(' or ')}.` });
+      return res.status(400).json({ error: `Nothing to change: send ${[...Object.keys(PICKED), 'address'].join(', ')}.` });
     }
 
     // The values before, read in the same statement that changes them, for the log.
@@ -256,7 +299,7 @@ vendorMasterRouter.patch(
          FROM vendor_master old
         WHERE v.id = $1 AND old.id = v.id
        RETURNING v.id, v.vendor_code, v.data->>'VENDOR_NAME' AS vendor_name,
-                 ${Object.values(PICKED).map((s) => `old.${s.column} AS before_${s.column}, v.${s.column}`).join(', ')}`,
+                 ${WRITABLE.map((s) => `old.${s.column} AS before_${s.column}, v.${s.column}`).join(', ')}`,
       params,
     );
     const row = rows[0];
@@ -269,13 +312,15 @@ vendorMasterRouter.patch(
       logActivity(req, {
         action: 'VENDOR_UPDATE',
         target: row.vendor_code,
-        summary: value
-          ? `Set ${spec.label} of ${row.vendor_code}${name} to ${spec.values[value]}`
-          : `Cleared ${spec.label} of ${row.vendor_code}${name}`,
+        summary: !value
+          ? `Cleared ${spec.label} of ${row.vendor_code}${name}`
+          : spec.values
+            ? `Set ${spec.label} of ${row.vendor_code}${name} to ${spec.values[value]}`
+            : `Updated ${spec.label} of ${row.vendor_code}${name}`,
         details: { vendorCode: row.vendor_code, field: spec.label, from: before, to: value },
       });
     }
 
-    return res.json({ id: row.id, supplyType: row.supply_type, inter: row.inter });
+    return res.json({ id: row.id, supplyType: row.supply_type, inter: row.inter, address: row.address });
   }),
 );

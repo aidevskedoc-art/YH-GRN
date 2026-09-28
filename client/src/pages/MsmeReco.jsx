@@ -3,7 +3,9 @@
  * vendor list. Named MsmeReco in code, where it began as the MSME reco -- the
  * route, the screen key and the tables keep that name.
  *
- * Both files are uploaded together as a run. Vendors are matched on their code
+ * Each upload is a run: both files, or either alone -- the server keeps the
+ * latest file of each side, and a file uploaded alone is held against the
+ * other side's (`data.files` says which those are). Vendors are matched on their code
  * -- VENDOR_CODE in the vendor master, Code in the Accounts list -- and every
  * vendor the two share is compared on name, PAN, GST, drug licence, MSME
  * number, type and activity, bank account, IFSC and payee name. Anything that
@@ -23,7 +25,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
 import FileDrop from '../components/FileDrop.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
-import { IconAlert, IconArrowRight, IconPlus } from '../components/icons.jsx';
+import { IconAlert, IconArrowRight, IconPlus, IconX } from '../components/icons.jsx';
 import { exportMsmeReco, MSME_STATUS_LABELS } from '../services/exporter.js';
 import { singlePress } from '../services/press.js';
 
@@ -71,8 +73,58 @@ function formatDay(value) {
 
 const count = (n) => (n ?? 0).toLocaleString('en-IN');
 
+/** A run's file, with the date it was uploaded when the run used a kept one. */
+function runFile(name, isNew, at) {
+  return isNew === false ? `${name} (kept from ${formatDay(at)})` : name;
+}
+
 function runLabel(run) {
-  return `${formatStamp(run.uploadedAt)} — ${run.vendorFileName} vs ${run.accountFileName}`;
+  return `${formatStamp(run.uploadedAt)} — ${runFile(run.vendorFileName, run.vendorFileNew, run.vendorFileAt)} vs ${runFile(
+    run.accountFileName,
+    run.accountFileNew,
+    run.accountFileAt,
+  )}`;
+}
+
+/** A kept file as the upload form names it: "file.xlsx, uploaded dd/MM/yyyy". */
+function keptLabel(file) {
+  return `${file.fileName}, uploaded ${formatDay(file.uploadedAt)}`;
+}
+
+/** The line beside the upload button: what will be reconciled against what. */
+function readyText(vendorFile, accountFile, kept) {
+  if (vendorFile && accountFile) return 'Both files ready';
+  if (vendorFile) {
+    return kept.FOCUS
+      ? `HIS vendor master ready — it will update the Vendor Master and be reconciled against the FOCUS list on file (${keptLabel(kept.FOCUS)})`
+      : 'HIS vendor master ready — it will update the Vendor Master; no FOCUS list on file yet, so the reco waits for one';
+  }
+  if (accountFile) {
+    return kept.HIS
+      ? `Accounts vendor list ready — it will be reconciled against the HIS vendor master on file (${keptLabel(kept.HIS)})`
+      : 'Accounts vendor list ready — no HIS vendor master on file yet, so it will be kept until one is uploaded';
+  }
+  return 'Choose the HIS vendor master, the Accounts vendor list, or both';
+}
+
+/**
+ * What an upload that ran no reco did -- the other side had no file yet. A
+ * reco's own result needs no words: the line over the table is it.
+ */
+function keptNotice(result, vendorFile, accountFile) {
+  if (result.run) return '';
+  if (result.waitingFor === 'FOCUS') {
+    const vm = result.vendorMaster;
+    return (
+      `Vendor Master updated from ${vendorFile.name}: ${count(vm?.added)} new, ${count(vm?.updated)} updated. ` +
+      'No FOCUS list is on file yet, so no reco was run — the file is kept, and the reco runs when the Accounts ' +
+      'vendor list is uploaded.'
+    );
+  }
+  return (
+    `${accountFile.name} is kept. No HIS vendor master is on file yet, so no reco was run — it runs when the HIS ` +
+    'vendor master is uploaded.'
+  );
 }
 
 /** The fields that hold a name rather than a code: wide enough to wrap. */
@@ -123,6 +175,8 @@ export default function MsmeReco() {
   const [accountFile, setAccountFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
+  // Said after an upload that could only be kept (see keptNotice).
+  const [notice, setNotice] = useState('');
 
   // --- What is on screen -------------------------------------------------
   const [data, setData] = useState(null);
@@ -200,18 +254,20 @@ export default function MsmeReco() {
   async function handleUpload(event) {
     event.preventDefault();
     setUploadError('');
-    if (!vendorFile || !accountFile) {
-      setUploadError('Please choose both files: the HIS vendor master and the Accounts vendor list.');
+    setNotice('');
+    if (!vendorFile && !accountFile) {
+      setUploadError('Choose a file: the HIS vendor master, the Accounts vendor list, or both.');
       return;
     }
 
     const formData = new FormData();
-    formData.append('vendorFile', vendorFile);
-    formData.append('accountFile', accountFile);
+    if (vendorFile) formData.append('vendorFile', vendorFile);
+    if (accountFile) formData.append('accountFile', accountFile);
 
     setUploading(true);
     try {
-      await api.runMsmeReco(formData);
+      const result = await api.runMsmeReco(formData);
+      setNotice(keptNotice(result, vendorFile, accountFile));
       // Back to every vendor, first page, with the new reco's rows in place.
       setView(ALL_VIEW);
       setField('');
@@ -257,6 +313,8 @@ export default function MsmeReco() {
   // The latest reco: what the line over the table describes. Everything below
   // the form waits for there to be one.
   const run = data?.latestRun ?? null;
+  // The latest file of each side, which a file uploaded alone is held against.
+  const kept = data?.files ?? {};
   const shownFields = data?.fields ?? [];
   const anyFilter = Boolean(q || field || view !== ALL_VIEW);
   const chipsShown = FIELD_VIEWS.has(view) && run && shownFields.length > 0;
@@ -270,7 +328,8 @@ export default function MsmeReco() {
           <h2 className="page__title">HIS vs FOCUS Reco</h2>
           <p className="page__lead">
             The HIS vendor master against the FOCUS (Accounts) vendor list, matched on vendor code. Name, PAN, GST,
-            drug licence, MSME and bank details are compared, and every difference is written in Remarks.
+            drug licence, MSME and bank details are compared, and every difference is written in Remarks. Upload
+            both files, or either one alone to reconcile it against the latest of the other.
           </p>
         </div>
         <div className="page__actions">
@@ -307,7 +366,7 @@ export default function MsmeReco() {
       {showUpload && (
         <form className="card upload msme-upload" onSubmit={handleUpload}>
           <div className="upload__rule">
-            <span>The two masters</span>
+            <span>The two masters — either or both</span>
           </div>
 
           <div className="drops drops--two">
@@ -331,6 +390,19 @@ export default function MsmeReco() {
             />
           </div>
 
+          {/* What a file uploaded alone is held against: the other side's
+              latest, kept from an earlier upload. */}
+          <p className="upload__note">
+            Either file can be uploaded alone: it is reconciled against the latest of the other on file, and an HIS
+            vendor master also adds its new vendors to the Vendor Master.
+            {kept.HIS
+              ? ` HIS vendor master on file: ${keptLabel(kept.HIS)}.`
+              : ' No HIS vendor master on file yet: a FOCUS list alone is kept until one is uploaded.'}
+            {kept.FOCUS
+              ? ` FOCUS list on file: ${keptLabel(kept.FOCUS)}.`
+              : ' No FOCUS list on file yet: an HIS vendor master alone updates the Vendor Master, and the reco runs once a FOCUS list is uploaded.'}
+          </p>
+
           {uploadError && (
             <div className="alert alert--error alert--icon" role="alert">
               <IconAlert size={16} />
@@ -347,13 +419,7 @@ export default function MsmeReco() {
                 <i />
                 <i />
               </span>
-              {vendorFile && accountFile
-                ? 'Both files ready'
-                : vendorFile
-                  ? 'Vendor master ready — choose the Accounts vendor list'
-                  : accountFile
-                    ? 'Accounts vendor list ready — choose the HIS vendor master'
-                    : 'Choose the HIS vendor master and the Accounts vendor list'}
+              {readyText(vendorFile, accountFile, kept)}
             </p>
             <button className="primary upload__go" type="submit" disabled={uploading}>
               {uploading ? 'Reconciling…' : 'Run HIS vs FOCUS reco'}
@@ -365,12 +431,21 @@ export default function MsmeReco() {
             <div className="progress" role="status">
               <span className="progress__bar" />
               <p className="upload__note">
-                Reading both workbooks and comparing every vendor. The Accounts list runs to tens of thousands of
-                rows, so this can take a little while.
+                Reading {vendorFile && accountFile ? 'both workbooks' : 'the workbook'} and comparing every vendor.
+                The Accounts list runs to tens of thousands of rows, so this can take a little while.
               </p>
             </div>
           )}
         </form>
+      )}
+
+      {notice && (
+        <div className="alert alert--info alert--dismiss" role="status">
+          <span>{notice}</span>
+          <button type="button" className="ghost icon-btn" onClick={() => setNotice('')} aria-label="Dismiss">
+            <IconX size={14} />
+          </button>
+        </div>
       )}
 
       {loading && !data && <div className="loading">Loading…</div>}

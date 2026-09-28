@@ -4,7 +4,7 @@
  *
  * The HIS vendor master is the correct data -- the HIS vs FOCUS Reco says what
  * FOCUS (Accounts) needs changing to match it. It has no upload of its own:
- * each reco run applies the vendor master file it was given (the POST in
+ * each reco run that is given a vendor master file applies it (the POST in
  * routes/msmeReco.js). A vendor code the master already has is updated with
  * the file's values; a new one is added. Nothing is ever removed, and a reco
  * run cannot be deleted, so uploading the same file again only updates what
@@ -249,6 +249,10 @@ async function perRunCopy(client) {
  * its headers on the run), which may hold the whole file and is used instead.
  * Each is applied at its own uploaded_at, so it cannot undo a newer file.
  *
+ * A run that brought no HIS file -- a FOCUS list uploaded alone -- has nothing
+ * to apply and is never counted as pending: the HIS file it was reconciled
+ * against was applied by the run that brought it.
+ *
  * `exceptRunId` leaves out a run the caller has just inserted and is about to
  * apply itself -- in the caller's transaction it is visible, and unapplied.
  */
@@ -263,6 +267,7 @@ export async function applyPendingRuns(client, { exceptRunId = null } = {}) {
             ${useCopy ? ', r.vendor_master_headers, r.vendor_master_complete' : ''}
        FROM msme_reco_runs r
       WHERE NOT EXISTS (SELECT 1 FROM vendor_master_applies a WHERE a.run_id = r.id)
+        AND r.vendor_file_new
         AND r.id IS DISTINCT FROM $1
       ORDER BY r.uploaded_at, r.id`,
     [exceptRunId],

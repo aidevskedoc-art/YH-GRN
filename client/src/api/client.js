@@ -371,17 +371,22 @@ export const api = {
   deleteBranch: (id) => request(`/config/branches/${id}`, { method: 'DELETE' }),
 
   /* --- MSME reco -----------------------------------------------------------
-     The HIS vendor master against the Accounts vendor list. A run is both
-     files reconciled and stored; the screen shows every vendor once, from the
+     The HIS vendor master against the Accounts vendor list. A run is the two
+     reconciled and stored -- both uploaded, or one uploaded and the other the
+     latest kept; the screen shows every vendor once, from the
      latest run that had it, read from the API rather than from the files. */
 
-  /** Upload both masters (`vendorFile`, `accountFile`) and store the reco. */
+  /**
+   * Upload either master or both (`vendorFile`, `accountFile`) and store the
+   * reco. A file left out is the latest of its side the server has kept.
+   */
   runMsmeReco: (formData) => request('/msme-reco/runs', { method: 'POST', body: formData, isForm: true }),
 
   /**
    * Every HIS vendor once, from the latest reco that had it, with the latest
-   * reco itself (`latestRun`, null before the first) and how many there have
-   * been (`runCount`). Accounts-only codes are counted on each run, not
+   * reco itself (`latestRun`, null before the first), how many there have
+   * been (`runCount`) and the kept file of each side (`files.HIS`,
+   * `files.FOCUS`, null while none). Accounts-only codes are counted on each run, not
    * stored. `view` is a card: ALL (the default), MATCHED, MISMATCH or
    * NOT_IN_ACCOUNTS; `field` narrows to the rows whose `field` pair disagrees;
    * `q` is the search box. `all` drops the paging, for the export.
@@ -416,8 +421,9 @@ export const api = {
   },
 
   /**
-   * Set a vendor's picked details: `{ supplyType }` ('REGULAR' or 'STENTS')
-   * and/or `{ inter }` ('NO' or 'YES').
+   * Set a vendor's details kept on this screen: `{ supplyType }` ('REGULAR' or
+   * 'STENTS'), `{ inter }` ('NO' or 'YES') and/or `{ address }` (text, or null
+   * to go back to the HIS address).
    */
   updateVendor: (id, changes) => request(`/vendor-master/${id}`, { method: 'PATCH', body: changes }),
 

@@ -4,6 +4,7 @@ import { IconCheck, IconSend, IconUndo } from './icons.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import Sheet from './Sheet.jsx';
 import { chequePrepared } from '../services/cheque.js';
+import { ageingDays, todayIso } from '../services/ageing.js';
 import { useConfirm } from './ConfirmDialog.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
 import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, canHandToCsd } from '../services/resultsViews.js';
@@ -258,6 +259,40 @@ export function PriorRejection({ prior }) {
  * landing -- the row on screen is still the one the server sent before it knew
  * -- so it falls back to QUEUED, which is where a send has just put it.
  */
+/**
+ * The Ageing cell: days from the bill being handed to Accounts
+ * (BillHandOverToAcc) to the cheque being cut (ChqDate) -- see
+ * services/ageing.js. While no cheque has been cut it counts to `asOf`, the
+ * "Ageing as of" date in the toolbar. The figure alone is shown; the dates it
+ * counts between are in the tooltip, so it can be checked.
+ *
+ * Negative where the cheque is dated before the handover -- an advance, cut
+ * before the bill reached Accounts. A dash only with no handover date to count
+ * from.
+ */
+function AgeingDays({ row, asOf }) {
+  const days = ageingDays(row, asOf);
+  const handedOver = formatDate(row.billHandoverToAcc);
+  if (days === null) {
+    return (
+      <span className="table__miss" title="No BillHandOverToAcc date to count from">
+        &mdash;
+      </span>
+    );
+  }
+  const title = row.chqDate
+    ? `Handed to Accounts ${handedOver}, cheque date ${formatDate(row.chqDate)}` +
+      (days < 0 ? ' — cheque before handover' : '')
+    : `Handed to Accounts ${handedOver}, no cheque date yet — days to ${
+        asOf === todayIso() ? 'today' : formatDate(asOf)
+      }`;
+  return (
+    <span title={title}>
+      {days.toLocaleString('en-IN')} day{Math.abs(days) === 1 ? '' : 's'}
+    </span>
+  );
+}
+
 function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, forwardedName, forwardedMobile, forwardedDate, forwardedCourierName, forwardedDocketNo, forwardedRemarks, rejectRemarks, priorRejection, filed, clearedOn }) {
   // Only where there is no current one -- see PriorRejection.
   const prior = !rejectRemarks && priorRejection ? priorRejection : null;
@@ -805,6 +840,9 @@ export default function ResultsTable({
   // services/resultsViews.js), or undefined for every column at once, which is
   // how the results screen shows the Accounts view.
   accountsView,
+  // The date a bill with no cheque yet counts its Ageing to -- the page's
+  // "Ageing as of" input, today until it is changed. See AgeingDays.
+  ageingAsOf = todayIso(),
 }) {
   const { can } = useAuth();
 
@@ -836,6 +874,10 @@ export default function ResultsTable({
   const byCheque = showAgeing && accountsView === ACCOUNTS_CHEQUE_VIEW;
   const showGrnDetail = !byCheque;
   const showChequeDetail = showAgeing && accountsView !== ACCOUNTS_GRN_VIEW;
+  // The Ageing column -- days from BillHandOverToAcc to ChqDate -- on the
+  // Accounts layout only (Accounts, and its Cheque Not Prepared section): the
+  // question of how long Accounts took to cut a cheque is theirs.
+  const showAccountsAgeing = showAgeing && !isAll;
   // Which GRNs are in flight, and which have landed since this table was drawn.
   //
   // A set rather than one GRN number: every action in this column now acts on
@@ -883,6 +925,7 @@ export default function ResultsTable({
     // Cheque No (pinned up front on Cheque view), Cheque Date, PaymentDocNo,
     // Account No
     (showChequeDetail ? (byCheque ? 3 : 4) : 0) +
+    (showAccountsAgeing ? 1 : 0) + // Ageing
     (showAgeing ? 2 : 0); // Status, Action
 
   const isSent = (row) => row.csdSent || justSent.has(row.dprNo);
@@ -1265,6 +1308,17 @@ export default function ResultsTable({
                 screen rather than off any of the three reports -- so it sits
                 after the cheque, as the account that cheque was drawn on. */}
             {showChequeDetail && <th>Account No</th>}
+            {/* Days from the bill being handed to Accounts to the cheque being
+                cut -- or to the "Ageing as of" date, marked so, while no cheque
+                has been. See AgeingDays above. */}
+            {showAccountsAgeing && (
+              <th
+                className="table__num"
+                title={`Days from BillHandOverToAcc to ChqDate — to ${formatDate(ageingAsOf)} (the Ageing as of date) while there is no ChqDate`}
+              >
+                Ageing
+              </th>
+            )}
             {showAgeing && <th>Status</th>}
             {/* Last, and pinned to the right edge -- see .table__pin--action in
                 styles.css -- so the row's controls stay in reach however far
@@ -1387,6 +1441,11 @@ export default function ResultsTable({
                   {(chequePrepared(row) !== false && row.accountNo) || (
                     <span className="table__miss">&mdash;</span>
                   )}
+                </td>
+              )}
+              {showAccountsAgeing && (
+                <td className="table__num">
+                  <AgeingDays row={row} asOf={ageingAsOf} />
                 </td>
               )}
               {showAgeing && (

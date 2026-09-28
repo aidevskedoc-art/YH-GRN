@@ -953,7 +953,8 @@ UPDATE users
 -- HIS vs FOCUS Reco (named msme_reco here, which is what it began as): the
 -- HIS vendor master held against the Accounts (FOCUS) vendor list.
 --
--- One run per pair of files uploaded, and one row per vendor master row:
+-- One run per upload -- both files, or either alone against the other's
+-- latest (msme_reco_files) -- and one row per vendor master row:
 -- found in Accounts (MATCHED or MISMATCH) or not (NOT_IN_ACCOUNTS). Accounts
 -- codes the vendor master lacks (NOT_IN_HIS) are counted on the run and not
 -- stored as rows. The matching itself is services/msmeReco.js; this only keeps
@@ -981,6 +982,16 @@ CREATE TABLE IF NOT EXISTS msme_reco_runs (
   uploaded_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
   uploaded_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Either file can be uploaded alone: the side left out is the latest one kept
+-- in msme_reco_files below. `*_file_new` says whether the run's own upload
+-- brought that file (FALSE: the kept one was used), and `*_file_at` when the
+-- file it used was uploaded. Runs stored before this brought both, so they
+-- read TRUE, and NULL for the time -- the run's own.
+ALTER TABLE msme_reco_runs ADD COLUMN IF NOT EXISTS vendor_file_new BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE msme_reco_runs ADD COLUMN IF NOT EXISTS account_file_new BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE msme_reco_runs ADD COLUMN IF NOT EXISTS vendor_file_at TIMESTAMPTZ;
+ALTER TABLE msme_reco_runs ADD COLUMN IF NOT EXISTS account_file_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS msme_reco_rows (
   id                   SERIAL PRIMARY KEY,
@@ -1032,6 +1043,54 @@ DROP INDEX IF EXISTS idx_msme_rows_run_vendor;
 -- them, so the rows go. Idempotent: once cleared, nothing matches.
 DELETE FROM msme_reco_rows WHERE status = 'NOT_IN_HIS';
 
+-- The latest file of each side, as the reco reads it -- one row for HIS (the
+-- vendor master's reco sheet) and one for FOCUS (the Accounts vendor list),
+-- each replaced by the next upload of that side. What lets either file be
+-- uploaded alone: the reco holds it against the other side's row here.
+-- `rows` is the parser's records (readVendorMaster's `rows`, readAccountMaster's
+-- `rows`); only the latest is kept, as the runs keep their own answers.
+CREATE TABLE IF NOT EXISTS msme_reco_files (
+  side         TEXT PRIMARY KEY CHECK (side IN ('HIS', 'FOCUS')),
+  file_name    TEXT NOT NULL,
+  sheet_name   TEXT,
+  row_count    INTEGER NOT NULL,
+  rows         JSONB NOT NULL,
+  uploaded_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  uploaded_at  TIMESTAMPTZ NOT NULL
+);
+
+-- The HIS side, rebuilt from the latest run for a database that ran recos
+-- before files were kept, so a FOCUS list can be uploaded alone straight
+-- away. Lossless for the reco: it stored every compared HIS value, cleaned as
+-- the reco would clean it again. The FOCUS side cannot be rebuilt -- the codes
+-- only FOCUS has were never stored -- so it waits for the next FOCUS upload.
+-- Idempotent: once there is an HIS row, nothing is inserted.
+INSERT INTO msme_reco_files (side, file_name, sheet_name, row_count, rows, uploaded_by, uploaded_at)
+SELECT 'HIS', r.vendor_file_name, r.vendor_sheet_name, jsonb_array_length(h.rows), h.rows, r.uploaded_by, r.uploaded_at
+  FROM (SELECT * FROM msme_reco_runs ORDER BY uploaded_at DESC, id DESC LIMIT 1) r
+  CROSS JOIN LATERAL (
+    SELECT jsonb_agg(jsonb_build_object(
+             'sourceRowNo', m.his_row_no,
+             'vendorCode', m.vendor_code,
+             'warehouse', m.warehouse,
+             'status', m.his_status,
+             'vendorName', m.his_name,
+             'panNo', m.his_pan,
+             'gstNumber', m.his_gst,
+             'drugLicenceNo', m.his_drug_licence,
+             'msmeNumber', m.his_msme_no,
+             'enterpriseType', m.his_msme_type,
+             'enterpriseActivity', m.his_msme_activity,
+             'bankAccountNo', m.his_bank_account_no,
+             'ifsc', m.his_ifsc,
+             'payeeName', m.his_payee_name
+           ) ORDER BY m.seq) AS rows
+      FROM msme_reco_rows m
+     WHERE m.run_id = r.id AND m.status <> 'NOT_IN_HIS'
+  ) h
+ WHERE h.rows IS NOT NULL
+ON CONFLICT (side) DO NOTHING;
+
 -- --------------------------------------------------------------------------
 -- Vendor Master: every vendor the HIS vendor master has ever listed, once
 -- each, with its latest details.
@@ -1069,7 +1128,8 @@ CREATE TABLE IF NOT EXISTS vendor_master (
   last_seen_at  TIMESTAMPTZ NOT NULL,
   msme_no       TEXT,
   supply_type   TEXT NOT NULL DEFAULT 'REGULAR',
-  inter         TEXT NOT NULL DEFAULT 'NO'
+  inter         TEXT NOT NULL DEFAULT 'NO',
+  address       TEXT
 );
 
 -- The vendor's MSME number, out of `data` (its MSME_NUMBER column), cleaned
@@ -1106,6 +1166,11 @@ ALTER TABLE vendor_master ADD CONSTRAINT vendor_master_supply_type_check
 ALTER TABLE vendor_master DROP CONSTRAINT IF EXISTS vendor_master_inter_check;
 ALTER TABLE vendor_master ADD CONSTRAINT vendor_master_inter_check
   CHECK (inter IN ('YES', 'NO'));
+
+-- The vendor's address as typed on the Vendor Master screen, for printing --
+-- NULL until somebody saves one, and the screen offers the HIS file's own
+-- ADDRESS until then. Like the two above, applying a file never touches it.
+ALTER TABLE vendor_master ADD COLUMN IF NOT EXISTS address TEXT;
 
 -- The master's columns, in the order the screen and the export show them: the
 -- latest file's own order, then any column only an earlier file had.

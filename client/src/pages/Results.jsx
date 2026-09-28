@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
+import { todayIso } from '../services/ageing.js';
 import { singlePress } from '../services/press.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
@@ -339,6 +340,10 @@ export default function Results() {
   // REGULAR, NONE -- or '' for all of it. Cleared on the way out, like the
   // Pending desks' pendingDept below.
   const [supplyType, setSupplyType] = useState('');
+  // The day a bill with no cheque yet counts its Ageing to -- the "Ageing as
+  // of" input on the Accounts views, today until changed. The table and the
+  // export both read it; see services/ageing.js.
+  const [ageingAsOf, setAgeingAsOf] = useState(todayIso);
   // Which half of Total GRNS is showing, or '' for both. Meaningless on the
   // other tabs, and cleared on the way out of this one.
   const [matchFilter, setMatchFilter] = useState('');
@@ -1044,6 +1049,7 @@ export default function Results() {
         msme,
         spans,
         accountsView: status === VALID ? accountsView : inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : undefined,
+        ageingAsOf,
       });
     } catch (err) {
       setError(err.message);
@@ -1691,6 +1697,24 @@ export default function Results() {
               </select>
             </>
           )}
+          {/* The day a bill with no cheque yet counts its Ageing to -- today
+              until changed, and back to today if cleared. Only on the Accounts
+              views, the ones with an Ageing column. */}
+          {isAccountsSection(status) && (
+            <label
+              className="ageing-asof"
+              title="Ageing counts to this date for a bill with no cheque date yet"
+            >
+              Ageing as of
+              <input
+                className="field__input stage-filter"
+                type="date"
+                value={ageingAsOf}
+                onChange={(e) => setAgeingAsOf(e.target.value || todayIso())}
+                aria-label="Count the Ageing of bills with no cheque yet to this date"
+              />
+            </label>
+          )}
           <input
             className="field__input search"
             type="search"
@@ -1814,6 +1838,7 @@ export default function Results() {
               selected={selected}
               onToggleRow={toggleSelectRow}
               accountsView={status === VALID ? accountsView : inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : undefined}
+              ageingAsOf={ageingAsOf}
             />
             <div className="pager">
               <span className="pager__info">

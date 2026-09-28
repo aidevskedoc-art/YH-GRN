@@ -3,7 +3,7 @@
  * vendor list. It began as the MSME reco, and the route, screen key and
  * tables keep that name.
  *
- *   POST   /api/msme-reco/runs   upload both files, reconcile, store
+ *   POST   /api/msme-reco/runs   upload either file or both, reconcile, store
  *   GET    /api/msme-reco/rows   every vendor once, filtered and paged
  *
  * A run is stored -- a row for every vendor master row, and a count for the
@@ -13,9 +13,16 @@
  * below). The matching is services/msmeReco.js; nothing here decides what
  * agrees.
  *
- * The vendor master file is also applied to the Vendor Master -- new vendors
- * added, known ones updated with the file's values (services/vendorMaster.js).
- * It is the correct data, and this is the only way in for it.
+ * Each side's latest file is kept, as the reco reads it (msme_reco_files), so
+ * either can be uploaded alone: a new FOCUS list is reconciled against the
+ * latest HIS vendor master, and a new HIS vendor master against the latest
+ * FOCUS list. With nothing kept for the other side yet, the file is only kept.
+ *
+ * An HIS vendor master file is also applied to the Vendor Master -- new
+ * vendors added, known ones updated with the file's values
+ * (services/vendorMaster.js) -- whether or not a reco could be run. It is the
+ * correct data, and this is the only way in for it. A FOCUS list uploaded
+ * alone leaves the master as it is.
  *
  * There is no deleting a run. The Vendor Master keeps one row per vendor, so
  * uploading the same files again only updates what changed -- nothing piles
@@ -39,7 +46,7 @@ msmeRecoRouter.use(requireAuth, requireScreen('msme-reco'));
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  // The two masters and nothing else.
+  // The two masters, or either one, and nothing else.
   limits: { fileSize: config.maxUploadBytes, files: 2 },
   fileFilter: (req, file, cb) => {
     if (/\.xlsx?$/i.test(file.originalname)) return cb(null, true);
@@ -98,6 +105,10 @@ const SEARCH_COLUMNS = [
 /** The field list as the client needs it: no parser property names. */
 const PUBLIC_FIELDS = FIELDS.map(({ key, label, his, acc }) => ({ key, label, his, acc }));
 
+/** The two sides of a reco, as msme_reco_files keys its kept files. */
+const HIS = 'HIS';
+const FOCUS = 'FOCUS';
+
 function mapRun(row) {
   return {
     id: row.id,
@@ -106,6 +117,13 @@ function mapRun(row) {
     accountFileName: row.account_file_name,
     vendorRowCount: row.vendor_row_count,
     accountRowCount: row.account_row_count,
+    // Whether this run's upload brought each file -- false: it used the one
+    // kept from an earlier upload, which *FileAt dates. A run from before
+    // either could come alone brought both.
+    vendorFileNew: row.vendor_file_new,
+    accountFileNew: row.account_file_new,
+    vendorFileAt: row.vendor_file_at ?? row.uploaded_at,
+    accountFileAt: row.account_file_at ?? row.uploaded_at,
     counts: {
       [STATUS.MATCHED]: row.matched_count,
       [STATUS.MISMATCH]: row.mismatch_count,
@@ -160,6 +178,43 @@ async function findRun(id) {
   return rows[0] ?? null;
 }
 
+/** The kept files without their rows -- what the upload form says it will use. */
+const FILE_SELECT = `
+  SELECT f.side, f.file_name, f.sheet_name, f.row_count, f.uploaded_at,
+         u.full_name AS uploader_name, u.username AS uploader_username
+    FROM msme_reco_files f
+    LEFT JOIN users u ON u.id = f.uploaded_by`;
+
+function mapFile(row) {
+  if (!row) return null;
+  return {
+    fileName: row.file_name,
+    sheetName: row.sheet_name,
+    rowCount: row.row_count,
+    uploadedAt: row.uploaded_at,
+    uploadedBy: row.uploader_name || row.uploader_username || null,
+  };
+}
+
+/**
+ * One side's kept file, rows and all, inside the caller's transaction -- for
+ * the side an upload left out. Null while that side has none yet.
+ */
+async function keptFile(client, side) {
+  const { rows } = await client.query(
+    'SELECT file_name, sheet_name, rows, uploaded_at FROM msme_reco_files WHERE side = $1',
+    [side],
+  );
+  if (!rows[0]) return null;
+  return {
+    isNew: false,
+    fileName: rows[0].file_name,
+    sheetName: rows[0].sheet_name,
+    rows: rows[0].rows,
+    uploadedAt: rows[0].uploaded_at,
+  };
+}
+
 /** Push the search parameter and return its SQL, or null when nothing was typed. */
 function searchFilter(term, params) {
   const trimmed = String(term || '').trim();
@@ -181,11 +236,22 @@ function viewFilter(view, params) {
 }
 
 /**
- * POST /api/msme-reco/runs - both files, as `vendorFile` and `accountFile`.
+ * POST /api/msme-reco/runs - either file or both, as `vendorFile` and
+ * `accountFile`.
  *
- * Both are required: a reco of one list against nothing has no answer to
- * store. Each file's parse error names the file it came from, so a pair
- * dropped into the wrong slots says which one was not what it should be.
+ * A side left out is its latest kept file (msme_reco_files): a FOCUS list
+ * alone is held against the latest HIS vendor master, and an HIS vendor master
+ * alone against the latest FOCUS list. With no kept file for that side yet --
+ * before the first FOCUS list, say -- there is no reco to run: the upload is
+ * kept for when the other side comes, and an HIS file still updates the Vendor
+ * Master, so vendors can be added from the HIS file alone.
+ *
+ * Answers `{ run, waitingFor, vendorMaster }`: the run stored, or null when
+ * none could be, with `waitingFor` naming the side it waits for (HIS or
+ * FOCUS); and what an HIS file did to the Vendor Master, or null.
+ *
+ * Each file's parse error names the file it came from, so a pair dropped into
+ * the wrong slots says which one was not what it should be.
  */
 msmeRecoRouter.post(
   '/runs',
@@ -194,127 +260,240 @@ msmeRecoRouter.post(
     { name: 'accountFile', maxCount: 1 },
   ]),
   asyncHandler(async (req, res) => {
-    const vendorFile = req.files?.vendorFile?.[0];
-    const accountFile = req.files?.accountFile?.[0];
+    const vendorFile = req.files?.vendorFile?.[0] ?? null;
+    const accountFile = req.files?.accountFile?.[0] ?? null;
 
-    if (!vendorFile || !accountFile) {
+    if (!vendorFile && !accountFile) {
       return res.status(400).json({
-        error: 'Choose both files: the HIS vendor master and the Accounts vendor list.',
+        error: 'Choose a file: the HIS vendor master, the Accounts vendor list, or both.',
       });
     }
 
-    let vendor;
-    try {
-      vendor = readVendorMaster(vendorFile.buffer);
-    } catch (err) {
-      if (err instanceof ExcelFormatError) err.message = `HIS vendor master: ${err.message}`;
-      throw err;
+    // Whichever came, read before the transaction: it is the slow part.
+    let vendor = null;
+    if (vendorFile) {
+      try {
+        vendor = readVendorMaster(vendorFile.buffer);
+      } catch (err) {
+        if (err instanceof ExcelFormatError) err.message = `HIS vendor master: ${err.message}`;
+        throw err;
+      }
     }
 
-    let account;
-    try {
-      account = readAccountMaster(accountFile.buffer);
-    } catch (err) {
-      if (err instanceof ExcelFormatError) err.message = `Accounts vendor list: ${err.message}`;
-      throw err;
+    let account = null;
+    if (accountFile) {
+      try {
+        account = readAccountMaster(accountFile.buffer);
+      } catch (err) {
+        if (err instanceof ExcelFormatError) err.message = `Accounts vendor list: ${err.message}`;
+        throw err;
+      }
     }
 
-    const { results, summary } = reconcileMsme(vendor.rows, account.rows);
-    const { statuses } = summary;
-    // Every status is counted on the run; only the vendor master's rows are
-    // kept as rows -- see STORED_STATUSES.
-    const stored = results.filter((r) => STORED_STATUSES.includes(r.status));
+    const { id: runRow, his, focus, summary, stored, vendorMaster } = await withTransaction(async (client) => {
+      // One reco at a time. Each reads the files the last one kept, so two
+      // uploads landing together -- an HIS file and a FOCUS list, say -- must
+      // not each be held against the other's old file. Readers are not
+      // blocked. The runs table is the first of these tables every path takes
+      // (see the Vendor Master's lock below), so taking it first keeps that
+      // order.
+      await client.query('LOCK TABLE msme_reco_runs IN SHARE ROW EXCLUSIVE MODE');
+      // Read once the lock is held, so runs are timed in the order they ran.
+      const { rows: clock } = await client.query('SELECT clock_timestamp() AS now');
+      const at = clock[0].now;
 
-    const { id: runRow, vendorMaster } = await withTransaction(async (client) => {
-      const { rows } = await client.query(
-        `INSERT INTO msme_reco_runs
-           (vendor_file_name, vendor_sheet_name, account_file_name, vendor_row_count, account_row_count,
-            matched_count, mismatch_count, not_in_accounts_count, not_in_his_count, uploaded_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING id, uploaded_at`,
-        [
-          vendorFile.originalname,
-          vendor.sheetName ?? null,
-          accountFile.originalname,
-          summary.vendorRowCount,
-          summary.accountRowCount,
-          statuses[STATUS.MATCHED],
-          statuses[STATUS.MISMATCH],
-          statuses[STATUS.NOT_IN_ACCOUNTS],
-          statuses[STATUS.NOT_IN_HIS],
-          req.user.id,
-        ],
-      );
-      const id = rows[0].id;
+      const his = vendor
+        ? { isNew: true, fileName: vendorFile.originalname, sheetName: vendor.sheetName ?? null, rows: vendor.rows, uploadedAt: at }
+        : await keptFile(client, HIS);
+      const focus = account
+        ? { isNew: true, fileName: accountFile.originalname, sheetName: account.sheetName ?? null, rows: account.rows, uploadedAt: at }
+        : await keptFile(client, FOCUS);
 
-      await bulkInsert(client, 'msme_reco_rows', ROW_COLUMNS, stored, (r, i) => [
-        id,
-        i + 1,
-        r.status,
-        r.vendorCode,
-        r.accCode,
-        r.hisRowNo,
-        r.accRowNo,
-        r.warehouse,
-        r.hisStatus,
-        // null rather than '': a blank is "nothing written", and the screen
-        // shows it as a dash either way.
-        ...FIELDS.flatMap((f) => [r.his?.[f.key] || null, r.acc?.[f.key] || null]),
-        r.mismatchFields,
-        r.remarks,
-      ]);
+      // A reco needs both sides. With the other not on file yet, the upload
+      // is only kept for it -- and an HIS file still reaches the Vendor Master
+      // below, which is how vendors are added without a FOCUS list to hand.
+      let id = null;
+      let summary = null;
+      let stored = [];
+      if (his && focus) ({ id, summary, stored } = await storeReco(client, req, his, focus, at));
 
-      // The same file, every column of it, into the Vendor Master: new vendors
-      // added, known ones updated. In this transaction, so a reco that fails
-      // leaves the master as it was.
+      // The files this upload brought replace the kept ones of their side,
+      // for the next upload of the other. After the reco's rows, before the
+      // Vendor Master: the order schema.sql takes these tables in.
+      for (const [side, file] of [
+        [HIS, his],
+        [FOCUS, focus],
+      ]) {
+        if (!file?.isNew) continue;
+        await client.query(
+          `INSERT INTO msme_reco_files (side, file_name, sheet_name, row_count, rows, uploaded_by, uploaded_at)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+           ON CONFLICT (side) DO UPDATE
+              SET file_name = EXCLUDED.file_name,
+                  sheet_name = EXCLUDED.sheet_name,
+                  row_count = EXCLUDED.row_count,
+                  rows = EXCLUDED.rows,
+                  uploaded_by = EXCLUDED.uploaded_by,
+                  uploaded_at = EXCLUDED.uploaded_at`,
+          [side, file.fileName, file.sheetName, file.rows.length, JSON.stringify(file.rows), req.user.id, at],
+        );
+      }
+
+      // A new HIS file, every column of it, into the Vendor Master: new
+      // vendors added, known ones updated -- reconciled or not. In this
+      // transaction, so an upload that fails leaves the master as it was. A
+      // FOCUS list alone has nothing for the master: the kept HIS file was
+      // applied by the upload that brought it. Without a reco there is no run
+      // to record the apply against, and its row says so with a NULL run_id.
       //
       // Last, after the reco's own rows: the master's lock is taken here, and
-      // held to the end, so recos landing together are applied one after the
+      // held to the end, so uploads landing together are applied one after the
       // other. Taking it after the tables above keeps the order every other
       // path takes them in -- migrate.js runs schema.sql over the same tables
       // in that order -- so the two cannot deadlock. First any earlier run not
       // yet applied (one stored by a server still running older code), so this
       // file lands on top of it; not this one, which has no apply row yet.
-      await applyPendingRuns(client, { exceptRunId: id });
-      const applied = await applyVendorMaster(
-        client,
-        { id, uploadedAt: rows[0].uploaded_at, fileName: vendorFile.originalname, uploadedBy: req.user.id },
-        vendor.master,
-      );
+      let applied = null;
+      if (vendor) {
+        await applyPendingRuns(client, { exceptRunId: id });
+        applied = await applyVendorMaster(
+          client,
+          { id, uploadedAt: at, fileName: vendorFile.originalname, uploadedBy: req.user.id },
+          vendor.master,
+        );
+      }
 
-      return { id, vendorMaster: applied };
+      return { id, his, focus, summary, stored, vendorMaster: applied };
     });
 
+    if (!runRow) {
+      // Kept, and waiting for the other side's file to reconcile against.
+      const file = his ?? focus;
+      const waitingFor = his ? FOCUS : HIS;
+      logActivity(req, {
+        action: 'MSME_FILE_KEPT',
+        target: file.fileName,
+        summary: his
+          ? `Uploaded the HIS vendor master alone, with no FOCUS list on file to reconcile it against: ` +
+            `${vendorMaster.added.toLocaleString('en-IN')} vendors added to the Vendor Master, ` +
+            `${vendorMaster.updated.toLocaleString('en-IN')} updated`
+          : 'Uploaded the FOCUS list alone, with no HIS vendor master on file to reconcile it against',
+        details: {
+          side: his ? HIS : FOCUS,
+          file: file.fileName,
+          sheet: file.sheetName,
+          rows: file.rows.length,
+          ...(vendorMaster ? vendorMasterDetails(vendor, vendorMaster) : {}),
+        },
+      });
+      return res.status(201).json({ run: null, waitingFor, vendorMaster });
+    }
+
     const run = await findRun(runRow);
+    const { statuses } = summary;
+    const alone = !vendor
+      ? ' (FOCUS list alone, against the kept HIS vendor master)'
+      : !account
+        ? ' (HIS vendor master alone, against the kept FOCUS list)'
+        : '';
 
     logActivity(req, {
       action: 'MSME_RECO_RUN',
-      target: `${vendorFile.originalname} vs ${accountFile.originalname}`,
+      target: `${his.fileName} vs ${focus.fileName}`,
       summary:
-        `Ran HIS vs FOCUS reco on ${summary.vendorRowCount.toLocaleString('en-IN')} HIS vendors: ` +
+        `Ran HIS vs FOCUS reco${alone} on ${summary.vendorRowCount.toLocaleString('en-IN')} HIS vendors: ` +
         `${statuses[STATUS.MATCHED].toLocaleString('en-IN')} matched, ` +
         `${statuses[STATUS.MISMATCH].toLocaleString('en-IN')} mismatched, ` +
         `${statuses[STATUS.NOT_IN_ACCOUNTS].toLocaleString('en-IN')} not in Accounts`,
       details: {
         runId: run.id,
-        vendorFile: vendorFile.originalname,
-        vendorSheet: vendor.sheetName ?? null,
-        accountFile: accountFile.originalname,
+        vendorFile: his.fileName,
+        vendorFileUploaded: his.isNew,
+        vendorSheet: his.sheetName,
+        accountFile: focus.fileName,
+        accountFileUploaded: focus.isNew,
         vendorRows: summary.vendorRowCount,
         accountRows: summary.accountRowCount,
         onlyInAccounts: statuses[STATUS.NOT_IN_HIS],
         rowsStored: stored.length,
-        vendorMasterSheet: vendor.master.sheetName ?? null,
-        vendorMasterAdded: vendorMaster.added,
-        vendorMasterUpdated: vendorMaster.updated,
-        vendorMasterUnchanged: vendorMaster.unchanged,
-        vendorMasterSkipped: vendorMaster.skipped,
+        ...(vendorMaster ? vendorMasterDetails(vendor, vendorMaster) : {}),
       },
     });
 
-    return res.status(201).json({ run: mapRun(run) });
+    return res.status(201).json({ run: mapRun(run), waitingFor: null, vendorMaster });
   }),
 );
+
+/** What an upload did to the Vendor Master, for its activity log entry. */
+function vendorMasterDetails(vendor, applied) {
+  return {
+    vendorMasterSheet: vendor.master.sheetName ?? null,
+    vendorMasterAdded: applied.added,
+    vendorMasterUpdated: applied.updated,
+    vendorMasterUnchanged: applied.unchanged,
+    vendorMasterSkipped: applied.skipped,
+  };
+}
+
+/**
+ * Reconcile the two sides and store the run and its rows, inside the upload's
+ * transaction. `his` and `focus` are each an uploaded file or a kept one
+ * (`isNew` says which); `at` is the upload's time. Returns the run's id, the
+ * reco's summary and the rows stored.
+ */
+async function storeReco(client, req, his, focus, at) {
+  const { results, summary } = reconcileMsme(his.rows, focus.rows);
+  const { statuses } = summary;
+  // Every status is counted on the run; only the vendor master's rows are
+  // kept as rows -- see STORED_STATUSES.
+  const stored = results.filter((r) => STORED_STATUSES.includes(r.status));
+
+  const { rows } = await client.query(
+    `INSERT INTO msme_reco_runs
+       (vendor_file_name, vendor_sheet_name, account_file_name, vendor_row_count, account_row_count,
+        matched_count, mismatch_count, not_in_accounts_count, not_in_his_count, uploaded_by,
+        vendor_file_new, account_file_new, vendor_file_at, account_file_at, uploaded_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+     RETURNING id`,
+    [
+      his.fileName,
+      his.sheetName,
+      focus.fileName,
+      summary.vendorRowCount,
+      summary.accountRowCount,
+      statuses[STATUS.MATCHED],
+      statuses[STATUS.MISMATCH],
+      statuses[STATUS.NOT_IN_ACCOUNTS],
+      statuses[STATUS.NOT_IN_HIS],
+      req.user.id,
+      his.isNew,
+      focus.isNew,
+      his.uploadedAt,
+      focus.uploadedAt,
+      at,
+    ],
+  );
+  const id = rows[0].id;
+
+  await bulkInsert(client, 'msme_reco_rows', ROW_COLUMNS, stored, (r, i) => [
+    id,
+    i + 1,
+    r.status,
+    r.vendorCode,
+    r.accCode,
+    r.hisRowNo,
+    r.accRowNo,
+    r.warehouse,
+    r.hisStatus,
+    // null rather than '': a blank is "nothing written", and the screen
+    // shows it as a dash either way.
+    ...FIELDS.flatMap((f) => [r.his?.[f.key] || null, r.acc?.[f.key] || null]),
+    r.mismatchFields,
+    r.remarks,
+  ]);
+
+  return { id, summary, stored };
+}
 
 /**
  * Every vendor once, as a WITH clause named `cur`: each HIS vendor's row from
@@ -341,8 +520,10 @@ const CURRENT = `
  * GET /api/msme-reco/rows?view=&field=&q=&page=&pageSize=&all=
  *
  * Every vendor once (see CURRENT), with the latest reco's own details for the
- * line over the table -- `latestRun` is null before the first reco -- and how
- * many recos have been run in all.
+ * line over the table -- `latestRun` is null before the first reco -- how
+ * many recos have been run in all, and the kept file of each side (`files.HIS`,
+ * `files.FOCUS`, null while there is none): what a file uploaded alone will be
+ * held against.
  *
  * `view` is one of the cards (ALL by default); `field` narrows to the rows
  * whose `field` pair disagrees; `q` is the search box. `all=1` drops the
@@ -359,6 +540,7 @@ msmeRecoRouter.get(
   asyncHandler(async (req, res) => {
     const { rows: latestRows } = await query(`${RUN_SELECT} ORDER BY r.uploaded_at DESC, r.id DESC LIMIT 1`);
     const { rows: runCountRows } = await query('SELECT COUNT(*)::int AS n FROM msme_reco_runs');
+    const { rows: fileRows } = await query(FILE_SELECT);
 
     const view = VIEWS.has(req.query.view) ? req.query.view : ALL_VIEW;
     const field = FIELD_KEYS.includes(req.query.field) ? req.query.field : null;
@@ -420,6 +602,10 @@ msmeRecoRouter.get(
     return res.json({
       latestRun: latestRows[0] ? mapRun(latestRows[0]) : null,
       runCount: runCountRows[0].n,
+      files: {
+        [HIS]: mapFile(fileRows.find((f) => f.side === HIS)),
+        [FOCUS]: mapFile(fileRows.find((f) => f.side === FOCUS)),
+      },
       fields: PUBLIC_FIELDS,
       view,
       field,

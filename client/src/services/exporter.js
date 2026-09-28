@@ -21,6 +21,7 @@
 import { api } from '../api/client.js';
 import { CHECKPOINTS, STAGE_KEYS, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
 import { chequeNotRequired, chequePrepared, paymentNotRequired } from './cheque.js';
+import { ageingDays, todayIso } from './ageing.js';
 
 /*
  * The GRNs / Cheques switch's two values. Spelled here rather than imported
@@ -75,6 +76,20 @@ const COLUMNS = [
 ];
 
 /**
+ * The Accounts sheets' Ageing: the handover date it counts from, and the days
+ * from it to the cheque date -- or to the "as of" date picked on screen while
+ * there is none, which the third column says, since a sheet has no room for
+ * the table's "till" line. Negative where the cheque predates the handover (an
+ * advance), which Ageing To says. Worked out in sheetRows, by the table's own
+ * rule (services/ageing.js).
+ */
+const AGEING_COLUMNS = [
+  { key: 'billHandoverToAcc', label: 'BillHandOverToAcc', date: true },
+  { key: 'ageingDays', label: 'Ageing (days)', integer: true },
+  { key: 'ageingTo', label: 'Ageing To' },
+];
+
+/**
  * Valid GRNs -- both matched statuses, the ones that agree on the bill number
  * and the ones that do not. Every row here has an ageing entry, so the
  * accounts side leads throughout: Division carries the ageing
@@ -85,9 +100,9 @@ const COLUMNS = [
  * same reason -- on this tab they say nothing a reader needs. Total Amount is
  * the stores' figure, and NetAmt through PayableAmount are the accounts one;
  * Branch Code, Ageing Bill No and Ageing Vendor Name are the ageing side of a
- * comparison this report no longer draws. Handed To Accounts goes too: the tab
- * is by definition the GRNs that were handed over, and the Turnaround export is
- * where that date is read.
+ * comparison this report no longer draws. The handover date does come across,
+ * but as BillHandOverToAcc beside the Ageing it is counted from (see
+ * AGEING_COLUMNS) rather than among the reconciliation's columns.
  */
 const MATCHED_COLUMNS = [
   { key: 'status', label: 'Status' },
@@ -132,6 +147,9 @@ const MATCHED_COLUMNS = [
   // Right after the three it is read off, and before Cheque Status, which is
   // the next thing that happens to a cheque once one exists.
   { key: 'chequePrepared', label: 'Cheque Prepared' },
+  // Days from BillHandOverToAcc to ChqDate -- to today while there is no
+  // ChqDate -- as the table's Ageing column (ageing_days in routes/results.js).
+  ...AGEING_COLUMNS,
   // The bank statement's answer on that cheque. Blank when no statement carries
   // the number, which is not the same as "not cleared".
   { key: 'chequeStatus', label: 'Cheque Status' },
@@ -162,6 +180,8 @@ const ACCOUNTS_CHEQUE_COLUMNS = [
   { key: 'chequeAmount', label: 'Cheque Amount', numeric: true },
   { key: 'paymentDocNo', label: 'PaymentDocNo' },
   { key: 'accountNo', label: 'Account No' },
+  // The representative bill's, as the table's Ageing column on Cheque view.
+  ...AGEING_COLUMNS,
   { key: 'chequeStatus', label: 'Cheque Status' },
   { key: 'csdStage', label: 'CSD Status' },
 ];
@@ -554,6 +574,15 @@ function toCell(row, column) {
     return CSD_STAGE_LABELS[row.csdStage] || 'Not sent';
   }
   if (column.key === 'chequeStatus') return CHEQUE_STATUS_LABELS[row.chequeStatus] ?? null;
+  // What Ageing (days) counts to: the cheque date, or the "as of" date picked
+  // on screen while there is none -- the table's "till" line, in words a sheet
+  // can filter by. See sheetRows and services/ageing.js.
+  if (column.key === 'ageingTo') {
+    if (row.ageingDays === null || row.ageingDays === undefined) return null;
+    if (!row.chqDate) return `As of ${toDisplayDate(row.ageingAsOf)}`;
+    // Negative: the cheque was cut before the bill reached Accounts -- an advance.
+    return row.ageingDays < 0 ? 'Cheque date (before handover)' : 'Cheque date';
+  }
   // Words rather than Yes/No: this is read by people, and Excel's filter
   // dropdown should offer the answer rather than make one up from the
   // heading. Null where the question does not apply
@@ -884,7 +913,7 @@ function save(blob, fileName) {
  * level here so the column keys resolve like every other column's, the same
  * way the table itself reads them.
  */
-async function sheetRows(batchId, spec, { q, location, msme, spans, view }) {
+async function sheetRows(batchId, spec, { q, location, msme, spans, view, ageingAsOf }) {
   const { name, rows: raw } = await api.exportRows(batchId, spec.status, {
     q,
     location,
@@ -907,7 +936,9 @@ async function sheetRows(batchId, spec, { q, location, msme, spans, view }) {
           totalDays: totalDays(r),
           ...Object.fromEntries(spans.map((span) => [spanId(span), spanDays(r, span)])),
         }))
-      : raw;
+      : // The Ageing, as the table shows it: to the cheque date, or to the
+        // "as of" date picked on screen -- see services/ageing.js.
+        raw.map((r) => ({ ...r, ageingDays: ageingDays(r, ageingAsOf), ageingAsOf }));
   return { name, rows };
 }
 
@@ -970,7 +1001,11 @@ async function inBatches(items, work) {
  * vendor). It narrows every sheet, as it narrows every card on screen, and it
  * joins the file name, so an MSME-only workbook is not mistaken for the whole.
  */
-export async function exportSection(batchId, sheets, { q, location, msme, spans = [], accountsView } = {}) {
+export async function exportSection(
+  batchId,
+  sheets,
+  { q, location, msme, spans = [], accountsView, ageingAsOf = todayIso() } = {},
+) {
   // The GRNs / Cheques switch reaches the Accounts sheets only: those are the
   // rows it changes on screen.
   const viewFor = (s) => (s.status === 'VALID' ? accountsView : undefined);
@@ -981,6 +1016,7 @@ export async function exportSection(batchId, sheets, { q, location, msme, spans 
       msme,
       spans,
       view: viewFor(s) === ACCOUNTS_CHEQUE_VIEW ? ACCOUNTS_CHEQUE_VIEW : undefined,
+      ageingAsOf,
     }),
   );
   const name = fetched.find((f) => f.name)?.name ?? '';
@@ -1242,21 +1278,33 @@ export function pickedValue(row, field) {
 }
 
 /**
+ * The address a vendor's letters go to: the one saved on the Vendor Master
+ * screen, or -- until somebody saves one -- the HIS file's own ADDRESS, which
+ * the server sends as `hisAddress` (it is not a column of its own on screen).
+ */
+export function vendorAddress(row) {
+  return row?.address || row?.hisAddress || '';
+}
+
+/**
  * The master's columns in the order the screen and the export both show them:
  * VENDOR_CODE and VENDOR_NAME first -- the two every row is read by, which the
- * screen holds at the left edge -- then the two picked ones (VENDOR_PICKED),
- * then every other column in the stored order (the latest file's own).
+ * screen holds at the left edge -- then the two picked ones (VENDOR_PICKED) and
+ * the Address typed for printing, then every other column in the stored order
+ * (the latest file's own).
  *
  * Each is `{ key, label, index }`, `index` pointing into `headers`; a picked
- * one has index -1 and names its field as `picked`. Keys are by position
- * (`c3`), not by header: the headers are the files' to choose, and one spelled
- * like a key toCell treats specially ("status") must still come out as written.
+ * one has index -1 and names its field as `picked`, and the Address has index
+ * -1 and `address: true`. Keys are by position (`c3`), not by header: the
+ * headers are the files' to choose, and one spelled like a key toCell treats
+ * specially ("status") must still come out as written.
  */
 export function vendorMasterLayout({ headers = [], codeIndex = -1, nameIndex = -1 } = {}) {
   const lead = [codeIndex, nameIndex].filter((i) => i >= 0);
   return [
     ...lead.map((index) => ({ key: `c${index}`, label: headers[index], index })),
     ...Object.entries(VENDOR_PICKED).map(([field, spec]) => ({ key: `vm_${field}`, label: spec.label, index: -1, picked: field })),
+    { key: 'vm_address', label: 'Address', index: -1, address: true },
     ...headers.map((label, index) => ({ key: `c${index}`, label, index })).filter((c) => !lead.includes(c.index)),
   ];
 }
@@ -1278,7 +1326,11 @@ export async function exportVendorMaster({ view, label, q } = {}) {
     Object.fromEntries(
       layout.map((c) => [
         c.key,
-        c.picked ? VENDOR_PICKED[c.picked].options[pickedValue(r, c.picked)] : r.cells[c.index] ?? null,
+        c.picked
+          ? VENDOR_PICKED[c.picked].options[pickedValue(r, c.picked)]
+          : c.address
+            ? vendorAddress(r) || null
+            : r.cells[c.index] ?? null,
       ]),
     ),
   );

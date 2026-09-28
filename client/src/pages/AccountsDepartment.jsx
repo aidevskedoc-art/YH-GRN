@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
+import { todayIso } from '../services/ageing.js';
 import { singlePress } from '../services/press.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
@@ -175,6 +176,10 @@ export default function AccountsDepartment() {
   const [supplyType, setSupplyType] = useState('');
   // Which rows request is the latest -- see loadRows.
   const rowsRequest = useRef(0);
+  // The day a bill with no cheque yet counts its Ageing to -- the "Ageing as
+  // of" input, today until changed. The table and the export both read it;
+  // see services/ageing.js.
+  const [ageingAsOf, setAgeingAsOf] = useState(todayIso);
   // One branch, by the name the configuration screen gives it, or '' for every
   // branch in scope. It narrows the whole page together -- rows, cards, option
   // counts and the export -- because it is a scope rather than a question
@@ -626,6 +631,7 @@ export default function AccountsDepartment() {
         msme,
         spans,
         accountsView: status === VALID ? accountsView : inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : undefined,
+        ageingAsOf,
       });
     } catch (err) {
       setError(err.message);
@@ -958,6 +964,25 @@ export default function AccountsDepartment() {
             ))}
           </select>
 
+          {/* The day a bill with no cheque yet counts its Ageing to -- today
+              until changed, and back to today if cleared. Not on the ageing
+              view, which has no Ageing column. */}
+          {status !== TURNAROUND && (
+            <label
+              className="ageing-asof"
+              title="Ageing counts to this date for a bill with no cheque date yet"
+            >
+              Ageing as of
+              <input
+                className="field__input stage-filter"
+                type="date"
+                value={ageingAsOf}
+                onChange={(e) => setAgeingAsOf(e.target.value || todayIso())}
+                aria-label="Count the Ageing of bills with no cheque yet to this date"
+              />
+            </label>
+          )}
+
           <input
             className="field__input search"
             type="search"
@@ -1060,6 +1085,7 @@ export default function AccountsDepartment() {
               selected={selected}
               onToggleRow={toggleSelectRow}
               accountsView={inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : accountsView}
+              ageingAsOf={ageingAsOf}
             />
             <div className="pager">
               <span className="pager__info">

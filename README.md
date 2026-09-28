@@ -257,6 +257,23 @@ No cheque is meant for a bill in either of two cases:
   **Pending With User/Status** contains "cash" (for example `LAKSHMI CASH BILLS`). Pending With
   User/Status is only checked when the department is Accounts.
 
+The Accounts table (and its Cheque Not Prepared section) has an **Ageing** column: the days from
+**BillHandOverToAcc** to **ChqDate**.
+
+- **A bill with no cheque date yet** counts to the **Ageing as of** date in the toolbar instead.
+  That date starts at today; pick another, a month end for example, and the column recounts at
+  once.
+- **A negative figure** means the cheque is dated before the handover, which is almost always an
+  advance (PaymentDocNo `ADVP:…`). A bill with no cheque also goes negative when the as-of date is
+  before its handover.
+- **A dash** means there is no BillHandOverToAcc date to count from.
+
+The cell shows the figure only; hovering over it shows the dates it counts between.
+
+The Excel export carries it as BillHandOverToAcc, Ageing (days) and Ageing To ("Cheque date",
+"Cheque date (before handover)", or "As of" the chosen date). It uses the same rule and the same
+as-of date as the screen.
+
 A bill with a cheque already prepared stays under Cheque Prepared either way. Both rules are
 checked on every page load, so marking a vendor Inter, or a new BPAD register, moves its bills
 straight away. Pressing a card filters the table to its GRNs. The Excel export's Cheque Prepared
@@ -417,12 +434,27 @@ change a URL and a stored grant for no visible gain.
 - **`02. 010Account`**: the Accounts vendor list. Its header is on row 4, under a title, a group
   band and a row of internal names. The parser finds it by the column names.
 
-Upload both files with **New reco**. There is no choosing a reco: the screen shows every vendor at
+Upload the files with **New reco**: both, or **either one alone**. The server keeps the latest file
+of each side (`msme_reco_files`), so a new Accounts list on its own is reconciled against the latest
+HIS vendor master, and a new HIS vendor master on its own against the latest Accounts list. The form
+names the file on hand for each side, and the line over the table marks a file that was reused
+with the date it was uploaded.
+
+If the other side has no file on hand yet, no reco can run, but the upload still goes through: the
+file is kept for when the other one comes, and an HIS vendor master still adds its new vendors to
+the Vendor Master. So **to add vendors, upload the HIS vendor master alone** at any time. After
+updating to this version, `npm run migrate` rebuilds the HIS side from the latest reco, so an
+Accounts list can be reconciled alone straight away. The Accounts side can't be rebuilt, because
+the codes only Accounts has were never stored: until the next Accounts list is uploaded, an HIS
+vendor master alone updates the Vendor Master without a reco.
+
+There is no choosing a reco: the screen shows every vendor at
 once, **each vendor once**, from the latest reco that included it. Uploading the same files again
 replaces those vendors' rows instead of adding a second set. A vendor that the latest file no
 longer lists keeps its last reco's result. The line over the table describes the latest reco, and
-each row's **Reco date** says which reco it came from. The HIS vendor master file is also applied
-to the [Vendor Master](#vendor-master): new vendors are added and the rest are updated.
+each row's **Reco date** says which reco it came from. An uploaded HIS vendor master file is also
+applied to the [Vendor Master](#vendor-master): new vendors are added and the rest are updated. An
+Accounts list uploaded alone leaves the Vendor Master unchanged.
 
 There is no Delete. Nothing piles up that would need removing: the screen shows each vendor once,
 and the Vendor Master keeps one row per vendor.
@@ -599,8 +631,12 @@ updated, because it brings the columns and raw values the older runs couldn't.
 **To upgrade:** stop the server, run `npm run migrate`, then start it again. Don't upload or run a
 reco while the migration is running.
 
-The table shows the file's columns under their own names, except `CREATED_DATE`, which is kept but
-not shown, exported or searched. `VENDOR_CODE` and `VENDOR_NAME` come first and stay fixed on the
+The table shows the file's columns under their own names, with two exceptions, both still kept in
+the data:
+
+- `CREATED_DATE` is not shown, exported or searched.
+- `ADDRESS` is not a column of its own. It is the starting value of the **Address** column
+  described below, so there is only one address column. `VENDOR_CODE` and `VENDOR_NAME` come first and stay fixed on the
 left when you scroll sideways. Two columns follow them, each picked on this screen from a dropdown
 and saved at once:
 
@@ -610,6 +646,18 @@ and saved at once:
 
 Every vendor starts as **No** and **Regular**, including those a later reco adds, until someone picks
 otherwise.
+
+An **Address** column follows them: the address to send the vendor's letters and cheques to, with
+**Edit** and **Print** buttons under it. It shows the HIS file's own `ADDRESS` until someone saves
+another. The row shows up to three lines, and the popup has the rest.
+
+- **Edit** opens a popup to change the address and save it. It keeps line breaks, up to 1,000
+  characters. Saving the HIS address unchanged, or clearing the box, keeps following the HIS file.
+- **Print** prints just the vendor's name and that address, laid out for an envelope. The popup
+  also has Print, which prints what is in the box whether or not it's saved.
+
+A saved address is never changed by a later reco. The Excel export has it as **Address**, and the
+search box finds it.
 
 No file carries either, so a later reco never changes them. Each change is recorded in the activity
 log under **Vendor Master**, with the value before (`PATCH /api/vendor-master/:id`).

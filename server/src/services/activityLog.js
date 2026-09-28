@@ -53,6 +53,9 @@ export const ACTIONS = {
   BRANCH_UPDATE: { label: 'Updated branch', category: 'CONFIG' },
   BRANCH_DELETE: { label: 'Deleted branch', category: 'CONFIG' },
   MSME_RECO_RUN: { label: 'Ran HIS vs FOCUS reco', category: 'MSME' },
+  // One file uploaded with nothing on file for the other side to reconcile it
+  // against: kept for when it comes, and an HIS file applied to the Vendor Master.
+  MSME_FILE_KEPT: { label: 'Uploaded HIS vs FOCUS file', category: 'MSME' },
   // No longer written -- a reco run cannot be deleted now -- but kept so the
   // entries logged while it could still read as what they were.
   MSME_RECO_DELETE: { label: 'Deleted HIS vs FOCUS reco', category: 'MSME' },
