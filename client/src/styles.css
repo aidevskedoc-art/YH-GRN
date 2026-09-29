@@ -2110,8 +2110,8 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 .stat--moved_to_accounts .stat__value, .stat--moved_to_accounts .stat__amount { color: var(--brand-700); }
 .stat--rejected .stat__value, .stat--rejected .stat__amount { color: var(--danger); }
 
-/* Compact cards, on the Results, Accounts Department, CS Department and HIS vs
-   FOCUS Reco screens:
+/* Compact cards, on the HIS vs FOCUS Reco screen (the Results, Accounts
+   Department and CS Department screens use the chips further down):
    the cards only pick a view, and at full size a row of them pushed the table
    below the fold. Less padding, a smaller number and amount, and tiles of
    220px and up, as many as the row holds, sharing its width -- wide enough
@@ -2228,6 +2228,427 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   .cards--compact .stat { padding: 9px 12px 9px 16px; }
   .cards--compact .stat__value { font-size: 19px; }
   .cards--compact .stat__amount { font-size: 12px; overflow-wrap: anywhere; }
+}
+
+/* --- The summary row as outlined chips, on the Results, Accounts Department
+   and CS Department screens.
+
+   Even compact, the tiles shared the row's width between them, so four cards
+   stretched into four broad slabs; and a strip of tabs inside one bar, tried
+   next, lost the thing that made the chosen card easy to find -- its border.
+   So each figure is its own small card again, sized to its own words: the
+   name on one line, then the count in its tone with the amount beside it.
+   Every chip wears its tone as a border, softened at rest, and the chosen one
+   takes the ring the tiles' active card has always had: border and ring in
+   its key, its tint, and a glow of the same colour beneath.
+
+   A chip has no line for the hint, so the hint leads the tooltip instead (see
+   tabTitle in services/resultsViews.js) and stays in the button's text, off
+   screen, for a screen reader. The tone classes, `.is-active` and `aria-pressed` are the
+   tiles' own; only the shape changes. After every rule above, so each
+   override here wins at the same specificity. */
+.cards--tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  /* A little more between lines than between chips, so a chosen chip's glow
+     clears the top of the chip under it when the row wraps. */
+  gap: 10px 8px;
+  margin-bottom: 16px;
+  perspective: none;
+  /* How strongly the chosen chip's glow is coloured. The dark ground takes
+     the tiles' 60%; on daylight the same mix went muddy under the darker
+     light-skin tones, so it is eased back there. */
+  --chip-glow: 60%;
+  /* The corner glow's strength at rest, under the pointer and chosen. */
+  --chip-sheen: 0.14;
+  --chip-sheen-hover: 0.24;
+  --chip-sheen-on: 0.26;
+  /* The band of light that crosses a chip on hover, as it crosses every card. */
+  --chip-shine: color-mix(in srgb, var(--text) 22%, transparent);
+  /* The Not Required pair's two segments, at rest and under the pointer. */
+  --half-bg: color-mix(in srgb, var(--text) 3%, transparent);
+  --half-edge: color-mix(in srgb, var(--text) 9%, transparent);
+  --half-bg-hover: color-mix(in srgb, var(--text) 7%, transparent);
+  --half-edge-hover: color-mix(in srgb, var(--text) 16%, transparent);
+}
+/* Daylight: a softer glow, and white segments with a hairline rather than a
+   grey wash, which turned beige over the chosen pair's peach tint. */
+[data-theme="light"] .cards--tabs {
+  --chip-glow: 42%;
+  --chip-sheen: 0.08;
+  --chip-sheen-hover: 0.14;
+  --chip-sheen-on: 0.14;
+  --chip-shine: var(--surface);
+  --half-bg: var(--surface);
+  --half-edge: var(--border);
+  --half-bg-hover: var(--surface);
+  --half-edge-hover: var(--border-strong);
+}
+
+/* One chip. --chip-key and --chip-tint are what the chosen state paints
+   with: the card's own tone, except on the toneless desk cards (below).
+   --chip-edge is the resting border, the key mixed into the ordinary
+   hairline so a row of ten does not shout; hover firms it up. */
+.cards--tabs .stat {
+  --chip-key: var(--stat-key);
+  --chip-tint: var(--stat-tint);
+  --chip-edge: color-mix(in srgb, var(--stat-key) 42%, var(--border));
+  --chip-edge-hover: color-mix(in srgb, var(--stat-key) 72%, var(--border));
+  --chip-wash: color-mix(in srgb, var(--stat-tint) 45%, transparent);
+  --chip-wash-hover: color-mix(in srgb, var(--stat-tint) 85%, transparent);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas:
+    "label label"
+    "value amount";
+  align-items: baseline;
+  align-content: center;
+  column-gap: 8px;
+  row-gap: 1px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  padding: 8px 14px 9px;
+  border: 1px solid var(--chip-edge);
+  border-radius: var(--r);
+  background-color: var(--surface);
+  background-image: var(--face);
+  box-shadow: var(--lip), inset 0 0 0 200px var(--chip-wash), var(--shadow-1);
+  transition: transform 0.3s var(--ease-out), box-shadow 0.3s ease, border-color 0.3s ease,
+    background-color 0.3s ease;
+}
+
+/* The desk cards have no tone of their own -- their key is the neutral
+   border, which mixed into the hairline all but vanished, and even
+   --border-strong is faint on daylight -- so they rest on a plain grey edge
+   drawn from the muted text colour, hover towards the brand, and, chosen,
+   borrow the brand colour outright: a grey ring on a grey row would not say
+   "this one". The Not Required frame is a desk card too, so it follows the
+   same rule. */
+.cards--tabs .stat--dept {
+  --chip-edge: color-mix(in srgb, var(--muted) 40%, var(--border));
+  --chip-edge-hover: color-mix(in srgb, var(--brand) 50%, var(--border-strong));
+  --chip-wash-hover: color-mix(in srgb, var(--brand-50) 55%, transparent);
+}
+.cards--tabs .stat--dept.is-active {
+  --chip-key: var(--brand);
+  --chip-tint: var(--brand-50);
+}
+
+/* No left key bar: the border carries the tone now. */
+.cards--tabs .stat::before { content: none; }
+
+/* Two layers, as on every card: a faint glow in the chip's tone from the top
+   right, and a band of light parked off the left edge that crosses on hover. */
+.cards--tabs .stat::after {
+  background:
+    linear-gradient(110deg, transparent 42%, var(--chip-shine) 50%, transparent 58%),
+    radial-gradient(120% 150% at 100% 0%, var(--chip-key), transparent 62%);
+  background-size: 260% 100%, 100% 100%;
+  background-repeat: no-repeat;
+  background-position: 100% 0, 0 0;
+  opacity: var(--chip-sheen);
+}
+
+.cards--tabs .stat__label {
+  grid-area: label;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--muted);
+  transition: color 0.2s ease;
+}
+/* The count stays the headline, in its tone; the amount is the second figure,
+   so it steps back to the secondary text colour. */
+.cards--tabs .stat__value {
+  grid-area: value;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+.cards--tabs .stat__amount {
+  grid-area: amount;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+/* The brand orange on its own peach tint is too faint to read at this size on
+   daylight; the darker brand step is the same colour, legible. */
+[data-theme="light"] .cards--tabs .stat--all .stat__value { color: var(--brand-700); }
+
+/* The hint lives in the tooltip; kept here for screen readers only. */
+.cards--tabs .stat__hint {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* --- hover, press, focus. Hover lifts a pixel, firms the edge and the tint,
+   and sends the light across. Scoped two classes deep so it outranks the
+   global button hover, whose `background` shorthand would otherwise wipe the
+   face sheen -- which is why the background is restated. Nothing that takes
+   up room changes between states, so pressing never shifts the row. */
+.cards--tabs .stat:hover {
+  transform: translateY(-1px);
+  border-color: var(--chip-edge-hover);
+  background-color: var(--surface);
+  background-image: var(--face);
+  box-shadow: var(--lip), inset 0 0 0 200px var(--chip-wash-hover), var(--shadow-2);
+}
+.cards--tabs .stat:hover .stat__label { color: var(--text-2); }
+.cards--tabs .stat:hover::after {
+  background-position: 0% 0, 0 0;
+  opacity: var(--chip-sheen-hover);
+  transition: opacity 0.35s ease, background-position 0.9s var(--ease-out);
+}
+.cards--tabs .stat:active { transform: translateY(0); }
+/* Keyboard focus: an outline standing clear of the chip in the text colour.
+   The app's usual ring is brand orange, which is exactly what a chosen desk
+   chip wears, so here it would read as a second selection. */
+.cards--tabs .stat:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--text) 78%, transparent);
+  outline-offset: 3px;
+}
+
+/* --- the chosen chip: the tiles' active card, whole. Its name lifts to the
+   full text colour too, so the choice does not rest on colour alone. */
+.cards--tabs .stat.is-active,
+.cards--tabs .stat.is-active:hover {
+  border-color: var(--chip-key);
+  box-shadow: 0 0 0 1px var(--chip-key), var(--lip), inset 0 0 0 200px var(--chip-tint),
+    0 16px 36px -14px color-mix(in srgb, var(--chip-key) var(--chip-glow), transparent);
+}
+.cards--tabs .stat.is-active .stat__label { color: var(--text); }
+.cards--tabs .stat.is-active::after { opacity: var(--chip-sheen-on); }
+
+/* --- a chip that opens another section rather than filtering: the arrow sits
+   in a small round badge in the chip's tone, in a column of its own at the end
+   of the name's line, and nudges forward on hover. Pulled in by its margins so
+   it does not make that line any taller. */
+.cards--tabs .stat--go {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "label label go"
+    "value amount amount";
+}
+.cards--tabs .stat--go .stat__go {
+  grid-area: go;
+  position: static;
+  align-self: center;
+  justify-self: end;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  margin: -3px -5px -3px 6px;
+  padding: 4px;
+  border-radius: var(--r-pill);
+  color: var(--stat-key);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 35%, transparent);
+  opacity: 0.9;
+}
+.cards--tabs .stat--dept .stat__go { color: var(--text-2); }
+.cards--tabs .stat--go:hover .stat__go { opacity: 1; transform: translateX(2px); }
+
+/* --- the Not Required pair: a frame holding two segment buttons, the name
+   above them. The frame is not a control, so it holds still under the pointer
+   and keeps its resting (or chosen) look; only the halves answer. Not a size
+   container here: a chip sized by its content cannot also size its content by
+   itself, and would collapse. */
+.cards--tabs .stat--pair {
+  container-type: normal;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  /* Stretch, not the chips' baseline: in a column that falls back to a start
+     alignment which ignored the segments' negative margins. */
+  align-items: stretch;
+  gap: 0;
+  cursor: default;
+}
+.cards--tabs .stat--pair:hover { transform: none; }
+.cards--tabs .stat--pair:hover::after { background-position: 100% 0, 0 0; }
+.cards--tabs .stat--pair:not(.is-active):hover {
+  border-color: var(--chip-edge);
+  box-shadow: var(--lip), inset 0 0 0 200px var(--chip-wash), var(--shadow-1);
+}
+.cards--tabs .stat--pair:not(.is-active):hover .stat__label { color: var(--muted); }
+.cards--tabs .stat--pair:not(.is-active):hover::after { opacity: var(--chip-sheen); }
+/* The segments' text lines up under the name; their outlines sit in the
+   frame's padding. */
+.cards--tabs .stat__halves {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px -7px 0;
+}
+.cards--tabs .stat--pair .stat__half {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 7px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--half-bg);
+  box-shadow: inset 0 0 0 1px var(--half-edge);
+  white-space: nowrap;
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+.cards--tabs .stat--pair .stat__half:hover:not(:disabled) {
+  background: var(--half-bg-hover);
+  box-shadow: inset 0 0 0 1px var(--half-edge-hover);
+}
+/* The pressed half: a brand wash, a brand outline and its name in the brand
+   colour, inside the frame's own brand ring. */
+.cards--tabs .stat--pair .stat__half.is-active,
+.cards--tabs .stat--pair .stat__half.is-active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 45%, transparent);
+}
+.cards--tabs .stat--pair .stat__half:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--text) 78%, transparent);
+  outline-offset: -2px;
+}
+.cards--tabs .stat__half-label { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.cards--tabs .stat--pair .stat__half.is-active .stat__half-label { color: var(--brand-700); }
+.cards--tabs .stat--pair .stat__value { font-size: 16px; line-height: 1.2; }
+.cards--tabs .stat--pair .stat__amount { font-size: 11.5px; }
+
+/* --- a short row: the CS Department's four stage chips, with nothing else on
+   the line. Their names are single words ("Queued", "Rejected"), so sized to
+   their words they were four stubs at the left of an empty row; a common
+   minimum gives them the presence of a row of cards. Above phone width only --
+   there the chips already take half the row each. */
+@media (min-width: 641px) {
+  .cards--tabs.cards--roomy .stat { min-width: 230px; }
+}
+
+/* --- phones: two chips to a line, each half the row, so the row reads as a
+   tidy block rather than a ragged cloud. The chip becomes a wrapping flex
+   box: a long name may take two lines, balanced so no word is left alone,
+   and the figures sit on the chip's bottom line, so neighbours line their
+   counts up. A chip left alone at the end stays half width rather than
+   stretching into a bar that looks like the pair. The pair needs both halves
+   side by side, so it takes a line of its own, each half splitting it evenly
+   with its amount under its name and count; nothing is reordered, and the
+   chip before it fills its line rather than leave a hole. */
+@media (max-width: 640px) {
+  /* Sized by the page, so it can be asked how wide it is (see below). */
+  .cards--tabs { container: summary-chips / inline-size; gap: 8px 6px; }
+  .cards--tabs .stat {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    align-content: space-between;
+    column-gap: 6px;
+    row-gap: 2px;
+    flex: 1 1 calc(50% - 3px);
+    max-width: calc(50% - 3px);
+    padding: 7px 10px 8px;
+  }
+  /* Two rules, not one list: a browser without :has() would drop the pair's
+     width along with it. */
+  .cards--tabs .stat--pair { max-width: 100%; }
+  .cards--tabs .stat:has(+ .stat--pair) { max-width: 100%; }
+  .cards--tabs .stat__label {
+    flex: 1 1 100%;
+    white-space: normal;
+    overflow: visible;
+    text-wrap: balance;
+  }
+  .cards--tabs .stat__value { order: 2; font-size: 17px; }
+  .cards--tabs .stat__amount { order: 3; font-size: 11.5px; }
+  .cards--tabs .stat--go .stat__label { flex-basis: calc(100% - 24px); }
+  .cards--tabs .stat--go .stat__go { order: 1; margin: -3px -4px -3px 0; }
+  .cards--tabs .stat--pair {
+    flex-basis: 100%;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    align-content: normal;
+  }
+  .cards--tabs .stat--pair .stat__halves { flex-wrap: nowrap; }
+  .cards--tabs .stat--pair .stat__half {
+    flex: 1 1 0;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "hl value"
+      "amount amount";
+    column-gap: 6px;
+    padding: 3px 7px 4px;
+  }
+  .cards--tabs .stat--pair .stat__half-label { grid-area: hl; }
+  .cards--tabs .stat--pair .stat__half .stat__value { grid-area: value; }
+  .cards--tabs .stat--pair .stat__half .stat__amount { grid-area: amount; }
+}
+/* The narrowest phones -- a row under 350px, which is a 375px screen or less
+   once the page's padding is off -- have no room for a crore-sized amount
+   beside its count in half a row. Left to wrap, the amount dropped under the
+   count on some chips and not on their neighbours, and the counts stopped
+   lining up. So there every chip stacks the same way -- name, count, amount
+   -- and the name's row takes up any spare height, which keeps the figures on
+   the chip's foot level with its neighbour's however long either name is. */
+@container summary-chips (max-width: 349px) {
+  .cards--tabs .stat:not(.stat--pair) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: 1fr auto auto;
+    grid-template-areas:
+      "label go"
+      "value value"
+      "amount amount";
+    align-items: start;
+    align-content: stretch;
+    column-gap: 0;
+    row-gap: 0;
+  }
+  .cards--tabs .stat:not(.stat--pair) > .stat__value { padding-top: 3px; }
+  .cards--tabs .stat--go .stat__go { align-self: start; margin: -2px -4px -4px 6px; }
+}
+
+/* Forced colours drop the box-shadows that carry the chosen ring, the tint
+   and the pressed half's outline, so the choice is redrawn in outlines the
+   system colours can paint, with the chosen name underlined as a mark that
+   does not depend on colour at all. */
+@media (forced-colors: active) {
+  .cards--tabs .stat.is-active,
+  .cards--tabs .stat--pair .stat__half.is-active { outline: 2px solid Highlight; outline-offset: -1px; }
+  .cards--tabs .stat.is-active > .stat__label,
+  .cards--tabs .stat--pair .stat__half.is-active .stat__half-label {
+    text-decoration: underline 2px;
+    text-underline-offset: 3px;
+  }
+  .cards--tabs .stat:focus-visible { outline: 3px solid CanvasText; outline-offset: 2px; }
+  .cards--tabs .stat--pair .stat__half:focus-visible { outline: 2px solid CanvasText; outline-offset: 1px; }
+}
+
+/* No lift, sweep or arrow nudge for anyone who has asked for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  .cards--tabs .stat,
+  .cards--tabs .stat::after,
+  .cards--tabs .stat:hover::after,
+  .cards--tabs .stat__label,
+  .cards--tabs .stat--go .stat__go,
+  .cards--tabs .stat--pair .stat__half { transition: none; }
+  .cards--tabs .stat:hover,
+  .cards--tabs .stat--go:hover .stat__go { transform: none; }
 }
 
 /* --- toolbar */

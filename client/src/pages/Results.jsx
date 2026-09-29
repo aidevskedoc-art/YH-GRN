@@ -43,6 +43,7 @@ import {
   actionFilterOptions,
   progressFilterOptions,
   sectionSheets,
+  tabTitle,
 } from '../services/resultsViews.js';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import { expandCheques, resultsChequeBills } from '../services/chequeGroups.js';
@@ -1270,10 +1271,9 @@ export default function Results() {
       <BackButton trail={sectionTrail} describe={describeSection} />
 
       {summary && cards.length > 0 && (
-        /* Compact tiles, each capped in width, so a row of one or two --
-           Pending with no register uploaded -- keeps the cards their own size
-           rather than stretching them across the row. See .cards--compact. */
-        <div className="cards cards--compact">
+        /* Outlined chips, each as wide as its own name and figures, rather
+           than tiles sharing out the row's width. See .cards--tabs. */
+        <div className="cards cards--tabs">
           {cards.map((card) =>
             card.kind === 'missing' ? (
               /* The GRNs the register had no entry for -- in practice goods
@@ -1294,11 +1294,12 @@ export default function Results() {
                    card is what clears it; see headLabel. */
                 onClick={singlePress(() => selectPendingDept(NOT_IN_BPAD))}
                 aria-pressed={pendingDept === NOT_IN_BPAD}
-                title={
+                title={tabTitle(
+                  'GRNs Not Finalized',
                   pendingDept === NOT_IN_BPAD
                     ? `Showing only the GRNs with no register entry — press ${headLabel()} for every row`
-                    : 'Show only the GRNs the BPAD register has no entry for'
-                }
+                    : 'Show only the GRNs the BPAD register has no entry for',
+                )}
               >
                 <div className="stat__label">{card.label}</div>
                 <div className="stat__value">
@@ -1405,7 +1406,10 @@ export default function Results() {
                 type="button"
                 className={`card stat stat--${card.tone ?? 'dept'} stat--go`}
                 onClick={singlePress(() => selectStatus(card.opens))}
-                title={`Open the ${card.label} section — split by Stents and Regular`}
+                title={tabTitle(
+                  progressCardFigures(card, summary, byCheque).hint,
+                  `Open the ${card.label} section — split by Stents and Regular`,
+                )}
               >
                 <IconArrowRight size={15} className="stat__go" />
                 <div className="stat__label">{card.label}</div>
@@ -1431,11 +1435,12 @@ export default function Results() {
                 }`}
                 onClick={singlePress(() => selectSupplyType(card.supplyType))}
                 aria-pressed={supplyType === card.supplyType}
-                title={
+                title={tabTitle(
+                  card.hint,
                   supplyType === card.supplyType
                     ? `Showing ${card.label} only — press ${headLabel()} for every GRN with no cheque prepared`
-                    : `Show only the ${card.label} GRNs with no cheque prepared`
-                }
+                    : `Show only the ${card.label} GRNs with no cheque prepared`,
+                )}
               >
                 <div className="stat__label">{card.label}</div>
                 <div className="stat__value">
@@ -1471,11 +1476,12 @@ export default function Results() {
                 }`}
                 onClick={singlePress(() => selectProgress(card.progress))}
                 aria-pressed={progress === card.progress}
-                title={
+                title={tabTitle(
+                  progressCardFigures(card, summary, byCheque).hint,
                   progress === card.progress
                     ? `Showing ${card.label} only — press ${headLabel()} for every row`
-                    : `Show only the ${card.label} rows`
-                }
+                    : `Show only the ${card.label} rows`,
+                )}
               >
                 <div className="stat__label">{card.label}</div>
                 {/* GRN counts lead on GRN view, cheque counts on Cheque view
@@ -1512,11 +1518,12 @@ export default function Results() {
                 }`}
                 onClick={singlePress(() => selectProgress(card.stage))}
                 aria-pressed={progress === card.stage}
-                title={
+                title={tabTitle(
+                  csdCardFigures(card, summary, byCheque).hint,
                   progress === card.stage
                     ? `Showing ${card.label} only — press ${headLabel()} for every row`
-                    : `Show only the ${card.label} rows`
-                }
+                    : `Show only the ${card.label} rows`,
+                )}
               >
                 <div className="stat__label">{card.label}</div>
                 {/* GRN count or cheque count first, by view -- see csdCardFigures. */}
@@ -1555,7 +1562,7 @@ export default function Results() {
                 }`}
                 onClick={singlePress(() => pressBucket(card))}
                 aria-pressed={bucketActive(card)}
-                title={bucketTitle(card)}
+                title={tabTitle(card.hint, bucketTitle(card))}
               >
                 <div className="stat__label">{bucketLabel(card)}</div>
                 <div className="stat__value">

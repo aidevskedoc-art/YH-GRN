@@ -32,7 +32,7 @@ import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import Sheet from '../components/Sheet.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from '../components/VendorCells.jsx';
-import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, leadFigures } from '../services/resultsViews.js';
+import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, leadFigures, tabTitle } from '../services/resultsViews.js';
 import { csdChequeHandovers, expandCheques } from '../services/chequeGroups.js';
 
 
@@ -882,7 +882,10 @@ export default function Csd() {
       </div>
 
       {data?.stages && (
-        <div className="cards cards--compact">
+        /* The same outlined chips as the results screen, held to a common
+           minimum width: four one-word stages are the whole row here. See
+           .cards--tabs and .cards--roomy. */
+        <div className="cards cards--tabs cards--roomy">
           {CARD_STAGES.map((s) => {
             const bucket = data.stages[s.key] || { count: 0, cheques: 0, amount: 0 };
             // GRN count first on GRN view, cheque count first on Cheque view.
@@ -894,11 +897,12 @@ export default function Csd() {
                 className={`card stat stat--${s.tone} ${stage === s.key ? 'is-active' : ''}`}
                 onClick={singlePress(() => applyStage(s.key))}
                 aria-pressed={stage === s.key}
-                title={
+                title={tabTitle(
+                  `${figures.sub} ${s.note}`,
                   stage === s.key
                     ? `Showing ${s.label} only — choose All stages in the stage filter for the whole queue`
-                    : `Show only the ${s.label} handovers`
-                }
+                    : `Show only the ${s.label} handovers`,
+                )}
               >
                 <div className="stat__label">{s.label}</div>
                 <div className="stat__value">{figures.value.toLocaleString('en-IN')}</div>

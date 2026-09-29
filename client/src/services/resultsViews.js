@@ -252,6 +252,17 @@ export function leadFigures({ grns = 0, cheques = 0 }, byCheque) {
   return { value, sub: `${n.toLocaleString('en-IN')} ${noun}${n === 1 ? '' : 's'}` };
 }
 
+/**
+ * A summary card's tooltip. The cards are compact chips now (.cards--tabs in
+ * styles.css) with no line for the hint -- on the cheque and CSD cards, the
+ * second count -- so it leads the tooltip, ahead of whatever the press does.
+ * Shared by the results screen, the Accounts Department and the CS
+ * Department, which draw the same chips.
+ */
+export function tabTitle(hint, title) {
+  return [hint, title].filter(Boolean).join(' — ') || undefined;
+}
+
 /** The ageing view, same. See TURNAROUND above for the `card: false`. */
 export const TURNAROUND_TAB = {
   status: TURNAROUND,

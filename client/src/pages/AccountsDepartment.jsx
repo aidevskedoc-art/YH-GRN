@@ -36,6 +36,7 @@ import {
   actionFilterOptions,
   progressFilterOptions,
   sectionSheets,
+  tabTitle,
 } from '../services/resultsViews.js';
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
@@ -720,7 +721,8 @@ export default function AccountsDepartment() {
       <BackButton trail={sectionTrail} describe={describeSection} />
 
       {summary && cards.length > 0 && (
-        <div className="cards cards--compact">
+        /* The same outlined chips as the results screen. See .cards--tabs. */
+        <div className="cards cards--tabs">
           {cards.map((card) => {
             if (card.kind === 'bucket') {
               /* The count at the head of the row, and the "All" of it: every
@@ -760,11 +762,12 @@ export default function AccountsDepartment() {
                   className={`card stat stat--${card.tone ?? card.status.toLowerCase()} ${head.on ? '' : 'is-active'}`}
                   onClick={head.clear}
                   aria-pressed={!head.on}
-                  title={
+                  title={tabTitle(
+                    card.hint,
                     head.on
                       ? `Show every ${head.noun} again`
-                      : `Showing every ${head.noun} — press a card beside this to narrow it`
-                  }
+                      : `Showing every ${head.noun} — press a card beside this to narrow it`,
+                  )}
                 >
                   <div className="stat__label">{card.label}</div>
                   <div className="stat__value">{(figure.count ?? 0).toLocaleString('en-IN')}</div>
@@ -784,7 +787,10 @@ export default function AccountsDepartment() {
                 type="button"
                 className={`card stat stat--${card.tone ?? 'dept'} stat--go`}
                 onClick={singlePress(() => selectStatus(card.opens))}
-                title={`Open the ${card.label} section — split by Stents and Regular`}
+                title={tabTitle(
+                  progressCardFigures(card, summary, byCheque).hint,
+                  `Open the ${card.label} section — split by Stents and Regular`,
+                )}
               >
                 <IconArrowRight size={15} className="stat__go" />
                 <div className="stat__label">{card.label}</div>
@@ -809,11 +815,12 @@ export default function AccountsDepartment() {
                 }`}
                 onClick={singlePress(() => selectSupplyType(card.supplyType))}
                 aria-pressed={supplyType === card.supplyType}
-                title={
+                title={tabTitle(
+                  card.hint,
                   supplyType === card.supplyType
                     ? `Showing ${card.label} only — press ${CHEQUE_NOT_PREPARED_TAB.label} for every row`
-                    : `Show only the ${card.label} GRNs with no cheque prepared`
-                }
+                    : `Show only the ${card.label} GRNs with no cheque prepared`,
+                )}
               >
                 <div className="stat__label">{card.label}</div>
                 <div className="stat__value">
@@ -849,11 +856,12 @@ export default function AccountsDepartment() {
                 }`}
                 onClick={singlePress(() => selectProgress(card.progress))}
                 aria-pressed={progress === card.progress}
-                title={
+                title={tabTitle(
+                  progressCardFigures(card, summary, byCheque).hint,
                   progress === card.progress
                     ? `Showing ${card.label} only — press ${ACCOUNTS_TAB.label} for every row`
-                    : `Show only the ${card.label} rows`
-                }
+                    : `Show only the ${card.label} rows`,
+                )}
               >
                 <div className="stat__label">{card.label}</div>
                 {/* GRN view leads with the GRN count, Cheque view with the
@@ -887,11 +895,12 @@ export default function AccountsDepartment() {
                 className={`card stat stat--${card.tone} ${progress === card.stage ? 'is-active' : ''}`}
                 onClick={singlePress(() => selectProgress(card.stage))}
                 aria-pressed={progress === card.stage}
-                title={
+                title={tabTitle(
+                  csdCardFigures(card, summary, byCheque).hint,
                   progress === card.stage
                     ? `Showing ${card.label} only — press ${ACCOUNTS_TAB.label} for every row`
-                    : `Show only the ${card.label} rows`
-                }
+                    : `Show only the ${card.label} rows`,
+                )}
               >
                 <div className="stat__label">{card.label}</div>
                 {/* Cheque view: the cheque count big and the GRNs below it --
