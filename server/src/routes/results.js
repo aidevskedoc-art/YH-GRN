@@ -486,10 +486,46 @@ function actionCountsFrom(row) {
   return Object.fromEntries(ACTION_KEYS.map((key) => [key, row?.[key.toLowerCase()] ?? 0]));
 }
 
-/** The SQL for one Action value, or null for any -- see ACTIONS. No parameters. */
-function actionFilter(action) {
+/*
+ * NOT_SENT, spelled for a WHERE clause.
+ *
+ * PROGRESS.NOT_SENT asks whether the two LEFT JOINs found nothing -- `c.id IS
+ * NULL AND rd.id IS NULL`. As a WHERE clause the planner has no statistic for
+ * that: it takes the ids' own null fraction, which is zero, and guesses the
+ * clause keeps one GRN out of twenty thousand when it keeps nearly all of
+ * them. Believing it, it put the whole every-upload dedup (DEDUPED_RESULTS) on
+ * the inner side of a nested loop and re-read it once per GRN -- about 390
+ * million row comparisons, and three minutes for the Action dropdown's "Send to
+ * CSD" on the Accounts view.
+ *
+ * NOT EXISTS asks the same thing -- dpr_no_key is UNIQUE and NOT NULL on both
+ * tables, and the LEFT JOINs match on nothing else -- and the planner turns it
+ * into an anti-join it can estimate properly. So the rows are the same and the
+ * plan is sane.
+ *
+ * Only where it is a WHERE clause (the rows and the export). Inside the
+ * summary's FILTER aggregates, and the Cheque view's per-row `hit`, the plain
+ * form plans nothing and costs nothing, so PROGRESS and ACTIONS keep it.
+ */
+const NOT_SENT_WHERE =
+  'NOT EXISTS (SELECT 1 FROM csd_dispatches cx WHERE cx.dpr_no_key = g.dpr_no_key)' +
+  ' AND NOT EXISTS (SELECT 1 FROM record_dispatches rx WHERE rx.dpr_no_key = g.dpr_no_key)';
+
+/** PROGRESS and ACTIONS as WHERE clauses -- the same answers; see NOT_SENT_WHERE. */
+const PROGRESS_WHERE = { ...PROGRESS, NOT_SENT: NOT_SENT_WHERE };
+const ACTIONS_WHERE = {
+  ...ACTIONS,
+  SEND_TO_CSD: `(${NOT_SENT_WHERE}) AND (${PROGRESS.CHEQUE_PREPARED})`,
+};
+
+/**
+ * The SQL for one Action value, or null for any -- see ACTIONS. No parameters.
+ *
+ * `clauses` is ACTIONS_WHERE where the answer stands in a WHERE clause.
+ */
+function actionFilter(action, clauses = ACTIONS) {
   if (!action) return null;
-  const sql = ACTIONS[action];
+  const sql = clauses[action];
   return sql ? `(${sql})` : null;
 }
 
@@ -498,10 +534,12 @@ function actionFilter(action) {
  *
  * No parameters: every clause is a fixed string chosen by key from the map
  * above, so nothing from the query string reaches the statement.
+ *
+ * `clauses` is PROGRESS_WHERE where the answer stands in a WHERE clause.
  */
-function progressFilter(progress) {
+function progressFilter(progress, clauses = PROGRESS) {
   if (!progress) return null;
-  const sql = PROGRESS[progress];
+  const sql = clauses[progress];
   return sql ? `(${sql})` : null;
 }
 
@@ -791,13 +829,22 @@ function whereFrom(clauses) {
  * normally has nothing left to fold. It stays as the guard for a database not
  * yet migrated: the most recently uploaded copy wins, as it always has.
  *
+ * Grouped and sorted byte by byte (COLLATE "C"), not by the database's own
+ * English_India.1252 ordering. The groups are the same either way -- two GRN
+ * numbers are equal under either collation exactly when their bytes are, so
+ * the same copy wins -- but the Windows ordering makes this sort, which every
+ * all-uploads query runs first, more than twice as slow (74 ms against 31 ms
+ * over 19,833 rows, checked to return the identical rows). Which order the
+ * groups come out in does not matter: every query that lists rows orders them
+ * itself (rowOrder).
+ *
  * A single batch reads the plain table and pays nothing for this.
  */
 const DEDUPED_RESULTS = `(
-  SELECT DISTINCT ON (dg.dpr_no_key) dr.*
+  SELECT DISTINCT ON (dg.dpr_no_key COLLATE "C") dr.*
   FROM reconciliation_results dr
   JOIN grn_transactions dg ON dg.id = dr.grn_transaction_id
-  ORDER BY dg.dpr_no_key, dr.batch_id DESC, dr.id DESC
+  ORDER BY dg.dpr_no_key COLLATE "C", dr.batch_id DESC, dr.id DESC
 )`;
 
 /** The relation the result queries read from, deduplicated when scope is all. */
@@ -1070,7 +1117,10 @@ async function chequeRows(
   const hit = `COALESCE((${hitClauses.length > 0 ? hitClauses.join(' AND ') : 'TRUE'}), FALSE)`;
   const batchOrder = (alias) => (scope.all ? `${alias}.cv_batch_id, ` : '');
 
-  const { rows: countRows } = await query(
+  // The count, the page of cheques and the Action counts below read the same
+  // parameters and none reads another's answer, so they are sent together
+  // rather than one after another -- the same queries, awaited at once.
+  const countQuery = query(
     `SELECT COUNT(*)::int AS total FROM (
        SELECT a.cheque_no
        ${resultJoins(scope)} ${deptJoin} ${baseWhere}
@@ -1079,12 +1129,11 @@ async function chequeRows(
      ) t`,
     params,
   );
-  const total = countRows[0].total;
 
   // The vendor's Vendor Master details on the outer select, after the fold: it
   // is the representative bill's vendor, and asked here it is looked up once
   // per cheque listed rather than once per bill read.
-  const { rows } = await query(
+  const rowsQuery = query(
     `SELECT z.*, ${vendorColumns('z.vendor_code')},
             ${chequeExemptSql('z.vendor_code', 'z.dpr_no_key')} AS cheque_exempt FROM (
        SELECT q.*,
@@ -1114,10 +1163,10 @@ async function chequeRows(
   // as it stands -- the counts beside the Action dropdown's options. A cheque
   // counts under a value when any of its matching bills is there, which is
   // the same rule that lists it.
-  let actionCounts;
+  let countedQuery = null;
   if (withActionCounts) {
     const scopeHit = scopeHitClauses.length > 0 ? scopeHitClauses.join(' AND ') : 'TRUE';
-    const { rows: counted } = await query(
+    countedQuery = query(
       `SELECT ${ACTION_KEYS.map(
         (key) => `(COUNT(*) FILTER (WHERE t.${key.toLowerCase()}))::int AS ${key.toLowerCase()}`,
       ).join(', ')}
@@ -1130,8 +1179,12 @@ async function chequeRows(
        ) t`,
       params,
     );
-    actionCounts = actionCountsFrom(counted[0]);
   }
+
+  // All three together -- see countQuery above.
+  const [{ rows: countRows }, { rows }, counted] = await Promise.all([countQuery, rowsQuery, countedQuery]);
+  const total = countRows[0].total;
+  const actionCounts = counted ? actionCountsFrom(counted.rows[0]) : undefined;
 
   return {
     page,
@@ -1162,34 +1215,20 @@ resultsRouter.get(
       ...branchClauses(req, params),
     ]);
 
-    const { rows } = await query(
+    /*
+     * Every figure on this summary is its own query over the same scope, and
+     * none of them reads another's answer -- so they are all sent at once and
+     * awaited together further down, rather than one after another. The same
+     * queries with the same parameters, so the same answers; the page just
+     * waits for the slowest of them instead of for the sum.
+     */
+    const statusQuery = query(
       `SELECT r.status, COUNT(*)::int AS count, COALESCE(SUM(g.total_amount), 0) AS amount
        ${resultJoins(scope)}
        ${where}
        GROUP BY r.status`,
       params,
     );
-
-    const summary = {
-      [STATUS.MATCHED]: { count: 0, amount: 0 },
-      [STATUS.MATCHED_WITH_DIFF]: { count: 0, amount: 0 },
-      [STATUS.PENDING]: { count: 0, amount: 0 },
-      // The two matched statuses added together, which is what the Valid GRNs
-      // card reads. The per-status buckets stay in the response: the counts are
-      // cheap and the split is still worth having on hand.
-      [VALID]: { count: 0, amount: 0 },
-      total: { count: 0, amount: 0 },
-    };
-
-    for (const row of rows) {
-      summary[row.status] = { count: row.count, amount: Number(row.amount) };
-      if (VALID_MEMBERS.includes(row.status)) {
-        summary[VALID].count += row.count;
-        summary[VALID].amount += Number(row.amount);
-      }
-      summary.total.count += row.count;
-      summary.total.amount += Number(row.amount);
-    }
 
     /*
      * How many of THIS upload's GRNs sit at each CSD stage.
@@ -1226,7 +1265,7 @@ resultsRouter.get(
       'c.id IS NOT NULL',
     ]);
 
-    const { rows: csdRows } = await query(
+    const csdQuery = query(
       `SELECT c.stage,
               COUNT(*)::int AS count,
               COUNT(DISTINCT a.cheque_no) FILTER (WHERE COALESCE(a.cheque_no, '') <> '')::int AS cheques,
@@ -1236,20 +1275,6 @@ resultsRouter.get(
        GROUP BY c.stage`,
       csdParams,
     );
-
-    const csd = Object.fromEntries(
-      CSD_STAGES.map((st) => [st, { count: 0, cheques: 0, amount: 0 }]),
-    );
-    for (const row of csdRows) {
-      if (csd[row.stage]) {
-        csd[row.stage] = {
-          count: row.count,
-          cheques: row.cheques,
-          amount: Number(row.amount),
-        };
-      }
-    }
-    summary.csd = csd;
 
     /*
      * How many of this upload's GRNs the Status column would show each of its
@@ -1275,7 +1300,7 @@ resultsRouter.get(
       ...branchClauses(req, progressParams),
     ]);
 
-    const { rows: progressRows } = await query(
+    const progressQuery = query(
       `SELECT ${PROGRESS_KEYS.map(
         (key) =>
           `(COUNT(*) FILTER (WHERE ${PROGRESS[key]}))::int AS ${key.toLowerCase()}_count,
@@ -1295,22 +1320,6 @@ resultsRouter.get(
        ${progressWhere}`,
       progressParams,
     );
-
-    const p = progressRows[0] || {};
-    summary.progress = Object.fromEntries(
-      PROGRESS_KEYS.map((key) => [
-        key,
-        {
-          count: p[`${key.toLowerCase()}_count`] ?? 0,
-          amount: Number(p[`${key.toLowerCase()}_amount`] ?? 0),
-        },
-      ]),
-    );
-    // The Accounts Queue card's cheque figure -- its GRN count and amount are
-    // summary.progress.RETURNED_BY_CSD above.
-    summary.accountsQueueCheques = p.accounts_queue_cheques ?? 0;
-    // And the Accounts Received card's -- summary.progress.ACCOUNTS_RECEIVED.
-    summary.accountsReceivedCheques = p.accounts_received_cheques ?? 0;
 
     /*
      * How many cheques those prepared GRNs are spread across.
@@ -1341,18 +1350,91 @@ resultsRouter.get(
       `COALESCE(a.cheque_no, '') <> ''`,
     ]);
 
-    const { rows: chequeRows } = await query(
+    const chequeQuery = query(
       `SELECT COUNT(DISTINCT a.cheque_no)::int AS cheques
        ${resultJoins(scope)}
        ${chequeWhere}`,
       chequeParams,
     );
+
+    // All seven together -- see statusQuery above. Promise.all rather than
+    // awaiting each in turn, so a failure in one is handled rather than left
+    // as an unhandled rejection while another is being awaited.
+    const [
+      { rows },
+      { rows: csdRows },
+      { rows: progressRows },
+      { rows: chequeRows },
+      bpad,
+      pendingDepts,
+      chequeNotPreparedSupplyFigures,
+    ] = await Promise.all([
+      statusQuery,
+      csdQuery,
+      progressQuery,
+      chequeQuery,
+      bpadSummary(req, scope, req.query.q),
+      pendingDepartments(req, scope),
+      chequeNotPreparedSupply(req, scope),
+    ]);
+
+    const summary = {
+      [STATUS.MATCHED]: { count: 0, amount: 0 },
+      [STATUS.MATCHED_WITH_DIFF]: { count: 0, amount: 0 },
+      [STATUS.PENDING]: { count: 0, amount: 0 },
+      // The two matched statuses added together, which is what the Valid GRNs
+      // card reads. The per-status buckets stay in the response: the counts are
+      // cheap and the split is still worth having on hand.
+      [VALID]: { count: 0, amount: 0 },
+      total: { count: 0, amount: 0 },
+    };
+
+    for (const row of rows) {
+      summary[row.status] = { count: row.count, amount: Number(row.amount) };
+      if (VALID_MEMBERS.includes(row.status)) {
+        summary[VALID].count += row.count;
+        summary[VALID].amount += Number(row.amount);
+      }
+      summary.total.count += row.count;
+      summary.total.amount += Number(row.amount);
+    }
+
+    const csd = Object.fromEntries(
+      CSD_STAGES.map((st) => [st, { count: 0, cheques: 0, amount: 0 }]),
+    );
+    for (const row of csdRows) {
+      if (csd[row.stage]) {
+        csd[row.stage] = {
+          count: row.count,
+          cheques: row.cheques,
+          amount: Number(row.amount),
+        };
+      }
+    }
+    summary.csd = csd;
+
+    const p = progressRows[0] || {};
+    summary.progress = Object.fromEntries(
+      PROGRESS_KEYS.map((key) => [
+        key,
+        {
+          count: p[`${key.toLowerCase()}_count`] ?? 0,
+          amount: Number(p[`${key.toLowerCase()}_amount`] ?? 0),
+        },
+      ]),
+    );
+    // The Accounts Queue card's cheque figure -- its GRN count and amount are
+    // summary.progress.RETURNED_BY_CSD above.
+    summary.accountsQueueCheques = p.accounts_queue_cheques ?? 0;
+    // And the Accounts Received card's -- summary.progress.ACCOUNTS_RECEIVED.
+    summary.accountsReceivedCheques = p.accounts_received_cheques ?? 0;
+
     summary.chequesPrepared = chequeRows[0]?.cheques ?? 0;
 
     // The BPAD register's figures. Its own query over its own table -- see
     // bpadSummary -- scoped by the same search and branch clauses as
     // everything else on the page.
-    summary.bpad = await bpadSummary(req, scope, req.query.q);
+    summary.bpad = bpad;
     // Lifted to the top level because that is where the card reads its figure
     // from, by name (see countKey in the results screen's TABS). `bpad` above
     // keeps the whole tab's count, which is what the pager under its table
@@ -1364,10 +1446,10 @@ resultsRouter.get(
     // Where the pending ones are actually pending, which is the row of cards
     // under the Pending view. Sums to summary.PENDING.count -- see
     // pendingDepartments for why that matters and what the last bucket is.
-    summary.pendingDepartments = await pendingDepartments(req, scope);
+    summary.pendingDepartments = pendingDepts;
     // The Cheque Not Prepared section's Stents / Regular cards. Sums to
     // summary.progress.CHEQUE_NOT_PREPARED -- see chequeNotPreparedSupply.
-    summary.chequeNotPreparedSupply = await chequeNotPreparedSupply(req, scope);
+    summary.chequeNotPreparedSupply = chequeNotPreparedSupplyFigures;
 
     res.json({ batchId: scope.id, name: scope.name, summary });
   }),
@@ -1451,41 +1533,40 @@ resultsRouter.get(
       batchFilter(scope, params),
       statusFilter(status, params),
       searchFilter(req.query.q, params),
-      progressFilter(progress),
+      progressFilter(progress, PROGRESS_WHERE),
       pendingDeptFilter(dept, params),
       supplyTypeFilter(supplyType, 'g.vendor_code'),
       chequeFilter(chequeNo, params),
       BRANCH_SCOPE,
       ...branchClauses(req, params),
     ];
-    const where = whereFrom([...scopeClauses, actionFilter(action)]);
+    const where = whereFrom([...scopeClauses, actionFilter(action, ACTIONS_WHERE)]);
 
-    const { rows: countRows } = await query(
-      `SELECT COUNT(*)::int AS total ${resultJoins(scope)} ${deptJoin} ${where}`,
-      params,
-    );
+    // The count, the page of rows and the Action counts below read the same
+    // parameters and none reads another's answer, so they are sent together
+    // rather than one after another -- the same queries, awaited at once.
+    const [{ rows: countRows }, { rows }, counted] = await Promise.all([
+      query(`SELECT COUNT(*)::int AS total ${resultJoins(scope)} ${deptJoin} ${where}`, params),
+      query(
+        `${rowSelect(scope)} ${deptJoin} ${where} ${rowOrder(scope)}
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, pageSize, (page - 1) * pageSize],
+      ),
+      // How many rows each Action value would leave, with every other filter as
+      // it stands -- so the number beside an option is what picking it shows,
+      // inside whichever card is selected.
+      withActionCounts
+        ? query(
+            `SELECT ${ACTION_KEYS.map(
+              (key) => `(COUNT(*) FILTER (WHERE ${ACTIONS[key]}))::int AS ${key.toLowerCase()}`,
+            ).join(', ')}
+             ${resultJoins(scope)} ${deptJoin} ${whereFrom(scopeClauses)}`,
+            params,
+          )
+        : null,
+    ]);
     const total = countRows[0].total;
-
-    const { rows } = await query(
-      `${rowSelect(scope)} ${deptJoin} ${where} ${rowOrder(scope)}
-       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-      [...params, pageSize, (page - 1) * pageSize],
-    );
-
-    // How many rows each Action value would leave, with every other filter as
-    // it stands -- so the number beside an option is what picking it shows,
-    // inside whichever card is selected.
-    let actionCounts;
-    if (withActionCounts) {
-      const { rows: counted } = await query(
-        `SELECT ${ACTION_KEYS.map(
-          (key) => `(COUNT(*) FILTER (WHERE ${ACTIONS[key]}))::int AS ${key.toLowerCase()}`,
-        ).join(', ')}
-         ${resultJoins(scope)} ${deptJoin} ${whereFrom(scopeClauses)}`,
-        params,
-      );
-      actionCounts = actionCountsFrom(counted[0]);
-    }
+    const actionCounts = counted ? actionCountsFrom(counted.rows[0]) : undefined;
 
     return res.json({
       page,
@@ -1592,7 +1673,7 @@ resultsRouter.get(
       batchFilter(scope, params),
       statusFilter(status, params),
       searchFilter(req.query.q, params),
-      progressFilter(progress),
+      progressFilter(progress, PROGRESS_WHERE),
       pendingDeptFilter(dept, params),
       supplyTypeFilter(supplyType, 'g.vendor_code'),
       BRANCH_SCOPE,
@@ -1640,17 +1721,23 @@ resultsRouter.get(
  * Matched on the GRN number alone. The vendor code was already required for
  * the row to be stored at all, so adding it here would narrow nothing.
  *
- * LEFT JOIN LATERAL over one row, newest upload first, so it can neither
- * multiply a record nor drop one whose GRN report has since been deleted.
+ * A LEFT JOIN to one row per GRN number, newest upload first, so it can
+ * neither multiply a record nor drop one whose GRN report has since been
+ * deleted.
+ *
+ * Worked out once for the whole table rather than looked up per register row.
+ * It used to be a LATERAL ... LIMIT 1 per row -- the same newest row, but
+ * twenty thousand index searches and small sorts on every query this tab runs,
+ * about 90 ms each time against about 30 ms for this (checked to give every row
+ * the identical Location). Grouped byte by byte (COLLATE "C") for the reason
+ * DEDUPED_RESULTS is: the same groups, sorted faster.
  */
 const BPAD_GRN_JOIN = `
-  LEFT JOIN LATERAL (
-    SELECT gg.location
+  LEFT JOIN (
+    SELECT DISTINCT ON (gg.dpr_no_key COLLATE "C") gg.dpr_no_key, gg.location
     FROM grn_transactions gg
-    WHERE gg.dpr_no_key = b.grn_no_key
-    ORDER BY gg.batch_id DESC, gg.id DESC
-    LIMIT 1
-  ) g ON TRUE`;
+    ORDER BY gg.dpr_no_key COLLATE "C", gg.batch_id DESC, gg.id DESC
+  ) g ON g.dpr_no_key = b.grn_no_key`;
 
 /**
  * The same two branch narrowings every other query on this router carries --
@@ -2187,17 +2274,17 @@ async function bpadRows(req, scope, { page, pageSize, all = false } = {}) {
     return { total: rows.length, rows: rows.map(mapBpadRow) };
   }
 
-  const { rows: countRows } = await query(
-    `SELECT COUNT(*)::int AS total ${BPAD_JOINS} ${where}`,
-    params,
-  );
+  // The count and the page of rows, sent together rather than one after the
+  // other -- neither reads the other's answer.
+  const [{ rows: countRows }, { rows }] = await Promise.all([
+    query(`SELECT COUNT(*)::int AS total ${BPAD_JOINS} ${where}`, params),
+    query(
+      `${BPAD_COLUMNS_SQL} ${BPAD_JOINS} ${where} ${bpadOrder(scope)}
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, pageSize, (page - 1) * pageSize],
+    ),
+  ]);
   const total = countRows[0].total;
-
-  const { rows } = await query(
-    `${BPAD_COLUMNS_SQL} ${BPAD_JOINS} ${where} ${bpadOrder(scope)}
-     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-    [...params, pageSize, (page - 1) * pageSize],
-  );
 
   return { total, rows: rows.map(mapBpadRow) };
 }
@@ -2223,24 +2310,26 @@ resultsRouter.get(
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || 50));
 
-    const { total, rows } = await bpadRows(req, scope, { page, pageSize });
-    const { missing } = await bpadSummary(req, scope, req.query.q, req.query.dept);
-    // Every department in scope, not only the ones on this page -- the
-    // dropdown is built from it, and one rebuilt per page of rows would offer
-    // a different set of choices as the reader paged through.
-    const departments = await bpadDepartments(req, scope);
     // The Not Integrated in Accounts card, from the date picked beside it.
     // Here rather than in the summary because only this view shows it, and
     // moving the date then re-counts one card rather than the whole page.
     //
     // A date it cannot count from costs the card its figure (null) and
-    // nothing else: the register's rows and desks above are answered as if no
-    // date had been sent, the way they were before the card existed.
+    // nothing else: the register's rows and desks are answered as if no date
+    // had been sent, the way they were before the card existed.
     const accountsFrom = accountsFromValue(req);
-    const notIntegrated =
-      !accountsFrom || isIsoDay(accountsFrom)
-        ? await bpadNotIntegratedSummary(req, scope, accountsFrom)
-        : null;
+
+    // The rows, the tab's own count, the desks and the card: four independent
+    // reads of the register, sent together rather than one after another.
+    const [{ total, rows }, { missing }, departments, notIntegrated] = await Promise.all([
+      bpadRows(req, scope, { page, pageSize }),
+      bpadSummary(req, scope, req.query.q, req.query.dept),
+      // Every department in scope, not only the ones on this page -- the
+      // dropdown is built from it, and one rebuilt per page of rows would
+      // offer a different set of choices as the reader paged through.
+      bpadDepartments(req, scope),
+      !accountsFrom || isIsoDay(accountsFrom) ? bpadNotIntegratedSummary(req, scope, accountsFrom) : null,
+    ]);
 
     return res.json({
       page,
@@ -2467,10 +2556,6 @@ resultsRouter.get(
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || 50));
 
-    const population = await turnaroundPopulation(req, scope, req.query.q);
-    const { stages, overall } = summarise(population);
-    const { era, impossible, backwards } = dataQuality(population);
-
     const params = [];
     const where = whereFrom([
       batchFilter(scope, params),
@@ -2478,11 +2563,18 @@ resultsRouter.get(
       BRANCH_SCOPE,
       ...branchClauses(req, params),
     ]);
-    const { rows } = await query(
-      `${turnaroundSelect(scope)} ${where} ${rowOrder(scope)}
-       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-      [...params, pageSize, (page - 1) * pageSize],
-    );
+    // The statistics' population and the page of rows, sent together rather
+    // than one after the other -- neither reads the other's answer.
+    const [population, { rows }] = await Promise.all([
+      turnaroundPopulation(req, scope, req.query.q),
+      query(
+        `${turnaroundSelect(scope)} ${where} ${rowOrder(scope)}
+         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, pageSize, (page - 1) * pageSize],
+      ),
+    ]);
+    const { stages, overall } = summarise(population);
+    const { era, impossible, backwards } = dataQuality(population);
 
     const total = population.length;
 
