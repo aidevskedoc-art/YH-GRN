@@ -286,8 +286,9 @@ export const CSD_CARDS = [
 ];
 
 /**
- * Where each Accounts bill stands on its cheque, as four cards following the
- * Accounts count: a cheque drawn up, one still to come, none meant for it (an
+ * Where each Accounts bill stands on its cheque, as four answers following the
+ * Accounts count -- the last two sharing one card on the row, NOT_REQUIRED_PAIR
+ * below: a cheque drawn up, one still to come, none meant for it (an
  * Inter vendor's bill, or a cash bill), or none needed because there is
  * nothing left to pay (a PayableAmount of zero or under a rupee). The four are
  * exhaustive over that row -- every Accounts GRN is in exactly one -- so they
@@ -338,9 +339,13 @@ export const CHEQUE_CARDS = [
   // Inter on the Vendor Master screen, or the BPAD register has the bill in
   // Accounts with "cash" in Pending With User/Status. Taken out of the two
   // cards either side of it -- see CHEQUE_EXEMPT in routes/results.js.
+  //
+  // `short` is its half's name on the Not Required card -- see
+  // NOT_REQUIRED_PAIR below.
   {
     progress: 'CHEQUE_NOT_REQUIRED',
     label: 'Cheque Not Required',
+    short: 'Cheque',
     hint: 'Inter vendor, or a cash bill in BPAD',
   },
   // The bills no cheque is coming for: nothing left to pay. Beside Cheque Not
@@ -348,9 +353,30 @@ export const CHEQUE_CARDS = [
   {
     progress: 'PAYMENT_NOT_REQUIRED',
     label: 'Payment Not Required',
+    short: 'Payment',
     hint: 'Payable ₹0 or under ₹1',
   },
 ];
+
+/**
+ * Cheque Not Required and Payment Not Required, on one card: the two answers
+ * for a bill no cheque is coming for, side by side with a count and an amount
+ * each, rather than two cards of the row.
+ *
+ * Each half is still its own filter -- pressing one narrows the table to its
+ * `progress` key, as its card did -- and still its own sheet in the Accounts
+ * workbook (sectionSheets unpacks `parts`). `id` is the card's key on the
+ * pages' CARD_BY_ID, unlike any status, stage or progress key there.
+ */
+const NOT_REQUIRED_PARTS = ['CHEQUE_NOT_REQUIRED', 'PAYMENT_NOT_REQUIRED'];
+export const NOT_REQUIRED_PAIR = {
+  id: 'NOT_REQUIRED_PAIR',
+  label: 'Not Required',
+  parts: CHEQUE_CARDS.filter((card) => NOT_REQUIRED_PARTS.includes(card.progress)).map((card) => ({
+    kind: 'progress',
+    ...card,
+  })),
+};
 
 /**
  * The Accounts Queue: GRNs CSD has handed back that Accounts has not received
@@ -442,10 +468,14 @@ export function csdCardFigures(card, summary, byCheque) {
  * The two Accounts cards close the row, Queue then Received: they are where a
  * GRN goes once CSD hand it back, so they follow the CSD four in the order the
  * work does.
+ *
+ * Cheque Not Required and Payment Not Required stand as one card, the Not
+ * Required pair, where the two used to be -- last of the cheque cards.
  */
 export const ACCOUNTS_ROW = [
   VALID,
-  ...CHEQUE_CARDS.map((card) => card.progress),
+  ...CHEQUE_CARDS.filter((card) => !NOT_REQUIRED_PARTS.includes(card.progress)).map((card) => card.progress),
+  NOT_REQUIRED_PAIR.id,
   ...CSD_CARDS.map((card) => card.stage),
   ACCOUNTS_QUEUE_CARD.progress,
   ACCOUNTS_RECEIVED_CARD.progress,
@@ -817,6 +847,9 @@ export function sectionSheets(tab, cards, options = {}) {
   };
   if (tab.status === TURNAROUND) return [own];
   const rest = (cards ?? [])
+    // A card holding two filters -- the Not Required pair -- is a sheet for
+    // each, in the order it shows them.
+    .flatMap((card) => (card.kind === 'pair' ? card.parts : [card]))
     .map((card) => {
       const sheet = cardSheet(card);
       return sheet ? { sheet, card } : null;

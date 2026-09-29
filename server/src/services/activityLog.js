@@ -41,6 +41,7 @@ export const ACTIONS = {
   CSD_TAKE_BACK: { label: 'Took back from CSD', category: 'CSD' },
   CSD_DELETE: { label: 'Deleted CSD record', category: 'CSD' },
   RECORDS_SEND: { label: 'Sent to Records', category: 'RECORDS' },
+  RECORDS_TAKE_BACK: { label: 'Took back from Records', category: 'RECORDS' },
   ACCOUNTS_RECEIVE: { label: 'Accounts received', category: 'ACCOUNTS' },
   ACCOUNTS_FORWARD: { label: 'Accounts forwarded', category: 'ACCOUNTS' },
   CSD_DATES: { label: 'Corrected CSD dates', category: 'DATES' },

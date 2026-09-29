@@ -17,6 +17,7 @@ import {
   CHEQUE_NOT_PREPARED_TAB,
   CHEQUE_NOT_PREPARED_VIEW,
   CSD_CARDS,
+  NOT_REQUIRED_PAIR,
   SUPPLY_TYPE_CARDS,
   TURNAROUND,
   TURNAROUND_TAB,
@@ -38,6 +39,7 @@ import {
 } from '../services/resultsViews.js';
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
+import PairCard from '../components/PairCard.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import MsmeFilter from '../components/MsmeFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
@@ -126,6 +128,8 @@ const CARD_BY_ID = Object.fromEntries([
   [CHEQUE_NOT_PREPARED_TAB.status, { kind: 'bucket', ...CHEQUE_NOT_PREPARED_TAB }],
   ...CSD_CARDS.map((card) => [card.stage, { kind: 'csd', ...card }]),
   ...CHEQUE_CARDS.map((card) => [card.progress, { kind: 'progress', ...card }]),
+  // Cheque Not Required and Payment Not Required on one card, a half each.
+  [NOT_REQUIRED_PAIR.id, { kind: 'pair', ...NOT_REQUIRED_PAIR }],
   [ACCOUNTS_QUEUE_CARD.progress, { kind: 'progress', ...ACCOUNTS_QUEUE_CARD }],
   [ACCOUNTS_RECEIVED_CARD.progress, { kind: 'progress', ...ACCOUNTS_RECEIVED_CARD }],
   ...SUPPLY_TYPE_CARDS.map((card) => [card.id, { kind: 'supplyType', ...card }]),
@@ -716,7 +720,7 @@ export default function AccountsDepartment() {
       <BackButton trail={sectionTrail} describe={describeSection} />
 
       {summary && cards.length > 0 && (
-        <div className="cards">
+        <div className="cards cards--compact">
           {cards.map((card) => {
             if (card.kind === 'bucket') {
               /* The count at the head of the row, and the "All" of it: every
@@ -818,6 +822,18 @@ export default function AccountsDepartment() {
                 <div className="stat__amount">₹ {formatAmount(supplyCardFigure(card, summary).amount ?? 0)}</div>
                 <div className="stat__hint">{card.hint}</div>
               </button>
+            ) : card.kind === 'pair' ? (
+              /* Cheque Not Required and Payment Not Required, a half each --
+                 each half narrows the table to its own key. See PairCard. */
+              <PairCard
+                key={card.id}
+                card={card}
+                summary={summary}
+                byCheque={byCheque}
+                progress={progress}
+                onSelect={selectProgress}
+                headLabel={ACCOUNTS_TAB.label}
+              />
             ) : card.kind === 'progress' ? (
               /* Cheque prepared / not prepared. The same control as the CSD
                  cards beside it and the same filter behind it -- these two just

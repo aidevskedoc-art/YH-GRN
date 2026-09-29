@@ -578,6 +578,7 @@ const ROW_COLUMNS = `
          c.forwarded_docket_no    AS csd_forwarded_docket_no,
          c.forwarded_remarks      AS csd_forwarded_remarks,
          (rd.id IS NOT NULL) AS records_sent,
+         rd.id               AS records_id,
          rd.sent_at          AS records_sent_at,
          ${CHEQUE_COLUMNS},
          ${PRIOR_REJECTION_COLUMNS}
@@ -715,8 +716,10 @@ function mapRow(r) {
     csdForwardedDocketNo: r.csd_forwarded_docket_no ?? null,
     csdForwardedRemarks: r.csd_forwarded_remarks ?? null,
     // The other destination. Records keeps no stages, so there is nothing to
-    // report but that it went and when.
+    // report but that it went and when -- and the record's own id, which is
+    // what taking it back addresses (DELETE /api/records/:id).
     recordsSent: r.records_sent ?? false,
+    recordsId: r.records_id ?? null,
     recordsSentAt: r.records_sent_at ?? null,
   };
 }
@@ -1771,6 +1774,11 @@ const BPAD_JOINS = `
  * rather than stored, so the STORES figure is true on the day it is looked at.
  * CURRENT_DATE is in the database's timezone, the same local day ::date casts
  * use elsewhere in this file.
+ *
+ * This is the API's answer, as of today. The BPAD tab and its Excel sheet
+ * work the same rule out in the browser instead (bpadAgeDays in
+ * client/src/services/ageing.js), so STORES can count to the "Age as of" date
+ * the reader picks; keep the desks in step.
  */
 const BPAD_AGEING_SQL = `
   CASE
@@ -2503,9 +2511,9 @@ ageingRouter.patch(
 
    It is a note, not a queue. CSD has a screen, four stages, stamps for each and
    a report measuring the time between them; Records has none of that -- the row
-   simply says "Sent to Records" from then on. So this is one route with one
-   verb, and it lives here rather than in a routes/records.js of its own because
-   there is nothing else for such a file to hold.
+   simply says "Sent to Records" from then on. So this is one route to send and
+   one to take back, and they live here rather than in a routes/records.js of
+   their own because there is nothing else for such a file to hold.
 
    Gated on the results screen, not on a screen of its own: the control is on
    the results table, and anyone who can work that table can use it. That is the
@@ -2601,6 +2609,44 @@ recordsRouter.post(
     return res.status(201).json({
       record: { id: rows[0].id, dprNo: rows[0].dpr_no, sentAt: rows[0].sent_at },
     });
+  }),
+);
+
+/**
+ * DELETE /api/records/:id
+ *
+ * Take a GRN back from Records -- the undo for one filed by mistake, the same
+ * as DELETE /api/csd/:id is on the other side. The Send picker on the results
+ * tab reads `recordsSent` from this table rather than from the result, so once
+ * the row is gone the GRN is back with Accounts as one that has not been sent
+ * anywhere, and can be sent to either destination again.
+ *
+ * No stage check, unlike the CSD take-back: Records has no stages and nobody
+ * acts on a filed GRN, so there is no answer of anyone's for this to erase.
+ */
+recordsRouter.delete(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      return res.status(400).json({ error: 'Unknown row.' });
+    }
+
+    const { rows } = await query(
+      'DELETE FROM record_dispatches WHERE id = $1 RETURNING dpr_no, sent_at',
+      [id],
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ error: 'That GRN is no longer in Records.' });
+    }
+
+    logActivity(req, {
+      action: 'RECORDS_TAKE_BACK',
+      target: rows[0].dpr_no,
+      summary: `Took GRN ${rows[0].dpr_no} back from Records`,
+      details: { recordId: id, sentAt: rows[0].sent_at },
+    });
+    return res.status(204).end();
   }),
 );
 

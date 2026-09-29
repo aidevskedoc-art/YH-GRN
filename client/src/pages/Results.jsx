@@ -21,6 +21,7 @@ import {
   CSD_CARDS,
   MISSING,
   NOT_IN_BPAD,
+  NOT_REQUIRED_PAIR,
   SUPPLY_TYPE_CARDS,
   TURNAROUND,
   TURNAROUND_SCOPE,
@@ -48,6 +49,7 @@ import { expandCheques, resultsChequeBills } from '../services/chequeGroups.js';
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
 import BpadView from '../components/BpadView.jsx';
+import PairCard from '../components/PairCard.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import MsmeFilter from '../components/MsmeFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
@@ -264,6 +266,8 @@ const CARD_BY_ID = Object.fromEntries([
   ...CARD_TABS.map((tab) => [tab.status, { kind: 'bucket', ...tab }]),
   ...CSD_CARDS.map((card) => [card.stage, { kind: 'csd', ...card }]),
   ...CHEQUE_CARDS.map((card) => [card.progress, { kind: 'progress', ...card }]),
+  // Cheque Not Required and Payment Not Required on one card, a half each.
+  [NOT_REQUIRED_PAIR.id, { kind: 'pair', ...NOT_REQUIRED_PAIR }],
   [ACCOUNTS_QUEUE_CARD.progress, { kind: 'progress', ...ACCOUNTS_QUEUE_CARD }],
   [ACCOUNTS_RECEIVED_CARD.progress, { kind: 'progress', ...ACCOUNTS_RECEIVED_CARD }],
   // The GRNs the register has no entry for -- still at the GRN store rather
@@ -1266,10 +1270,10 @@ export default function Results() {
       <BackButton trail={sectionTrail} describe={describeSection} />
 
       {summary && cards.length > 0 && (
-        /* A row of one or two -- Pending with no register uploaded -- keeps the
-           cards their own size rather than stretching them across the width the
-           four-card rows need. See .cards--few. */
-        <div className={`cards${cards.length < 3 ? ' cards--few' : ''}`}>
+        /* Compact tiles, each capped in width, so a row of one or two --
+           Pending with no register uploaded -- keeps the cards their own size
+           rather than stretching them across the row. See .cards--compact. */
+        <div className="cards cards--compact">
           {cards.map((card) =>
             card.kind === 'missing' ? (
               /* The GRNs the register had no entry for -- in practice goods
@@ -1440,6 +1444,18 @@ export default function Results() {
                 <div className="stat__amount">₹ {formatAmount(supplyCardFigure(card, summary).amount ?? 0)}</div>
                 <div className="stat__hint">{card.hint}</div>
               </button>
+            ) : card.kind === 'pair' ? (
+              /* Cheque Not Required and Payment Not Required, a half each --
+                 each half narrows the table to its own key. See PairCard. */
+              <PairCard
+                key={card.id}
+                card={card}
+                summary={summary}
+                byCheque={byCheque}
+                progress={progress}
+                onSelect={selectProgress}
+                headLabel={headLabel()}
+              />
             ) : card.kind === 'progress' ? (
               /* Cheque prepared / not prepared. Same control as the CSD cards
                  beside it and the same filter behind it -- these two just name
@@ -1698,20 +1714,30 @@ export default function Results() {
             </>
           )}
           {/* The day a bill with no cheque yet counts its Ageing to -- today
-              until changed, and back to today if cleared. Only on the Accounts
-              views, the ones with an Ageing column. */}
-          {isAccountsSection(status) && (
+              until changed, and back to today if cleared. On the Accounts
+              views, the ones with an Ageing column, and on BPAD, where it is
+              the day a bill still at Stores counts its Age from GRN Date to.
+              One date for the page, so a month-end reading holds across both. */}
+          {(isAccountsSection(status) || status === BPAD) && (
             <label
               className="ageing-asof"
-              title="Ageing counts to this date for a bill with no cheque date yet"
+              title={
+                status === BPAD
+                  ? 'Age from GRN Date counts to this date for a bill still pending at Stores'
+                  : 'Ageing counts to this date for a bill with no cheque date yet'
+              }
             >
-              Ageing as of
+              {status === BPAD ? 'Age as of' : 'Ageing as of'}
               <input
                 className="field__input stage-filter"
                 type="date"
                 value={ageingAsOf}
                 onChange={(e) => setAgeingAsOf(e.target.value || todayIso())}
-                aria-label="Count the Ageing of bills with no cheque yet to this date"
+                aria-label={
+                  status === BPAD
+                    ? 'Count the Age from GRN Date of bills still at Stores to this date'
+                    : 'Count the Ageing of bills with no cheque yet to this date'
+                }
               />
             </label>
           )}
@@ -1810,6 +1836,7 @@ export default function Results() {
           dept={dept}
           register={register}
           onDepartments={setDepartments}
+          ageingAsOf={ageingAsOf}
         />
       ) : status === TURNAROUND ? (
         <TurnaroundView

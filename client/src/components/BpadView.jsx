@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
+import { bpadAgeDays, bpadDesk, todayIso } from '../services/ageing.js';
 import { formatAmountOrDash, formatDate } from './ResultsTable.jsx';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
@@ -39,7 +40,35 @@ function DateText({ value }) {
   return value ? formatDate(value) : <span className="table__miss">&mdash;</span>;
 }
 
-export default function BpadView({ batchId, q, location, msme, dept, register, onDepartments }) {
+/**
+ * The Age from GRN Date cell -- see bpadAgeDays in services/ageing.js. At
+ * Stores it counts to `asOf`, the "Age as of" date in the toolbar; at any
+ * other desk to the date the bill reached it. The dates it counts between are
+ * in the tooltip, so it can be checked.
+ */
+function AgeDays({ row, asOf }) {
+  const days = bpadAgeDays(row, asOf);
+  if (days === null) return <span className="table__miss">&mdash;</span>;
+  const desk = bpadDesk(row);
+  const to =
+    desk === 'STORES'
+      ? `still at Stores — days to ${asOf === todayIso() ? 'today' : formatDate(asOf)}`
+      : desk === 'ACCOUNTS'
+        ? `reached Accounts ${formatDate(row.accountsReceivedDate)}`
+        : `reached BPAD ${formatDate(row.bpadReceivedDate)}`;
+  return <span title={`GRN dated ${formatDate(row.grnDate)}, ${to}`}>{days.toLocaleString('en-IN')}</span>;
+}
+
+export default function BpadView({
+  batchId,
+  q,
+  location,
+  msme,
+  dept,
+  register,
+  onDepartments,
+  ageingAsOf = todayIso(),
+}) {
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = usePageSize();
@@ -156,9 +185,10 @@ export default function BpadView({ batchId, q, location, msme, dept, register, o
                   two dates above are the ones it reports, and they do not go
                   stale. */}
               <th>Pend.Reason/Pend Dept</th>
-              {/* Days from GRN Date, worked out on the server per desk:
-                  Accounts to Accounts Received Date, Stores to today, every
-                  other desk to BPAD Received Date. */}
+              {/* Days from GRN Date, per desk: Accounts to Accounts Received
+                  Date, Stores to the "Age as of" date in the toolbar (today
+                  until changed), every other desk to BPAD Received Date. See
+                  bpadAgeDays in services/ageing.js. */}
               <th className="table__num">Age from GRN Date</th>
             </tr>
           </thead>
@@ -223,7 +253,7 @@ export default function BpadView({ batchId, q, location, msme, dept, register, o
                   <Text value={row.pendReason} />
                 </td>
                 <td className="table__num">
-                  {row.ageing ?? <span className="table__miss">&mdash;</span>}
+                  <AgeDays row={row} asOf={ageingAsOf} />
                 </td>
               </tr>
             ))}

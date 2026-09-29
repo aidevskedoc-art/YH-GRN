@@ -56,5 +56,10 @@ export const config = {
   // cap has to clear the largest file the system is asked to read rather than
   // the typical one.
   maxUploadBytes: (Number(process.env.MAX_UPLOAD_MB) || 100) * 1024 * 1024,
+  // Every file in one upload together. Uploads are held in memory until they
+  // are read, and a slot takes several files, so it is this -- not the cap
+  // above times the file count -- that bounds what one upload can cost the
+  // server. 300 MB clears a BPAD register with a full month's reports beside it.
+  maxUploadTotalBytes: (Number(process.env.MAX_UPLOAD_TOTAL_MB) || 300) * 1024 * 1024,
   clientOrigin: process.env.CLIENT_ORIGIN || 'http://localhost:5173',
 };

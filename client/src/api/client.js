@@ -142,6 +142,8 @@ export const api = {
 
   listBatches: () => request('/batches'),
   uploadBatch: (formData) => request('/batches', { method: 'POST', body: formData, isForm: true }),
+  /** The size and count caps POST /batches enforces, for checking files as they are picked. */
+  uploadLimits: () => request('/batches/limits'),
 
   /** `q` is the search box: vendor name, GRN number or bill number, either side. */
   summary: (id, { q, location, msme } = {}) => {
@@ -335,6 +337,11 @@ export const api = {
    * nothing comes back from it but the fact that the GRN went.
    */
   sendToRecords: (row) => request('/records', { method: 'POST', body: row }),
+
+  /** Take a GRN back from Records, by its record id (the row's recordsId) --
+   *  removeFromCsd's counterpart. Records has no stages, so it is never refused
+   *  for being too late. */
+  removeFromRecords: (id) => request(`/records/${id}`, { method: 'DELETE' }),
 
   /**
    * Acknowledge one GRN CSD marked Moved to accounts, by its CSD dispatch id

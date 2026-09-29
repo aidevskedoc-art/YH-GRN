@@ -882,7 +882,7 @@ export default function Csd() {
       </div>
 
       {data?.stages && (
-        <div className="cards">
+        <div className="cards cards--compact">
           {CARD_STAGES.map((s) => {
             const bucket = data.stages[s.key] || { count: 0, cheques: 0, amount: 0 };
             // GRN count first on GRN view, cheque count first on Cheque view.

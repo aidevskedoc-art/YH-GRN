@@ -18,13 +18,21 @@ import { logActivity } from '../services/activityLog.js';
 
 export const batchesRouter = express.Router();
 
+// Per slot. Several months' reports, or several banks' statements, can go up
+// in one upload -- a year's worth is the most anyone has reason to pick at once.
+const MAX_FILES_PER_SLOT = 12;
+// Except the BPAD register: it is the whole group's, near 50 MB and half a
+// minute to read, and there is seldom more than one to send.
+const MAX_BPAD_FILES = 3;
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  // Four: the two reports the reconciliation runs on, plus the optional bank
-  // statement and the optional BPAD register. Kept as a hard cap rather than
-  // left open, so a malformed form cannot stream an unbounded number of
-  // workbooks into memory.
-  limits: { fileSize: config.maxUploadBytes, files: 4 },
+  // Four slots: the two reports the reconciliation runs on, plus the optional
+  // bank statement and the optional BPAD register. Kept as a hard cap rather
+  // than left open, so a malformed form cannot stream an unbounded number of
+  // workbooks into memory. The size of the whole upload is capped separately
+  // -- see refuseOversizedUpload.
+  limits: { fileSize: config.maxUploadBytes, files: MAX_FILES_PER_SLOT * 3 + MAX_BPAD_FILES },
   fileFilter: (req, file, cb) => {
     if (/\.xlsx?$/i.test(file.originalname)) return cb(null, true);
     return cb(new ExcelFormatError(`"${file.originalname}" is not an Excel file. Upload .xls or .xlsx.`));
@@ -32,6 +40,51 @@ const upload = multer({
 });
 
 batchesRouter.use(requireAuth);
+
+/** 1 MB rather than 1048576 -- the wording the upload errors are read in. */
+function megabytes(bytes) {
+  return `${Math.round(bytes / 1024 / 1024)} MB`;
+}
+
+function tooLargeMessage(bytes) {
+  return (
+    `These files come to ${megabytes(bytes)}, and one upload can carry at most ` +
+    `${megabytes(config.maxUploadTotalBytes)}. Upload them in more than one go.`
+  );
+}
+
+/**
+ * Refuse an upload too large in total before any of it is read.
+ *
+ * Multer caps each file but not their sum, and holds every file in memory, so
+ * the check has to come first: by the time multer hands the files over the
+ * memory is already spent. Content-Length is what a browser declares for a
+ * form it sends -- the multipart framing makes it a few hundred bytes larger
+ * than the files, which does not matter at this scale. A request that declares
+ * no length is caught by the backstop in the handler instead.
+ */
+function refuseOversizedUpload(req, res, next) {
+  const declared = Number(req.headers['content-length']);
+  if (declared > config.maxUploadTotalBytes) {
+    return res.status(413).json({ error: tooLargeMessage(declared) });
+  }
+  return next();
+}
+
+/**
+ * GET /api/batches/limits - what the upload screen checks files against as
+ * they are picked, so a file the server would refuse is refused before it is
+ * sent. Served rather than copied into the client, since MAX_UPLOAD_MB and
+ * MAX_UPLOAD_TOTAL_MB are set per installation.
+ */
+batchesRouter.get('/limits', requireScreen('upload'), (req, res) => {
+  res.json({
+    maxFileBytes: config.maxUploadBytes,
+    maxTotalBytes: config.maxUploadTotalBytes,
+    maxFilesPerSlot: MAX_FILES_PER_SLOT,
+    maxBpadFiles: MAX_BPAD_FILES,
+  });
+});
 
 /**
  * What to call an upload now that nobody is asked to name one.
@@ -50,6 +103,63 @@ function defaultBatchName(files) {
     year: 'numeric',
   });
   return first ? `${first.originalname} — ${stamp}` : `Upload — ${stamp}`;
+}
+
+/**
+ * Parse every file in one slot, naming the file in any error it raises.
+ *
+ * With one file in the slot the label alone says which it was, as it always
+ * has; with several the label no longer does, so the file's own name is added.
+ */
+function readEach(files, label, read) {
+  return files.map((file) => {
+    try {
+      return read(file.buffer);
+    } catch (err) {
+      if (err instanceof ExcelFormatError) {
+        const which = files.length > 1 ? `${label} "${file.originalname}"` : label;
+        err.message = `${which}: ${err.message}`;
+      }
+      throw err;
+    }
+  });
+}
+
+/**
+ * Several files' rows as one, keeping each key's rows from the last file that
+ * carries it.
+ *
+ * For the reports that are a snapshot of where each GRN had got to -- the
+ * ageing report (a GRN's rows there are its whole payment picture) and the
+ * BPAD register (a re-export is a newer answer about the same bills). saveBatch
+ * replaces a GRN's stored rows whole with the ones an upload brings, so two
+ * such files uploaded one after the other leave the second one's rows. Putting
+ * them in one upload has to leave the same thing; simply concatenating them
+ * would store both snapshots side by side.
+ *
+ * "Last" is the order the files were sent in, which is the order they were
+ * picked. Rows with no key are never matched and never replaced, so all of
+ * them are kept.
+ */
+function lastFilePerKey(rowsPerFile, keyOf) {
+  const owner = new Map();
+  rowsPerFile.forEach((rows, i) => {
+    for (const row of rows) {
+      const key = keyOf(row);
+      if (key) owner.set(key, i);
+    }
+  });
+  return rowsPerFile.flatMap((rows, i) =>
+    rows.filter((row) => {
+      const key = keyOf(row);
+      return !key || owner.get(key) === i;
+    }),
+  );
+}
+
+/** Several files' names as the one column upload_batches keeps for the slot. */
+function fileNames(files) {
+  return files.length > 0 ? files.map((f) => f.originalname).join(', ') : null;
 }
 
 /**
@@ -197,6 +307,16 @@ function bpadRowsForGrns(registerRows, identities) {
  * POST /api/batches - upload one or more of the four files, store them, and
  * reconcile what they touched.
  *
+ * Each slot takes several files. The GRN reports, ageing reports and BPAD
+ * registers are each merged into one set of rows and stored as one batch, as
+ * if they had been one file apiece -- see lastFilePerKey for how two files
+ * naming the same GRN are settled. Bank statements are the exception: a batch
+ * holds one statement's account (upload_batches.bank_account_no, which is also
+ * what scopes it to a branch -- see services/branchScope.js), so the first
+ * statement rides with the reports and every further one is stored as a batch
+ * of its own. Every file is read before anything is stored, so a workbook that
+ * fails to parse stops the whole upload rather than half of it.
+ *
  * Behind the upload screen, not the router: GET below is what the results and
  * Accounts screens count uploads with ("N uploads combined", and whether there
  * is anything to show at all), so an account with results but not uploads
@@ -205,135 +325,148 @@ function bpadRowsForGrns(registerRows, identities) {
 batchesRouter.post(
   '/',
   requireScreen('upload'),
+  refuseOversizedUpload,
   upload.fields([
     // Optional. Without the ageing report every GRN row simply has nothing to
     // match against, and reconcile() reports it PENDING -- a GRN report on its
     // own is still a usable upload.
-    { name: 'grnFile', maxCount: 1 },
+    { name: 'grnFile', maxCount: MAX_FILES_PER_SLOT },
     // Optional too, the same way round: without the GRN report there is
     // nothing to reconcile, but the ageing rows are still stored for the month
     // -- reconciling them is then just a matter of uploading the GRN report
     // later.
-    { name: 'ageingFile', maxCount: 1 },
+    { name: 'ageingFile', maxCount: MAX_FILES_PER_SLOT },
     // Optional as well, and independent of the other two: the statement is
     // stored and matched to nothing at upload time, but every cheque number in
     // it is matched by routes/results.js against every ageing row on file, on
     // every future read -- not just this batch's -- so it is just as usable
     // uploaded on its own as either report is. At least one of the four files
     // is required; see the check below.
-    { name: 'bankFile', maxCount: 1 },
+    { name: 'bankFile', maxCount: MAX_FILES_PER_SLOT },
     // Optional as well, and the only one of the four that is filtered as it is
     // read: the BPAD register is the whole group's, several hundred thousand
     // rows of it, and only the rows naming a GRN this upload is about are
     // kept. See grnMatchKeys above and readBpadReport.
-    { name: 'bpadFile', maxCount: 1 },
+    { name: 'bpadFile', maxCount: MAX_BPAD_FILES },
   ]),
   asyncHandler(async (req, res) => {
-    const grnFile = req.files?.grnFile?.[0];
-    const ageingFile = req.files?.ageingFile?.[0];
-    const bankFile = req.files?.bankFile?.[0];
-    const bpadFile = req.files?.bpadFile?.[0];
+    const grnFiles = req.files?.grnFile ?? [];
+    const ageingFiles = req.files?.ageingFile ?? [];
+    const bankFiles = req.files?.bankFile ?? [];
+    const bpadFiles = req.files?.bpadFile ?? [];
+    const allFiles = [...grnFiles, ...ageingFiles, ...bankFiles, ...bpadFiles];
 
-    if (!grnFile && !ageingFile && !bankFile && !bpadFile) {
+    if (allFiles.length === 0) {
       return res.status(400).json({ error: 'Choose at least one file: the GRN report, the Vendor Ageing report, the bank statement, or the BPAD register.' });
+    }
+
+    // The backstop for a request that declared no length -- see
+    // refuseOversizedUpload. Too late to save the memory, but not too late to
+    // refuse to parse and store it.
+    const totalBytes = allFiles.reduce((sum, f) => sum + f.size, 0);
+    if (totalBytes > config.maxUploadTotalBytes) {
+      return res.status(413).json({ error: tooLargeMessage(totalBytes) });
     }
 
     // Optional now: the upload screen no longer asks for one, so an upload
     // that sends no name is named after the files it brought. A name sent by
     // an older client, or by anything calling the API directly, still wins.
-    const name =
-      String(req.body.name || '').trim() ||
-      defaultBatchName([grnFile, ageingFile, bankFile, bpadFile]);
+    const name = String(req.body.name || '').trim() || defaultBatchName(allFiles);
 
     // Parsing errors carry status 400 and a message naming the offending file,
     // so the user is told which file was wrong.
-    let grn = null;
-    let ageing = null;
-    if (grnFile) {
-      try {
-        grn = readGrnReport(grnFile.buffer);
-      } catch (err) {
-        if (err instanceof ExcelFormatError) err.message = `GRN report: ${err.message}`;
-        throw err;
-      }
-    }
-    if (ageingFile) {
-      try {
-        ageing = readAgeingReport(ageingFile.buffer);
-      } catch (err) {
-        if (err instanceof ExcelFormatError) err.message = `Vendor Ageing report: ${err.message}`;
-        throw err;
-      }
-    }
+    const grns = readEach(grnFiles, 'GRN report', readGrnReport);
+    const ageings = readEach(ageingFiles, 'Vendor Ageing report', readAgeingReport);
+    const banks = readEach(bankFiles, 'Bank statement', readBankStatement);
 
     // One row per GRN number, as saveBatch will store them, so the BPAD filler
-    // rows and the summary are built from the same row a GRN is stored as.
-    const grnRows = lastRowPerGrn(grn?.rows ?? []);
-
-    let bank = null;
-    if (bankFile) {
-      try {
-        bank = readBankStatement(bankFile.buffer);
-      } catch (err) {
-        if (err instanceof ExcelFormatError) err.message = `Bank statement: ${err.message}`;
-        throw err;
-      }
-    }
+    // rows and the summary are built from the same row a GRN is stored as. A
+    // GRN in more than one report keeps the later report's row, which is what
+    // lastRowPerGrn does with a report that repeats one.
+    const grnRows = lastRowPerGrn(grns.flatMap((g) => g.rows));
+    const ageingRows = lastFilePerKey(
+      ageings.map((a) => a.rows),
+      (r) => r.grnNumberKey,
+    );
 
     // Read last, and the only one narrowed as it is read -- against this
-    // upload's own GRN report where there is one, and against every GRN on file
-    // where there is not. See grnMatchKeys.
-    let bpad = null;
+    // upload's own GRN reports where there are any, and against every GRN on
+    // file where there are not. See grnMatchKeys.
+    let bpads = [];
     let bpadRows = [];
-    if (bpadFile) {
+    if (bpadFiles.length > 0) {
       const identities = await grnMatchKeys(grnRows);
-      try {
-        bpad = readBpadReport(bpadFile.buffer, {
-          keep: (vendorCodeKey, grnNoKey) => identities.has(`${vendorCodeKey}|${grnNoKey}`),
-        });
-      } catch (err) {
-        if (err instanceof ExcelFormatError) err.message = `BPAD register: ${err.message}`;
-        throw err;
-      }
-      // Every GRN in scope gets a row, whether or not the register had one for
+      const keep = (vendorCodeKey, grnNoKey) => identities.has(`${vendorCodeKey}|${grnNoKey}`);
+      bpads = readEach(bpadFiles, 'BPAD register', (buffer) => readBpadReport(buffer, { keep }));
+      const registerRows = lastFilePerKey(
+        bpads.map((b) => b.rows),
+        (r) => (r.vendorCodeKey && r.grnNoKey ? `${r.vendorCodeKey}|${r.grnNoKey}` : null),
+      );
+      // Every GRN in scope gets a row, whether or not a register had one for
       // it -- see bpadRowsForGrns.
-      bpadRows = bpadRowsForGrns(bpad.rows, identities);
+      bpadRows = bpadRowsForGrns(registerRows, identities);
     }
 
-    // The two files against each other only, for the summary in the response.
+    // The files against each other only, for the summary in the response.
     // What is stored is paired against everything on file -- see linkResults
     // in services/ingest.js.
-    const { summary } = reconcile(grnRows, ageing?.rows ?? []);
+    const { summary } = reconcile(grnRows, ageingRows);
 
-    const { batchId, reopenedRejections, replaced } = await saveBatch({
+    // The reports, and the first bank statement with them -- so one file per
+    // slot is stored exactly as it always was.
+    const [firstBank, ...laterBanks] = banks;
+    const main = await saveBatch({
       name,
-      grnFileName: grnFile?.originalname ?? null,
-      ageingFileName: ageingFile?.originalname ?? null,
+      grnFileName: fileNames(grnFiles),
+      ageingFileName: fileNames(ageingFiles),
       userId: req.user.id,
       grnRows,
-      ageingRows: ageing?.rows ?? [],
-      bankFileName: bankFile?.originalname ?? null,
-      bankRows: bank?.rows ?? [],
-      bankAccountNo: bank?.accountNo ?? null,
-      bpadFileName: bpadFile?.originalname ?? null,
+      ageingRows,
+      bankFileName: bankFiles[0]?.originalname ?? null,
+      bankRows: firstBank?.rows ?? [],
+      bankAccountNo: firstBank?.accountNo ?? null,
+      bpadFileName: fileNames(bpadFiles),
       bpadRows,
-      bpadScanned: bpad?.scanned ?? 0,
+      bpadScanned: bpads.reduce((sum, b) => sum + b.scanned, 0),
     });
 
-    const files = [grnFile, ageingFile, bankFile, bpadFile].filter(Boolean).map((f) => f.originalname);
+    // Every further statement in a batch of its own, since a batch holds one
+    // account. In the order picked, so a transaction two statements share is
+    // left with the later one, as two uploads one after the other would leave it.
+    const batchIds = [main.batchId];
+    let replacedBankRows = main.replaced.bankRows;
+    for (const [i, bank] of laterBanks.entries()) {
+      const file = bankFiles[i + 1];
+      const extra = await saveBatch({
+        name: defaultBatchName([file]),
+        userId: req.user.id,
+        bankFileName: file.originalname,
+        bankRows: bank.rows,
+        bankAccountNo: bank.accountNo ?? null,
+      });
+      batchIds.push(extra.batchId);
+      replacedBankRows += extra.replaced.bankRows;
+    }
+
+    const { batchId, reopenedRejections } = main;
+    const replaced = { ...main.replaced, bankRows: replacedBankRows };
+    const bankRowCount = banks.reduce((sum, b) => sum + b.rows.length, 0);
+
+    const files = allFiles.map((f) => f.originalname);
     logActivity(req, {
       action: 'UPLOAD',
       target: name,
       summary: `Uploaded ${files.length} file${files.length === 1 ? '' : 's'}: ${files.join(', ')}`,
       details: {
         batchId,
-        grnFile: grnFile?.originalname ?? null,
-        grnRows: grn?.rows.length ?? 0,
-        ageingFile: ageingFile?.originalname ?? null,
-        ageingRows: ageing?.rows.length ?? 0,
-        bankFile: bankFile?.originalname ?? null,
-        bankRows: bank?.rows.length ?? 0,
-        bpadFile: bpadFile?.originalname ?? null,
+        batchIds,
+        grnFile: fileNames(grnFiles),
+        grnRows: grnRows.length,
+        ageingFile: fileNames(ageingFiles),
+        ageingRows: ageingRows.length,
+        bankFile: fileNames(bankFiles),
+        bankRows: bankRowCount,
+        bpadFile: fileNames(bpadFiles),
         bpadStoredRows: bpadRows.length,
         reopenedRejections,
         // Rows already stored that this upload replaced -- see saveBatch.
@@ -343,16 +476,19 @@ batchesRouter.post(
 
     return res.status(201).json({
       batchId,
+      // More than one only when several bank statements came up together --
+      // see the loop above.
+      batchIds,
       name,
       summary,
-      bankRowCount: bank?.rows.length ?? 0,
-      bankAccountNo: bank?.accountNo ?? null,
+      bankRowCount,
+      bankAccountNo: firstBank?.accountNo ?? null,
       // Three figures, because they answer three different questions: how big
-      // the register was, how much of it was about these GRNs, and how many
+      // the registers were, how much of them was about these GRNs, and how many
       // rows the tab will therefore show. A register that matched nothing says
       // so, rather than reading like a file that failed to parse.
-      bpadRowCount: bpad?.scanned ?? 0,
-      bpadMatchedCount: bpad?.rows.length ?? 0,
+      bpadRowCount: bpads.reduce((sum, b) => sum + b.scanned, 0),
+      bpadMatchedCount: bpads.reduce((sum, b) => sum + b.rows.length, 0),
       bpadStoredCount: bpadRows.length,
       // How many GRNs this upload took back off the CSD queue by carrying a
       // bill CSD had rejected -- see reopenRejectedFor in services/ingest.js.

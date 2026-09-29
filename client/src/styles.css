@@ -1482,6 +1482,7 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
    ========================================================================== */
 
 .upload { padding: 24px 26px 22px; }
+@media (max-width: 640px) { .upload { padding: 18px 16px 16px; } }
 /* The one thing that does not want the extra width. A name is a short string,
    and an input the width of the workspace only invites a long one. */
 .upload .field { max-width: 460px; }
@@ -1978,13 +1979,17 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   box-shadow: var(--lip), inset 0 0 0 200px var(--stat-tint), var(--shadow-2);
   transition: transform 0.4s var(--ease-out), box-shadow 0.35s ease, border-color 0.35s ease;
 }
-/* The status key, inlaid down the left edge and lit from within. */
+/* The status key, inlaid down the left edge and lit from within. `right` and
+   `height` undo the .card::before hairline's own -- a stat is a .card too, and
+   left in place they squashed this bar to a 1px dash in the top-left corner. */
 .stat::before {
   content: "";
   position: absolute;
   left: 0;
+  right: auto;
   top: 14px;
   bottom: 14px;
+  height: auto;
   width: 4px;
   border-radius: 0 4px 4px 0;
   background: var(--stat-key);
@@ -2105,18 +2110,145 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 .stat--moved_to_accounts .stat__value, .stat--moved_to_accounts .stat__amount { color: var(--brand-700); }
 .stat--rejected .stat__value, .stat--rejected .stat__amount { color: var(--danger); }
 
+/* Compact cards, on the Results, Accounts Department, CS Department and HIS vs
+   FOCUS Reco screens:
+   the cards only pick a view, and at full size a row of them pushed the table
+   below the fold. Less padding, a smaller number and amount, and tiles of
+   220px and up, as many as the row holds, sharing its width -- wide enough
+   that a hint stays on one line and the Not Required card's two halves sit
+   side by side with a crore-sized amount in each. auto-fill rather than auto-fit, so a short row -- one or two
+   cards -- keeps tiles that size instead of stretching them across, which also
+   covers what .cards--few does; this comes after it and wins. The status key
+   and the "opens a section" arrow shrink in with the padding. After the tone
+   rules above, so the arrow's placement here outranks .stat--go's own at the
+   same specificity.
+
+   Each tile is a column with its content at the top: a row is as tall as its
+   tallest tile, and a button centres its content by default, which left the
+   shorter tiles' figures floating halfway down. */
+.cards--compact {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.cards--compact .stat {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 11px 14px 11px 18px;
+  border-radius: var(--r);
+}
+.cards--compact .stat::before { top: 9px; bottom: 9px; width: 3px; }
+.cards--compact .stat:hover { transform: translateY(-3px) rotateX(4deg); }
+.cards--compact .stat:hover::before { top: 6px; bottom: 6px; }
+.cards--compact .stat__label { font-size: 12px; }
+.cards--compact .stat__value { font-size: 21px; line-height: 1.2; }
+.cards--compact .stat__amount { font-size: 12.5px; }
+.cards--compact .stat__hint { font-size: 11.5px; margin-top: 1px; }
+.cards--compact .stat__go { top: 10px; right: 10px; }
+/* Room for that arrow, so a long label stops short of it. */
+.cards--compact .stat--go .stat__label { padding-right: 16px; }
+
+/* A card of two halves -- the Not Required pair on the Accounts row
+   (components/PairCard.jsx). The frame is not a control; each half is its own
+   button and filter, so the halves carry the pointer, the hover and the pressed
+   mark, and the card takes the ring while either is pressed. A hairline keeps
+   the two apart. Scoped under .stat--pair so it outranks the global button
+   rules, hover included. After the compact rules, so its smaller number wins
+   there at the same specificity. */
+.stat--pair { cursor: default; }
+.stat__halves {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 3px -6px 0;
+}
+.stat--pair .stat__half {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  padding: 3px 6px 4px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  font-weight: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.stat--pair .stat__half + .stat__half { box-shadow: inset 1px 0 0 var(--border); }
+.stat--pair .stat__half:hover:not(:disabled) {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+/* The pressed half: a soft brand wash and its name in the brand colour --
+   the card's own ring already says the filter is on, so no box of its own. */
+.stat--pair .stat__half.is-active,
+.stat--pair .stat__half.is-active:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--brand) 9%, transparent);
+}
+.stat__half-label { font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.stat--pair .stat__half.is-active .stat__half-label { color: var(--brand-700, var(--brand)); }
+.stat--pair .stat__value { font-size: 19px; line-height: 1.2; }
+/* Breaks only after the ₹, never inside the figure. */
+.stat--pair .stat__amount { font-size: 11.5px; overflow-wrap: normal; }
+/* Too narrow for two amounts side by side -- a phone's half-width tile -- the
+   halves stack, each on two lines: its name and count, then its amount. About
+   the height of the tiles beside it, so the row does not grow round it. Sized
+   by the card's own width rather than the window's, since the grid decides how
+   wide a tile is. It keeps its place in the row either way: made to span a row
+   of its own, it left a hole where it would have gone. */
+.stat--pair { container-type: inline-size; }
+/* The width queried is the card's content box -- a 220px tile less its
+   border and padding is 186px -- so anything narrower than the grid's own
+   minimum tile stacks, and every tile the grid lays out on a wider screen
+   keeps its halves side by side. */
+@container (max-width: 185px) {
+  .stat__halves { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .stat--pair .stat__half {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    column-gap: 8px;
+  }
+  .stat--pair .stat__half .stat__amount { grid-column: 1 / -1; }
+  .stat--pair .stat__value { font-size: 17px; }
+  .stat--pair .stat__half + .stat__half { box-shadow: inset 0 1px 0 var(--border); }
+}
+
+/* Phones: the compact tiles two to a row, sharing the width, rather than one
+   down the left with the rest of the line empty. */
+@media (max-width: 640px) {
+  .cards--compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .cards--compact .stat { padding: 9px 12px 9px 16px; }
+  .cards--compact .stat__value { font-size: 19px; }
+  .cards--compact .stat__amount { font-size: 12px; overflow-wrap: anywhere; }
+}
+
 /* --- toolbar */
 .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
 /* Pinned right. Nothing sits opposite it any more -- choosing a view moved up
    to the head row, beside Location -- so the margin, not `space-between`, is
    what holds this group against the right edge. */
-.toolbar__actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-left: auto; }
-/* One line, in source order: filter, then search, then the export button.
-   Wrapping is kept for phone widths, where the three genuinely do not fit;
-   above that, letting them wrap put the filter on a line of its own above the
-   search rather than beside it. */
-@media (min-width: 641px) {
-  .toolbar__actions { flex-wrap: nowrap; }
+/* One line, in source order, while it fits; onto a second line, still held
+   right, once it does not. It used to be held to one line above phone width,
+   which was right for three controls -- but the Accounts view's toolbar now
+   carries five dropdowns and pickers, the search and Select multiple, which is
+   wider than a laptop window with the sidebar open, and a row that cannot wrap
+   runs off the page. */
+.toolbar__actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  min-width: 0;
+  margin-left: auto;
 }
 /* Neither field gives up width to the other when the row is tight. */
 .toolbar__actions > .stage-filter,
@@ -2149,7 +2281,15 @@ select.stage-filter { width: auto; min-width: 150px; }
 }
 .ageing-asof input.stage-filter { width: auto; }
 .search::-webkit-search-cancel-button { cursor: pointer; }
-@media (max-width: 640px) { .search { width: 100%; } }
+/* Phones: the toolbar's controls share the width evenly -- dropdowns two to a
+   line, the "as of" date and the search a line each -- rather than wrapping
+   into a ragged right-hand edge of whatever happened to fit. */
+@media (max-width: 640px) {
+  .search { width: 100%; }
+  .toolbar__actions > select.stage-filter { flex: 1 1 140px; min-width: 0; }
+  .toolbar__actions > .ageing-asof { flex: 1 1 100%; }
+  .ageing-asof input.stage-filter { flex: 1; min-width: 0; }
+}
 
 /* The bulk-select checkbox column's own input -- pinned alongside Division
    and GRN No, see .table__pin--select in the table pinning rules below.
@@ -2246,6 +2386,10 @@ select.stage-filter { width: auto; min-width: 150px; }
   --thead-group-h: 30px;
   overflow: auto;
   max-height: max(340px, calc(100vh - 240px));
+  /* The visible height, where the browser knows it: on a phone 100vh counts
+     the address bar the page is drawn under, and the table's foot would sit
+     behind it. */
+  max-height: max(340px, calc(100dvh - 240px));
   /* The page behind must not start moving the moment the rows reach their end. */
   overscroll-behavior: contain;
 }
@@ -2369,6 +2513,24 @@ select.stage-filter { width: auto; min-width: 150px; }
   right: 0;
   border-right: none;
   border-left: 1px solid var(--border);
+}
+/* On a phone the frozen columns -- checkbox, Division, GRN No and Action,
+   some 400px between them -- would be wider than the screen, leaving nothing
+   to scroll. GRN No alone holds the left edge there (after the checkbox, when
+   selecting), since it is what a row is looked up by; Division and Action let
+   go and scroll with the rest. `left`/`right: auto` keeps a header cell sticky
+   to the top while dropping the sideways hold, and the layer goes back to an
+   ordinary cell's -- left on the pinned one, a cell later in the row would
+   paint over the frozen columns as it slid under them. After the rules above,
+   so these win at the same specificity. */
+@media (max-width: 640px) {
+  .table__pin--division,
+  .table--pinned-select .table__pin--division { left: auto; z-index: 0; }
+  .table__pin--grn { left: 0; }
+  .table--pinned-select .table__pin--grn { left: var(--select-pin-w); }
+  .table__pin--action { right: auto; z-index: 0; }
+  .table th.table__pin--division,
+  .table th.table__pin--action { z-index: 2; }
 }
 .table tbody tr:nth-child(even) .table__pin { background-color: var(--table-bg-alt); }
 .table tbody tr:hover .table__pin { background-color: var(--table-bg-hover); }
@@ -3491,13 +3653,29 @@ select.spans__select { width: auto; min-width: 150px; }
 }
 /* Four held columns are 660px; below a wide window that is most of the table,
    so the name pair lets go and only Vendor Code and Status stay. `left: auto`
-   keeps the header cells sticky to the top while dropping the sideways hold. */
+   keeps the header cells sticky to the top while dropping the sideways hold,
+   and each cell's layer goes back to an ordinary one's (a group band's, for
+   the band) -- left on the pinned one, the names, later in the row, would
+   paint over Code and Status as they slid under them. */
 @media (max-width: 1280px) {
   .table.msme-table th.msme-pin--band,
   .table.msme-table th.msme-pin--his-name,
   .table.msme-table td.msme-pin--his-name,
   .table.msme-table th.msme-pin--acc-name,
   .table.msme-table td.msme-pin--acc-name { left: auto; }
+  .table.msme-table td.msme-pin--his-name,
+  .table.msme-table td.msme-pin--acc-name { z-index: 0; }
+  .table.msme-table th.msme-pin--his-name,
+  .table.msme-table th.msme-pin--acc-name { z-index: 2; }
+  .table.msme-table th.msme-pin--band { z-index: 3; }
+}
+/* And on a phone, Status lets go too: Vendor Code and Status together are
+   260px, most of the screen. The code is what a row is read by. */
+@media (max-width: 640px) {
+  .table.msme-table th.msme-pin--status,
+  .table.msme-table td.msme-pin--status { left: auto; }
+  .table.msme-table td.msme-pin--status { z-index: 0; }
+  .table.msme-table th.msme-pin--status { z-index: 2; }
 }
 
 .msme-table .msme-remarks {
@@ -3564,9 +3742,12 @@ select.spans__select { width: auto; min-width: 150px; }
   border-right: 1px solid var(--border-strong);
 }
 /* On a narrow window two held columns are most of the table, so the name lets
-   go and only the code stays. */
+   go and only the code stays -- on an ordinary cell's layer, so it slides under
+   the code rather than over it. */
 @media (max-width: 900px) {
   .table.vm-table th.vm-pin--name,
   .table.vm-table td.vm-pin--name { left: auto; }
+  .table.vm-table td.vm-pin--name { z-index: 0; }
+  .table.vm-table th.vm-pin--name { z-index: 2; }
 }
 

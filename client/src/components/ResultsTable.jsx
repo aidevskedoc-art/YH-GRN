@@ -374,9 +374,10 @@ function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, fo
  * pre-selected: a box already reading "Send to CSD" invites a click that sends
  * to CSD by accident, and a handover is not something to undo casually.
  *
- * Once the GRN has gone, the dropdown is replaced by where it went. There is no
- * moving it from one destination to the other from here -- taking it back is
- * the CSD screen's job on that side, and Records has no screen at all.
+ * Once the GRN has gone, the dropdown is replaced by a Take back button while
+ * it can still be recalled -- from CSD until they act on it, from Records at
+ * any time -- and by where it went once it cannot. There is no moving it
+ * straight from one destination to the other: take it back, then send it on.
  */
 const SEND_CSD = 'CSD';
 const SEND_RECORDS = 'RECORDS';
@@ -399,14 +400,23 @@ const TAKE_BACK_STAGES = ['QUEUED', 'RECEIVED'];
  * still showing as sent from the optimistic flag set a moment ago has not been
  * reloaded yet and has no id to send, so it waits for the reload rather than
  * offering a button that cannot work.
- *
- * Records is not takeable-back at all: it keeps only the GRN number and has no
- * screen to take anything back from.
  */
 function canTakeBack(row, canCsd) {
   return Boolean(
     canCsd && row.csdDispatchId && TAKE_BACK_STAGES.includes(row.csdStage || 'QUEUED'),
   );
+}
+
+/**
+ * Whether the Take back button is offered on a row filed to Records.
+ *
+ * No stage to check -- nobody acts on a filed GRN, so it can always be recalled
+ * -- and no access check beyond this table's own, the same as sending it. Only
+ * the record's id, for the same reason canTakeBack needs the dispatch's: a row
+ * marked filed a moment ago by the optimistic flag has not been reloaded yet.
+ */
+function canTakeBackFiled(row) {
+  return Boolean(row.recordsSent && row.recordsId);
 }
 
 /**
@@ -435,12 +445,37 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, grouped = fal
         type="button"
         className="csd csd--take-back csd--recall"
         disabled={busy}
-        onClick={() => onTakeBack(row)}
+        onClick={() => onTakeBack(row, SEND_CSD)}
         aria-label={`Take GRN ${row.dprNo} back off the CSD queue`}
         title={
           grouped
             ? `GRN ${row.dprNo} is in the CSD queue. Taking it back takes every GRN paid by cheque ${row.chequeNo} back with it.`
             : `GRN ${row.dprNo} is in the CSD queue. Take it back while CSD have not acted on it.`
+        }
+      >
+        <span className="csd__icon">
+          <IconUndo size={14} />
+        </span>
+        {busy ? 'Taking back…' : 'Take back'}
+      </button>
+    );
+  }
+
+  // Filed to Records -- the same button, for the same mistake. Always offered
+  // once the reload has brought the record's id: nothing happens to a GRN in
+  // Records, so there is never a point after which it is too late.
+  if (filed && !sent && canTakeBackFiled(row)) {
+    return (
+      <button
+        type="button"
+        className="csd csd--take-back csd--recall"
+        disabled={busy}
+        onClick={() => onTakeBack(row, SEND_RECORDS)}
+        aria-label={`Take GRN ${row.dprNo} back from Records`}
+        title={
+          grouped
+            ? `GRN ${row.dprNo} has been sent to Records. Taking it back takes every GRN paid by cheque ${row.chequeNo} back with it.`
+            : `GRN ${row.dprNo} has been sent to Records. Take it back to send it somewhere else.`
         }
       >
         <span className="csd__icon">
@@ -891,9 +926,9 @@ export default function ResultsTable({
   // springing back to "Send to CSD" for a moment.
   const [busy, setBusy] = useState(() => new Set());
   const [justSent, setJustSent] = useState(() => new Set());
-  // Taking a GRN back off the CSD queue is the one destructive thing this
-  // table does, so it asks first -- the same dialog the CSD screen's own
-  // version of this action uses.
+  // Taking a GRN back off the CSD queue or out of Records is the one
+  // destructive thing this table does, so it asks first -- the same dialog
+  // the CSD screen's own version of this action uses.
   const [confirm, confirmDialog] = useConfirm();
   const [justFiled, setJustFiled] = useState(() => new Set());
   const [error, setError] = useState('');
@@ -1085,21 +1120,26 @@ export default function ResultsTable({
   }
 
   /**
-   * Take a GRN back off the CSD queue -- the undo for one sent by mistake.
+   * Take a GRN back from where it was sent -- the undo for one sent by mistake,
+   * from the CSD queue or from Records.
    *
-   * The dispatch row is deleted, which is what taking it back means here:
-   * `csdSent` is read from that table rather than stored on the result, so the
-   * GRN stops being in the queue and comes back to Accounts as one that has
-   * not been handed over, Send picker and all. The CSD screen loses the row at
-   * the same time, being a view of the same table.
+   * The dispatch or record row is deleted, which is what taking it back means
+   * here: `csdSent` and `recordsSent` are read from those tables rather than
+   * stored on the result, so the GRN comes back to Accounts as one that has
+   * not been sent anywhere, Send picker and all. For CSD the CSD screen loses
+   * the row at the same time, being a view of the same table.
    *
    * Confirmed, because it is destructive and silent -- nothing on either
-   * screen afterwards says the GRN was ever sent. Refused by the server once
-   * CSD have acted (see TAKE_BACK_STAGES in routes/csd.js); the picker is not
-   * offered then either, and the two disagree only in the seconds between CSD
-   * approving it and this page reloading, which is what the error is for.
+   * screen afterwards says the GRN was ever sent. From CSD it is refused by the
+   * server once CSD have acted (see TAKE_BACK_STAGES in routes/csd.js); the
+   * button is not offered then either, and the two disagree only in the
+   * seconds between CSD approving it and this page reloading, which is what
+   * the error is for. From Records it is never refused -- nothing happens to a
+   * GRN there to make it too late.
    */
-  async function takeBack(row) {
+  async function takeBack(row, from = SEND_CSD) {
+    const fromRecords = from === SEND_RECORDS;
+    const place = fromRecords ? 'Records' : 'the CSD queue';
     // The whole cheque went over together, so the whole cheque comes back
     // together -- undoing a grouped send one row at a time would be the one
     // gesture on this column that still had to be repeated.
@@ -1108,7 +1148,10 @@ export default function ResultsTable({
 
     let group;
     try {
-      group = await chequeGroup(row, (r) => canTakeBack(r, canHandToCsd(can)));
+      group = await chequeGroup(
+        row,
+        fromRecords ? canTakeBackFiled : (r) => canTakeBack(r, canHandToCsd(can)),
+      );
     } catch (err) {
       setError(err.message);
       setBusy(new Set());
@@ -1119,8 +1162,8 @@ export default function ResultsTable({
     const ok = await confirm({
       title: many ? `Take these ${group.length} GRNs back?` : 'Take this GRN back?',
       message: many
-        ? `Cheque ${row.chequeNo} pays ${group.length} GRNs that are on the CSD queue. All of them will come off it and go back to Accounts as ones that have not been sent. They can be sent again afterwards.`
-        : `GRN ${row.dprNo} will come off the CSD queue and go back to Accounts as one that has not been sent. It can be sent again afterwards.`,
+        ? `Cheque ${row.chequeNo} pays ${group.length} GRNs that are in ${place}. All of them will come out of it and go back to Accounts as ones that have not been sent. They can be sent again afterwards.`
+        : `GRN ${row.dprNo} will come out of ${place} and go back to Accounts as one that has not been sent. It can be sent again afterwards.`,
       confirmLabel: 'Take back',
     });
     if (!ok) {
@@ -1130,10 +1173,14 @@ export default function ResultsTable({
 
     const numbers = beginBusy(group);
     try {
-      await Promise.all(group.map((r) => api.removeFromCsd(r.csdDispatchId)));
+      await Promise.all(
+        group.map((r) =>
+          fromRecords ? api.removeFromRecords(r.recordsId) : api.removeFromCsd(r.csdDispatchId),
+        ),
+      );
       // The optimistic flags from a send made earlier in this page's life would
       // otherwise go on claiming the rows are sent after the reload disagrees.
-      setJustSent((prev) => {
+      (fromRecords ? setJustFiled : setJustSent)((prev) => {
         const next = new Set(prev);
         for (const dprNo of numbers) next.delete(dprNo);
         return next;

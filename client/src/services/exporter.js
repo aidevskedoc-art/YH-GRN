@@ -21,7 +21,7 @@
 import { api } from '../api/client.js';
 import { CHECKPOINTS, STAGE_KEYS, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
 import { chequeNotRequired, chequePrepared, paymentNotRequired } from './cheque.js';
-import { ageingDays, todayIso } from './ageing.js';
+import { ageingDays, bpadAgeDays, todayIso } from './ageing.js';
 
 /*
  * The GRNs / Cheques switch's two values. Spelled here rather than imported
@@ -271,7 +271,8 @@ const BPAD_COLUMNS = [
   { key: 'accountsReceivedDate', label: 'Accounts Received Date', date: true },
   { key: 'pendingWithUser', label: 'Pending With User/Status' },
   { key: 'pendReason', label: 'Pend.Reason/Pend Dept' },
-  // Days from GRN Date, per desk -- see BPAD_AGEING_SQL on the server.
+  // Days from GRN Date, per desk, with Stores counting to the "as of" date
+  // picked on screen -- see bpadAgeDays in services/ageing.js and sheetRows.
   { key: 'ageing', label: 'Ageing', integer: true },
 ];
 
@@ -936,9 +937,15 @@ async function sheetRows(batchId, spec, { q, location, msme, spans, view, ageing
           totalDays: totalDays(r),
           ...Object.fromEntries(spans.map((span) => [spanId(span), spanDays(r, span)])),
         }))
-      : // The Ageing, as the table shows it: to the cheque date, or to the
-        // "as of" date picked on screen -- see services/ageing.js.
-        raw.map((r) => ({ ...r, ageingDays: ageingDays(r, ageingAsOf), ageingAsOf }));
+      : spec.status === 'BPAD'
+        ? // Age from GRN Date, as the tab shows it: a bill still at Stores
+          // counts to the "as of" date picked on screen -- see
+          // services/ageing.js. Over the server's own figure, which is as of
+          // today.
+          raw.map((r) => ({ ...r, ageing: bpadAgeDays(r, ageingAsOf) }))
+        : // The Ageing, as the table shows it: to the cheque date, or to the
+          // "as of" date picked on screen -- see services/ageing.js.
+          raw.map((r) => ({ ...r, ageingDays: ageingDays(r, ageingAsOf), ageingAsOf }));
   return { name, rows };
 }
 

@@ -478,7 +478,7 @@ export default function MsmeReco() {
       )}
 
       {run && (
-        <div className="cards">
+        <div className="cards cards--compact">
           {VIEWS.map((v) => (
             <button
               key={v.key}
