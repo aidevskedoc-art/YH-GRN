@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client.js';
 import { bpadAgeDays, bpadDesk, todayIso } from '../services/ageing.js';
 import { formatAmountOrDash, formatDate } from './ResultsTable.jsx';
@@ -66,7 +66,10 @@ export default function BpadView({
   msme,
   dept,
   register,
+  notIntegrated = false,
+  accountsFrom = '',
   onDepartments,
+  onNotIntegrated,
   ageingAsOf = todayIso(),
 }) {
   const [data, setData] = useState(null);
@@ -75,18 +78,30 @@ export default function BpadView({
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
+  // The date only narrows the rows while the Not Integrated card is pressed;
+  // otherwise moving it re-counts that card and leaves the table as it is.
+  const rowsFrom = notIntegrated ? accountsFrom : '';
+
   // Page 7 of the old result set is rarely a page of the new one, so changing
   // the upload, the search or the department starts again from the first page.
   useEffect(() => {
     setPage(1);
-  }, [batchId, q, location, msme, dept, register]);
+  }, [batchId, q, location, msme, dept, register, notIntegrated, rowsFrom]);
+
+  // Which request is the latest. Typing a year into the date picker sends one
+  // request per digit -- 0002, 0020, 0202, 2026 are each a whole date -- and
+  // an older answer landing last would leave the card counting from year 202.
+  const latestRequest = useRef(0);
 
   const load = useCallback(() => {
     if (!batchId) return;
+    const request = ++latestRequest.current;
+    const latest = () => request === latestRequest.current;
     setLoading(true);
     api
-      .bpad(batchId, { page, pageSize, q, location, msme, dept, register })
+      .bpad(batchId, { page, pageSize, q, location, msme, dept, register, notIntegrated, accountsFrom })
       .then((next) => {
+        if (!latest()) return;
         setData(next);
         // The departments the register knows about, handed up to the page that
         // owns the dropdown. It sits in the toolbar with Search and Location
@@ -94,10 +109,30 @@ export default function BpadView({
         // filter on this screen is -- but its options come from this response,
         // which is the only call that reads the register's own table.
         onDepartments?.(next.departments ?? []);
+        // The Not Integrated in Accounts card's figure, the same way: the
+        // card is the page's, the figure comes with the register's rows.
+        onNotIntegrated?.(next.notIntegrated ?? null);
       })
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [batchId, page, pageSize, q, location, msme, dept, register, onDepartments]);
+      .catch((err) => {
+        if (latest()) setError(err.message);
+      })
+      .finally(() => {
+        if (latest()) setLoading(false);
+      });
+  }, [
+    batchId,
+    page,
+    pageSize,
+    q,
+    location,
+    msme,
+    dept,
+    register,
+    notIntegrated,
+    accountsFrom,
+    onDepartments,
+    onNotIntegrated,
+  ]);
 
   useEffect(load, [load]);
 
@@ -112,10 +147,11 @@ export default function BpadView({
    * table: on this tab it almost always means the register has not been
    * uploaded yet, which is a thing to go and do rather than a search that
    * found nothing. Guarded on nothing being narrowed -- no search, no branch,
-   * no department: with any of them set, an empty table is the ordinary answer
-   * and the pager below already says so.
+   * no department, no card: with any of them set, an empty table is the
+   * ordinary answer and the pager below already says so. Not Integrated in
+   * the Accounts above all, where no rows is the answer everybody hopes for.
    */
-  if (total === 0 && !q && !location && !msme && !dept && !register) {
+  if (total === 0 && !q && !location && !msme && !dept && !register && !notIntegrated) {
     return (
       <div className="alert alert--info">
         <strong>No BPAD register has been matched to this upload yet.</strong> Upload BPAD.xlsx on
@@ -266,7 +302,9 @@ export default function BpadView({
           {total === 0
             ? q
               ? `Nothing matches "${q}"`
-              : 'No rows'
+              : notIntegrated
+                ? 'None — every bill BPAD has at Accounts is in the Vendor Ageing report'
+                : 'No rows'
             : `Showing ${(page - 1) * pageSize + 1}–${Math.min(
                 page * pageSize,
                 total,

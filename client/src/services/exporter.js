@@ -907,8 +907,10 @@ function save(blob, fileName) {
  * A sheet is described by which view's rows it holds (`status`) and which of
  * that view's cards narrowed them -- `progress` for a CSD stage or the cheque
  * pair, `dept` for a BPAD desk, `register` for the GRNs the register never
- * knew. Nothing narrowing is the view's own sheet. See sectionSheets in
- * services/resultsViews.js, which turns the cards into these.
+ * knew, `notIntegrated` (with its `accountsFrom`) for the BPAD bills at
+ * Accounts the ageing report does not have. Nothing narrowing is the view's
+ * own sheet. See sectionSheets in services/resultsViews.js, which turns the
+ * cards into these.
  *
  * Turnaround rows carry their day counts under `gaps`; lifted to the top
  * level here so the column keys resolve like every other column's, the same
@@ -923,6 +925,8 @@ async function sheetRows(batchId, spec, { q, location, msme, spans, view, ageing
     dept: spec.dept,
     register: spec.register,
     supplyType: spec.supplyType,
+    notIntegrated: spec.notIntegrated,
+    accountsFrom: spec.accountsFrom,
     view,
   });
   const rows =

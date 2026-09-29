@@ -20,6 +20,11 @@ export function todayIso() {
   return new Date().toLocaleDateString('en-CA');
 }
 
+/** The 1st of the current month, as the yyyy-MM-dd a date input holds. */
+export function monthStartIso() {
+  return `${todayIso().slice(0, 7)}-01`;
+}
+
 /** A yyyy-MM-dd date as a whole day count, for subtracting one from another. */
 const dayNumber = (iso) => Date.parse(`${iso}T00:00:00Z`) / 86_400_000;
 

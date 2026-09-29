@@ -229,14 +229,25 @@ export const api = {
    * `register` narrows the other column the tab has of its own: 'missing' for
    * the GRNs the register had no entry for, which is what the Not in BPAD card
    * asks for.
+   *
+   * `notIntegrated` narrows it to the Not Integrated in Accounts card's
+   * rows: bills the register has at Accounts that the Vendor Ageing report has
+   * no GRN for. `accountsFrom` (yyyy-MM-dd) is the Accounts Received Date that
+   * card counts from, and is sent whether or not the card is pressed -- the
+   * card's figure comes back with every response as `notIntegrated`.
    */
-  bpad: (id, { page = 1, pageSize = 50, q, location, msme, dept, register } = {}) => {
+  bpad: (
+    id,
+    { page = 1, pageSize = 50, q, location, msme, dept, register, notIntegrated, accountsFrom } = {},
+  ) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (location) params.set('location', location);
     if (msme) params.set('msme', msme);
     if (dept) params.set('dept', dept);
     if (register) params.set('register', register);
+    if (notIntegrated) params.set('notIntegrated', '1');
+    if (accountsFrom) params.set('accountsFrom', accountsFrom);
     return request(`/batches/${id}/bpad?${params}`);
   },
 
@@ -441,10 +452,15 @@ export const api = {
    * `status` is which view's rows; the rest are the narrowings the cards on a
    * view set, so that a section's workbook can ask for one card's rows per
    * sheet. `progress` is the Status column's own filter (the CSD stages and
-   * the cheque pair), `dept` one BPAD desk, `register` the 'missing' rows.
-   * Anything left out narrows nothing.
+   * the cheque pair), `dept` one BPAD desk, `register` the 'missing' rows,
+   * `notIntegrated` and `accountsFrom` the BPAD view's Not Integrated in
+   * Accounts card. Anything left out narrows nothing.
    */
-  exportRows: (id, status, { q, progress, location, msme, dept, register, supplyType, view } = {}) => {
+  exportRows: (
+    id,
+    status,
+    { q, progress, location, msme, dept, register, supplyType, view, notIntegrated, accountsFrom } = {},
+  ) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
     // 'cheque' for the Accounts view's Cheque view sheet -- see chequeRows.
@@ -456,6 +472,8 @@ export const api = {
     if (dept) params.set('dept', dept);
     if (register) params.set('register', register);
     if (supplyType) params.set('supplyType', supplyType);
+    if (notIntegrated) params.set('notIntegrated', '1');
+    if (accountsFrom) params.set('accountsFrom', accountsFrom);
     return request(`/batches/${id}/export?${params}`);
   },
 };

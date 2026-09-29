@@ -1499,7 +1499,7 @@ resultsRouter.get(
 );
 
 /**
- * GET /api/batches/:id/export?status=&q=&progress=&location=&dept=&register=&supplyType=
+ * GET /api/batches/:id/export?status=&q=&progress=&location=&dept=&register=&supplyType=&notIntegrated=&accountsFrom=
  *
  * Every row for a status, unpaginated, as JSON. The Excel and CSV files are
  * assembled in the browser (client/src/services/exporter.js), so this endpoint
@@ -1508,7 +1508,8 @@ resultsRouter.get(
  * It takes the narrowing filters the cards on each view set -- `progress` for
  * the CSD stages and the cheque cards, `dept` for the Pending breakdown,
  * `register` for Not in BPAD, `supplyType` for the Cheque Not Prepared
- * section's Stents / Regular -- because a section's workbook carries a sheet
+ * section's Stents / Regular, `notIntegrated` and `accountsFrom` for the BPAD
+ * view's Not Integrated in Accounts -- because a section's workbook carries a sheet
  * per card and each sheet is that card's own rows. Filters left out narrow
  * nothing, which is the whole of a section's own sheet.
  */
@@ -1737,6 +1738,88 @@ function bpadRegisterFilter(value) {
   if (wanted === 'missing') return 'NOT b.in_register';
   if (wanted === 'in') return 'b.in_register';
   return null;
+}
+
+/*
+ * Not Integrated in Accounts: the bills the register says Accounts has
+ * received that the Vendor Ageing report -- the Accounts system's own list --
+ * has no GRN for. BPAD has handed them over; the Accounts system has not
+ * picked them up.
+ *
+ * The desk is matched the way the results screen's Accounts desk card matches
+ * it (isAccountsDept in client/src/services/resultsViews.js): the word at the
+ * start of Pending With Dept., any case, with no letter after it -- so this
+ * card is always a share of that one. The ageing side is matched the way the
+ * reconciliation matches it: GRN_NO with its branch code split off
+ * (grn_number_key) against the register's GRN No folded through the same
+ * normKey. Any upload's ageing rows count, because the question is whether
+ * the GRN reached the Accounts system at all, not which month it arrived in.
+ */
+const BPAD_AT_ACCOUNTS = `b.pending_with_dept ~* '^\\s*accounts(?![a-z])'`;
+const BPAD_NOT_IN_AGEING = `NOT EXISTS (
+    SELECT 1 FROM vendor_ageing na WHERE na.grn_number_key = b.grn_no_key
+  )`;
+
+/** Whether the request asks for the Not Integrated rows only (`notIntegrated=1`). */
+function notIntegratedParam(req) {
+  return String(req.query.notIntegrated ?? '').trim() === '1';
+}
+
+/** The `accountsFrom` query parameter as sent, trimmed, or '' for none. */
+function accountsFromValue(req) {
+  return String(req.query.accountsFrom ?? '').trim();
+}
+
+/**
+ * Whether `value` is a real calendar day, `yyyy-MM-dd`, that Postgres will
+ * take as a DATE: round-tripped through Date to catch a 31st of February (the
+ * same check asIso makes in services/normalize.js), and year 0000 refused,
+ * which Date accepts and Postgres does not.
+ */
+function isIsoDay(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000')) return false;
+  const time = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
+}
+
+/**
+ * The Accounts Received Date the Not Integrated card's rows count from, as
+ * `yyyy-MM-dd`, or '' for every date.
+ *
+ * Refused when it is not a real calendar day rather than ignored, the way an
+ * unknown supply type is: ignoring it would quietly widen the card's rows to
+ * every date, and passing it on would have Postgres reject it with a 500.
+ * Only ever read while those rows are asked for (see bpadRows), so a bad date
+ * can never cost the rest of the register its table or its export.
+ */
+function accountsFromParam(req) {
+  const value = accountsFromValue(req);
+  if (!value) return '';
+  if (!isIsoDay(value)) {
+    const err = new Error(`Unknown Accounts received date "${value}".`);
+    err.status = 400;
+    throw err;
+  }
+  return value;
+}
+
+/**
+ * The Not Integrated rows as SQL, or null when they were not asked for.
+ *
+ * `from` narrows them to the bills Accounts received on or after that day --
+ * the date picker beside the card. No upper bound: "from that date to the
+ * latest" is every received date since. It narrows this card's rows only, not
+ * the tab, so a bill at a desk with no Accounts Received Date at all (every
+ * one at STORES) is not dropped from the rest of the register by it.
+ */
+function bpadNotIntegratedFilter(on, from, params) {
+  if (!on) return null;
+  const clauses = [BPAD_AT_ACCOUNTS, BPAD_NOT_IN_AGEING];
+  if (from) {
+    params.push(from);
+    clauses.push(`b.accounts_received_date >= $${params.length}`);
+  }
+  return `(${clauses.join(' AND ')})`;
 }
 
 /**
@@ -2027,6 +2110,47 @@ async function bpadDepartments(req, scope) {
 }
 
 /**
+ * The Not Integrated in Accounts card's figure: how many of the register's
+ * Accounts bills the Vendor Ageing report has no GRN for, counted from `from`
+ * (see bpadNotIntegratedFilter).
+ *
+ * Follows the search box as well as the branch and MSME scope, unlike the desk
+ * list above: that list is a dropdown's options, which must not reshuffle as a
+ * search is typed, where this is a card whose number has to be the rows that
+ * pressing it shows. Never narrowed by the desk, register or Not Integrated
+ * filters themselves, so the card keeps its count whichever card is pressed.
+ *
+ * `grns` beside `count` because the register repeats a GRN across a split
+ * invoice: the table lists rows, and the question asked of this card is how
+ * many GRNs. The two are the same unless a GRN repeats.
+ */
+async function bpadNotIntegratedSummary(req, scope, from) {
+  const params = [];
+  const where = whereFrom([
+    bpadBatchFilter(scope, params),
+    bpadSearchFilter(req.query.q, params),
+    bpadNotIntegratedFilter(true, from, params),
+    BPAD_BRANCH_SCOPE,
+    ...bpadBranchClauses(req, params),
+  ]);
+  const { rows } = await query(
+    `SELECT COUNT(*)::int AS count,
+            COUNT(DISTINCT b.grn_no_key)::int AS grns,
+            COALESCE(SUM(b.grn_amount), 0) AS amount
+     ${BPAD_JOINS}
+     ${where}`,
+    params,
+  );
+  return {
+    count: rows[0]?.count ?? 0,
+    grns: rows[0]?.grns ?? 0,
+    amount: Number(rows[0]?.amount ?? 0),
+    // Which date the figure was counted from, so the card can say so.
+    accountsFrom: from || null,
+  };
+}
+
+/**
  * Every BPAD row in scope, for the tab and for its sheet in the export.
  *
  * `all` drops the pagination, which is what the export asks for.
@@ -2035,14 +2159,22 @@ async function bpadDepartments(req, scope) {
  * narrows whatever asks for these rows. In practice that is the tab only: the
  * export sends the search and the branch and nothing else, the same way it
  * leaves the other tabs' own dropdowns out of the workbook.
+ *
+ * The Not Integrated filter too -- the card's rows, from its date -- which the
+ * export does send, for that card's own sheet.
  */
 async function bpadRows(req, scope, { page, pageSize, all = false } = {}) {
+  // The date is read only while the Not Integrated rows are asked for: it is
+  // that card's, and the rest of the register must not depend on it.
+  const notIntegrated = notIntegratedParam(req);
+  const accountsFrom = notIntegrated ? accountsFromParam(req) : '';
   const params = [];
   const where = whereFrom([
     bpadBatchFilter(scope, params),
     bpadSearchFilter(req.query.q, params),
     bpadDeptFilter(req.query.dept, params),
     bpadRegisterFilter(req.query.register),
+    bpadNotIntegratedFilter(notIntegrated, accountsFrom, params),
     BPAD_BRANCH_SCOPE,
     ...bpadBranchClauses(req, params),
   ]);
@@ -2071,12 +2203,17 @@ async function bpadRows(req, scope, { page, pageSize, all = false } = {}) {
 }
 
 /**
- * GET /api/batches/:id/bpad?page=&pageSize=&q=&location=&dept=&register=
+ * GET /api/batches/:id/bpad?page=&pageSize=&q=&location=&dept=&register=&notIntegrated=&accountsFrom=
  *
  * The BPAD register's rows for the GRNs in scope. No status filter: every row
  * here is in the register because it matched a GRN, and the register's own
  * verdict on a bill is `pendingWithDept` rather than anything this system
  * decided -- which is what `dept` narrows the tab by.
+ *
+ * `notIntegrated=1` narrows it to the Not Integrated in Accounts card's
+ * rows, and `accountsFrom` is the date that card counts from. The date is read
+ * whether or not the card is pressed, because the card's figure comes back
+ * with every response (`notIntegrated` below).
  */
 resultsRouter.get(
   '/:id/bpad',
@@ -2092,6 +2229,18 @@ resultsRouter.get(
     // dropdown is built from it, and one rebuilt per page of rows would offer
     // a different set of choices as the reader paged through.
     const departments = await bpadDepartments(req, scope);
+    // The Not Integrated in Accounts card, from the date picked beside it.
+    // Here rather than in the summary because only this view shows it, and
+    // moving the date then re-counts one card rather than the whole page.
+    //
+    // A date it cannot count from costs the card its figure (null) and
+    // nothing else: the register's rows and desks above are answered as if no
+    // date had been sent, the way they were before the card existed.
+    const accountsFrom = accountsFromValue(req);
+    const notIntegrated =
+      !accountsFrom || isIsoDay(accountsFrom)
+        ? await bpadNotIntegratedSummary(req, scope, accountsFrom)
+        : null;
 
     return res.json({
       page,
@@ -2103,6 +2252,7 @@ resultsRouter.get(
       // the upload rather than about the fifty rows on screen.
       missing,
       departments,
+      notIntegrated,
       rows,
     });
   }),

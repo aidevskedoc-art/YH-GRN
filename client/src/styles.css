@@ -2093,6 +2093,13 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 .stat--missing { --stat-tint: var(--warn-soft); --stat-key: var(--warn); }
 .stat--missing .stat__value, .stat--missing .stat__amount { color: var(--warn); }
 
+/* Not Integrated in Accounts, on the BPAD view: bills BPAD says Accounts
+   received that the Vendor Ageing report has no GRN for. Red rather than the
+   amber above: that is not work still on its way, it is two systems that
+   disagree about a bill one of them says it already has. */
+.stat--gap { --stat-tint: var(--danger-soft); --stat-key: var(--danger); }
+.stat--gap .stat__value, .stat--gap .stat__amount { color: var(--danger); }
+
 /* The four CSD stages. They borrow the same semantic rungs rather than
    inventing four more colours: queued is work outstanding, so it takes the
    amber Pending does; received is in progress; and the two verdicts are the

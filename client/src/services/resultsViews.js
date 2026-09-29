@@ -150,6 +150,56 @@ export function isAccountsDept(dept) {
   return typeof dept === 'string' && /^accounts(?![a-z])/i.test(dept.trim());
 }
 
+/**
+ * Not Integrated in Accounts: the bills the BPAD register has at Accounts
+ * -- Pending With Dept. is Accounts, matched as isAccountsDept above matches it
+ * -- that the Vendor Ageing report has no GRN for. BPAD says Accounts received
+ * them; the Accounts system has not picked them up.
+ *
+ * The last card on the BPAD row, after every desk -- a share of the Accounts
+ * desk's bills, though it does not stand beside that card. Pressing
+ * it narrows the register's table to those bills, and the "Accounts received
+ * from" date beside it counts them from that day's Accounts Received Date to
+ * the latest. Its figure comes back with the BPAD rows (see
+ * bpadNotIntegratedSummary in routes/results.js), not with the summary.
+ *
+ * `id` is its key on the page's CARD_BY_ID, unlike any status, desk or
+ * progress key there.
+ */
+export const NOT_INTEGRATED_CARD = {
+  id: 'NOT_INTEGRATED',
+  kind: 'notIntegrated',
+  label: 'Not Integrated in Accounts',
+  hint: 'At Accounts in BPAD, not in the Vendor Ageing report',
+};
+
+/** `yyyy-MM-dd` as the screens write a date, `dd-MM-yyyy`. */
+function dayMonthYear(iso) {
+  const [y, m, d] = String(iso).split('-');
+  return d ? `${d}-${m}-${y}` : String(iso);
+}
+
+/** What the Not Integrated card says it counts from: a date, or every date. */
+export function notIntegratedSince(accountsFrom) {
+  return accountsFrom ? `Accounts received from ${dayMonthYear(accountsFrom)}` : 'Every Accounts received date';
+}
+
+/**
+ * Whether a value off the "Accounts received from" picker is a day the server
+ * will count from: `yyyy-MM-dd` with a four-digit year, year 0001 or later,
+ * and a real calendar day. The same rule as isIsoDay in routes/results.js.
+ *
+ * A date input reports whatever its year field holds, and with no `max`
+ * Chrome's takes six digits -- one stray keystroke is "20266-09-01" -- so the
+ * picker keeps only values that pass this, and nothing else ever reaches the
+ * server.
+ */
+export function isAccountsFromDay(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000')) return false;
+  const time = Date.parse(`${value}T00:00:00Z`);
+  return Number.isFinite(time) && new Date(time).toISOString().slice(0, 10) === value;
+}
+
 /** The Accounts view, as the view dropdown and the export sheet name it. */
 export const ACCOUNTS_TAB = { status: VALID, label: 'Accounts', hint: 'Found in the ageing report' };
 
@@ -776,6 +826,17 @@ function cardSheet(card) {
     case 'dept':
     case 'deptAccounts':
       return narrowedSheet(BPAD, deptLabel(card.dept), { dept: card.dept });
+    // The register's Accounts bills the ageing report has no GRN for, from the
+    // date picked beside the card -- which the title names, since the same
+    // card counts a different set of bills from a different date.
+    case 'notIntegrated':
+      return {
+        ...narrowedSheet(BPAD, card.label, {
+          notIntegrated: true,
+          ...(card.accountsFrom ? { accountsFrom: card.accountsFrom } : {}),
+        }),
+        title: `${titleForStatus(BPAD)} — ${card.label} (${notIntegratedSince(card.accountsFrom)})`,
+      };
     // The GRNs the register has no entry for. Its card stands on the Total
     // GRNS row and narrows those rows by the desk filter's own sentinel, so
     // the sheet is that section's rows narrowed the same way -- not the
@@ -874,7 +935,8 @@ export function sectionSheets(tab, cards, options = {}) {
         !(
           sheet.status === own.status &&
           sheet.progress === own.progress &&
-          (card.kind === 'bucket' || (!sheet.dept && !sheet.register && !sheet.supplyType))
+          (card.kind === 'bucket' ||
+            (!sheet.dept && !sheet.register && !sheet.supplyType && !sheet.notIntegrated))
         ),
     )
     .map(({ sheet, card }) => placed(rename(sheet, card)));

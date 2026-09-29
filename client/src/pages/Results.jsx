@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
-import { todayIso } from '../services/ageing.js';
+import { monthStartIso, todayIso } from '../services/ageing.js';
 import { singlePress } from '../services/press.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
@@ -21,6 +21,7 @@ import {
   CSD_CARDS,
   MISSING,
   NOT_IN_BPAD,
+  NOT_INTEGRATED_CARD,
   NOT_REQUIRED_PAIR,
   SUPPLY_TYPE_CARDS,
   TURNAROUND,
@@ -39,6 +40,8 @@ import {
   csdCardFigures,
   deptLabel,
   isAccountsDept,
+  isAccountsFromDay,
+  notIntegratedSince,
   progressCardFigures,
   actionFilterOptions,
   progressFilterOptions,
@@ -379,6 +382,20 @@ export default function Results() {
   // the Not in BPAD card. Its own state rather than a value of `dept`: it is
   // the other column, and the two cannot both hold at once.
   const [register, setRegister] = useState('');
+  // Whether the BPAD tab is narrowed to the Not Integrated in Accounts
+  // card's bills: at Accounts in the register, with no GRN in the Vendor
+  // Ageing report. Its own state, like `register`, and never on at the same
+  // time as a desk or Not in BPAD.
+  const [notIntegrated, setNotIntegrated] = useState(false);
+  // The Accounts Received Date that card counts from, to the latest -- the
+  // "Accounts received from" picker on the BPAD view -- or '' for every date.
+  // Starts at the 1st of the current month each time the page opens (1
+  // September in September, 1 October in October). Kept across views, like
+  // the "as of" date, so a date picked is still set on return.
+  const [accountsFrom, setAccountsFrom] = useState(monthStartIso);
+  // The card's figure, `{ count, grns, amount, accountsFrom }`, handed up by
+  // BpadView from the register's own call -- the same way `departments` is.
+  const [notIntegratedFigure, setNotIntegratedFigure] = useState(null);
   // Which stretches of the process the GRNS SPAN tab measures -- `{ from, to }`
   // pairs of checkpoints, empty for every stage. It lives here rather than in
   // the tab because the Export button lives here too, and a file that carried
@@ -728,6 +745,7 @@ export default function Results() {
     if (next !== BPAD) {
       setDept('');
       setRegister('');
+      setNotIntegrated(false);
     }
     // And the desk breakdown, which belongs to the pending rows. Cleared on
     // the way to anything else rather than only on the way to a view without
@@ -764,6 +782,8 @@ export default function Results() {
   function selectDept(next) {
     setDept(next);
     if (next) setRegister('');
+    // And the Not Integrated card, which is already a narrowing of one desk.
+    if (next) setNotIntegrated(false);
   }
 
   /** Show only the GRNs with no register entry, or '' for every row. */
@@ -771,6 +791,30 @@ export default function Results() {
     setRegister(next);
     // Same exclusion, from the other side.
     if (next) setDept('');
+    if (next) setNotIntegrated(false);
+  }
+
+  /**
+   * Show only the Not Integrated in Accounts bills. The desk and Not in
+   * BPAD filters go, the same exclusion they make with each other: a GRN the
+   * register never knew has no desk, and any desk but Accounts has none of
+   * these bills, so either left on beside it would only ever empty the table.
+   */
+  function selectNotIntegrated() {
+    setNotIntegrated(true);
+    setDept('');
+    setRegister('');
+  }
+
+  /**
+   * The "Accounts received from" picker's value, or '' to count every date.
+   * A value the server could not count from -- a mistyped five-digit year --
+   * is not kept, so the picker goes back to the last good date and nothing on
+   * the tab ever asks with a date it cannot use. See isAccountsFromDay.
+   */
+  function selectAccountsFrom(next) {
+    if (next && !isAccountsFromDay(next)) return;
+    setAccountsFrom(next);
   }
 
   /** Switch the Accounts table between a row per GRN and a row per cheque. */
@@ -875,6 +919,26 @@ export default function Results() {
   // view's rows carry them; anywhere else the rows on hand are another view's.
   const actionFilters = actionFilterOptions(isAccountsSection(status) ? data?.actionCounts : null);
 
+  /**
+   * The BPAD row's desk cards with Not Integrated in Accounts added last,
+   * after every desk. The desks keep their own order. Left off until
+   * BpadView's first answer brings its figure.
+   */
+  const withNotIntegrated = (desks) => {
+    if (!notIntegratedFigure) return desks;
+    // `countedFrom` is the date the figure was counted from, which the card
+    // prints -- so its words and its number never describe two different
+    // dates while a new count is on its way. `accountsFrom` is the date as
+    // picked, which the card's sheet in the export asks for.
+    const card = {
+      ...NOT_INTEGRATED_CARD,
+      ...notIntegratedFigure,
+      countedFrom: notIntegratedFigure.accountsFrom ?? '',
+      accountsFrom,
+    };
+    return [...desks, card];
+  };
+
   // The cards this view shows, in the order CARDS_FOR names them.
   //
   // Keyed on `rowStatus` rather than `status`, so narrowing Total GRNS to one
@@ -919,7 +983,9 @@ export default function Results() {
           // to it -- see the deptAccounts branch in the row below. Split here
           // rather than tested at render time so the export knows about it too
           // (cardSheet in resultsViews.js).
-          ...departments.map((d) => ({ kind: isAccountsDept(d.dept) ? 'deptAccounts' : 'dept', ...d })),
+          ...withNotIntegrated(
+            departments.map((d) => ({ kind: isAccountsDept(d.dept) ? 'deptAccounts' : 'dept', ...d })),
+          ),
         ]
       : []),
     // Where the pending ones are pending -- the register's Pending With Dept.
@@ -1114,15 +1180,17 @@ export default function Results() {
       };
     }
     if (rowStatus === BPAD) {
-      // The desk cards set `dept` and Not in BPAD sets `register`, and the two
-      // never stand together -- so either one is what narrows this row, and
-      // clearing both is "all of them".
+      // The desk cards set `dept`, Not in BPAD sets `register` and Not
+      // Integrated in Accounts sets `notIntegrated`, and none of them
+      // stands with another -- so any one is what narrows this row, and
+      // clearing all three is "all of them".
       return {
-        on: Boolean(dept || register),
+        on: Boolean(dept || register || notIntegrated),
         noun: 'BPAD row',
         clear: () => {
           setDept('');
           setRegister('');
+          setNotIntegrated(false);
         },
       };
     }
@@ -1307,6 +1375,33 @@ export default function Results() {
                 </div>
                 <div className="stat__amount">₹ {formatAmount(summary.bpadMissing?.amount ?? 0)}</div>
                 <div className="stat__hint">GRNs Not Finalized</div>
+              </button>
+            ) : card.kind === 'notIntegrated' ? (
+              /* The bills the register has at Accounts that the Vendor Ageing
+                 report has no GRN for -- handed over by BPAD, not yet in the
+                 Accounts system. Pressing it narrows the register's table to
+                 them, and pressing it again keeps it; the BPAD card heading
+                 the row goes back to every row. It counts from the "Accounts
+                 received from" date in the toolbar, which the hint names. */
+              <button
+                key={card.id}
+                type="button"
+                className={`card stat stat--gap ${notIntegrated ? 'is-active' : ''}`}
+                onClick={singlePress(selectNotIntegrated)}
+                aria-pressed={notIntegrated}
+                title={tabTitle(
+                  card.grns !== card.count
+                    ? `${card.hint} — ${card.grns.toLocaleString('en-IN')} GRNs`
+                    : card.hint,
+                  notIntegrated
+                    ? `Showing only these bills — press ${headLabel()} for every row`
+                    : 'Show only the bills BPAD has at Accounts that the Vendor Ageing report does not have',
+                )}
+              >
+                <div className="stat__label">{card.label}</div>
+                <div className="stat__value">{card.count.toLocaleString('en-IN')}</div>
+                <div className="stat__amount">₹ {formatAmount(card.amount ?? 0)}</div>
+                <div className="stat__hint">{notIntegratedSince(card.countedFrom)}</div>
               </button>
             ) : card.kind === 'deptAccounts' ? (
               /* The register's Accounts desk -- the bills it says are sitting
@@ -1592,14 +1687,15 @@ export default function Results() {
               entry and so no Status column for any of them to be about, so it
               alone gets no dropdown. */}
           {status === BPAD ? (
-            /* The register's Pending With Dept. column, offered as the values
+            <>
+            {/* The register's Pending With Dept. column, offered as the values
                it actually holds. The count beside an option is the number of
                rows picking it yields, the same promise the two dropdowns below
                make -- and it is what makes the empty date columns legible:
                nearly every row still at STORES has no BPAD Received Date
                because the bill has not reached that desk yet, which reads as
                missing data until the column can be looked at one desk at a
-               time. */
+               time. */}
             <select
               className="field__input stage-filter"
               value={dept}
@@ -1621,6 +1717,40 @@ export default function Results() {
                 <option value={dept}>{deptLabel(dept)}</option>
               )}
             </select>
+            {/* The day the Not Integrated in Accounts card counts from:
+                bills whose Accounts Received Date is this day or later, to
+                the latest. The 1st of the current month until changed;
+                empty is every date. It moves that card's count
+                and, while the card is pressed, its rows -- nothing else on
+                the tab. */}
+            <label
+              className="ageing-asof"
+              title="Not Integrated in Accounts counts the bills with an Accounts Received Date from this day to the latest. Clear it to count every date."
+            >
+              Accounts received from
+              {/* `max` holds the year field to four digits -- see
+                  selectAccountsFrom for the rest of that guard. */}
+              <input
+                className="field__input stage-filter"
+                type="date"
+                max="9999-12-31"
+                value={accountsFrom}
+                onChange={(e) => selectAccountsFrom(e.target.value)}
+                aria-label="Count the bills not integrated in Accounts from this Accounts Received Date"
+              />
+              {accountsFrom && (
+                <button
+                  type="button"
+                  className="ghost icon-btn"
+                  onClick={() => selectAccountsFrom('')}
+                  title="Clear the date — count every Accounts Received Date"
+                  aria-label="Clear the Accounts received from date"
+                >
+                  <IconX size={14} />
+                </button>
+              )}
+            </label>
+            </>
           ) : status === ALL_GRNS ? (
             <select
               className="field__input stage-filter"
@@ -1842,7 +1972,10 @@ export default function Results() {
           msme={msme}
           dept={dept}
           register={register}
+          notIntegrated={notIntegrated}
+          accountsFrom={accountsFrom}
           onDepartments={setDepartments}
+          onNotIntegrated={setNotIntegratedFigure}
           ageingAsOf={ageingAsOf}
         />
       ) : status === TURNAROUND ? (
