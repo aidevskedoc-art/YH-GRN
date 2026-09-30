@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
-import { monthStartIso, todayIso } from '../services/ageing.js';
+import { todayIso } from '../services/ageing.js';
 import { singlePress } from '../services/press.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
@@ -389,10 +389,11 @@ export default function Results() {
   const [notIntegrated, setNotIntegrated] = useState(false);
   // The Accounts Received Date that card counts from, to the latest -- the
   // "Accounts received from" picker on the BPAD view -- or '' for every date.
-  // Starts at the 1st of the current month each time the page opens (1
-  // September in September, 1 October in October). Kept across views, like
+  // Starts empty -- every date -- so the card counts the same bills as the
+  // Accounts desk card under Pending GRNs at BPAD, and the oldest bills stuck
+  // at Accounts are not the ones a default date hides. Kept across views, like
   // the "as of" date, so a date picked is still set on return.
-  const [accountsFrom, setAccountsFrom] = useState(monthStartIso);
+  const [accountsFrom, setAccountsFrom] = useState('');
   // The card's figure, `{ count, grns, amount, accountsFrom }`, handed up by
   // BpadView from the register's own call -- the same way `departments` is.
   const [notIntegratedFigure, setNotIntegratedFigure] = useState(null);
@@ -1035,9 +1036,10 @@ export default function Results() {
     // -- the export's sheet list is built on every render, not only once the
     // cards are on screen.
     const own = tabFigure(card, summary) ?? { count: 0, amount: 0 };
-    if (card.status !== 'PENDING' || !(summary?.bpad?.count > 0)) return own;
-    const placed = (summary?.pendingDepartments ?? []).filter((d) => d.dept !== NOT_IN_BPAD);
-    if (placed.length === 0) return own;
+    if (card.status !== 'PENDING' || !(summary?.bpad?.count > 0) || !summary.pendingDepartments) return own;
+    // No desk placed at all is a zero, not the whole bucket: the rest are on
+    // the GRN Store card, and counting them here too would count them twice.
+    const placed = summary.pendingDepartments.filter((d) => d.dept !== NOT_IN_BPAD);
     return placed.reduce(
       (sum, d) => ({ count: sum.count + d.count, amount: sum.amount + (d.amount ?? 0) }),
       { count: 0, amount: 0 },
@@ -1344,10 +1346,11 @@ export default function Results() {
         <div className="cards cards--tabs">
           {cards.map((card) =>
             card.kind === 'missing' ? (
-              /* The GRNs the register had no entry for -- in practice goods
-                 received on a delivery challan with no vendor invoice raised
-                 yet, and BPAD is a register of bills. The tab's own banner
-                 explains that; this counts it and can show it. */
+              /* The pending GRNs the register has no desk for -- in practice
+                 goods received on a delivery challan with no vendor invoice
+                 raised yet, and BPAD is a register of bills. Counted by the
+                 same test pressing it filters by (bpadMissing in the summary),
+                 so the card and its rows always agree. */
               <button
                 key="missing"
                 type="button"
@@ -1719,8 +1722,8 @@ export default function Results() {
             </select>
             {/* The day the Not Integrated in Accounts card counts from:
                 bills whose Accounts Received Date is this day or later, to
-                the latest. The 1st of the current month until changed;
-                empty is every date. It moves that card's count
+                the latest. Empty, which is every date, until changed.
+                It moves that card's count
                 and, while the card is pressed, its rows -- nothing else on
                 the tab. */}
             <label

@@ -874,6 +874,18 @@ function rowOrder(scope) {
 const NOT_IN_BPAD = '__not_in_bpad__';
 
 /**
+ * A register desk as one spelling: trimmed and upper-cased.
+ *
+ * Pending With Dept. is typed at the desk it reports on, so the same desk
+ * reaches it as "ACCOUNTS" one month and "Accounts" the next. Grouped on the
+ * raw text those were two cards that both read "Accounts" once deptLabel had
+ * title-cased them, each with half the count. Every query that groups desks or
+ * filters by one goes through this, so a card's value is always a value its
+ * filter matches, and matches all of.
+ */
+const deskKey = (column) => `upper(btrim(${column}))`;
+
+/**
  * Where a GRN's bill is sitting, according to the BPAD register.
  *
  * A LATERAL with LIMIT 1 rather than a plain join, for the reason
@@ -905,7 +917,7 @@ const PENDING_DEPT_JOIN = `
  * reading: BPAD cannot tell you where this bill is. One bucket rather than
  * two, and the card that reports it is worded that way.
  */
-const PENDING_DEPT = `COALESCE(NULLIF(pb.pending_with_dept, ''), '${NOT_IN_BPAD}')`;
+const PENDING_DEPT = `COALESCE(NULLIF(${deskKey('pb.pending_with_dept')}, ''), '${NOT_IN_BPAD}')`;
 
 /**
  * Where the pending GRNs are pending -- the breakdown behind the Pending GRNS
@@ -1044,6 +1056,11 @@ function pendingDeptFilter(dept, params) {
   // No parameter to bind: the value is this file's own sentinel, not a desk
   // name off the request.
   if (dept === IN_BPAD) return `${PENDING_DEPT} <> '${NOT_IN_BPAD}'`;
+  // The Pending GRNs at GRN Store card, which sends this from the Total GRNS
+  // row -- mixed statuses -- so the pending half is asked for here. It is
+  // what that card counts (summary.bpadMissing), and a valid GRN with no BPAD
+  // row has reached accounts rather than being stuck at the store.
+  if (dept === NOT_IN_BPAD) return `(${PENDING_DEPT} = '${NOT_IN_BPAD}' AND r.status = '${STATUS.PENDING}')`;
   params.push(dept);
   return `${PENDING_DEPT} = $${params.length}`;
 }
@@ -1441,8 +1458,18 @@ resultsRouter.get(
     // shows; this is the register's own entries, which is what the card
     // labelled BPAD is asking about.
     summary.bpadRegister = summary.bpad.inRegister;
-    // And the GRNs it had no entry for, which is the BPAD view's other card.
-    summary.bpadMissing = summary.bpad.notInRegister;
+    // The Pending GRNs at GRN Store card: the pending GRNs the register has no
+    // desk for -- the NOT_IN_BPAD bucket of the breakdown below, which is the
+    // same test pressing the card filters the rows by (pendingDeptFilter).
+    //
+    // Not bpad.notInRegister, which it used to be. That counts the placeholder
+    // rows a BPAD upload writes for the GRNs the register lacked, so a GRN
+    // report uploaded without a register brought GRNs it never counted: they
+    // were in neither this card nor Pending GRNs at BPAD, yet pressing this
+    // card listed them. Taken from the breakdown, the card always equals its
+    // rows, and it and the desks always add up to summary.PENDING.
+    const atGrnStore = pendingDepts.find((d) => d.dept === NOT_IN_BPAD);
+    summary.bpadMissing = { count: atGrnStore?.count ?? 0, amount: atGrnStore?.amount ?? 0 };
     // Where the pending ones are actually pending, which is the row of cards
     // under the Pending view. Sums to summary.PENDING.count -- see
     // pendingDepartments for why that matters and what the last bucket is.
@@ -1794,15 +1821,15 @@ function bpadSearchFilter(term, params) {
  * is a whole value rather than a fragment, and picking "STORES" must not also
  * drag in a department that merely contains the word.
  *
- * Case-folded all the same. The register is typed at the desk it reports on,
- * and the same department reaches it as "ACCOUNTS" one month and "Accounts"
- * the next; the dropdown offers one of those spellings and means both.
+ * Case-folded all the same, through deskKey -- the same folding the desk list
+ * is grouped by, so "ACCOUNTS" and "Accounts" are one option and one card, and
+ * picking it shows every row that card counted.
  */
 function bpadDeptFilter(value, params) {
   const wanted = String(value ?? '').trim();
   if (!wanted) return null;
   params.push(wanted);
-  return `upper(COALESCE(b.pending_with_dept, '')) = upper($${params.length})`;
+  return `COALESCE(${deskKey('b.pending_with_dept')}, '') = upper($${params.length})`;
 }
 
 /**
@@ -2176,16 +2203,18 @@ async function bpadDepartments(req, scope) {
     bpadBatchFilter(scope, params),
     BPAD_BRANCH_SCOPE,
     ...bpadBranchClauses(req, params),
-    `COALESCE(b.pending_with_dept, '') <> ''`,
+    `COALESCE(${deskKey('b.pending_with_dept')}, '') <> ''`,
   ]);
+  // Grouped by deskKey, not the raw text -- see there -- so each desk is one
+  // option and one card however many spellings of it the register holds.
   const { rows } = await query(
-    `SELECT b.pending_with_dept AS dept,
+    `SELECT ${deskKey('b.pending_with_dept')} AS dept,
             COUNT(*)::int AS count,
             COALESCE(SUM(b.grn_amount), 0) AS amount
      ${BPAD_JOINS}
      ${where}
-     GROUP BY b.pending_with_dept
-     ORDER BY b.pending_with_dept`,
+     GROUP BY 1
+     ORDER BY 1`,
     params,
   );
   // The value as well as the count, because each of these is a card on the

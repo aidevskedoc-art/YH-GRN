@@ -287,9 +287,9 @@ Accounts has received but the Accounts system hasn't picked up yet:
 1. The BPAD register has the bill with **Pending With Dept.** = Accounts (matched the way the
    Accounts desk card matches it, so this card is always a share of that one).
 2. Its **Accounts Received Date** is on or after the **Accounts received from** date in the
-   toolbar, up to the latest. The date starts at the 1st of the current month each time the
-   page opens (01-09-2026 in September, 01-10-2026 in October). Clearing it counts every
-   received date.
+   toolbar, up to the latest. The date starts empty, which counts every received date, so by
+   default the card matches the Accounts desk card under **Pending GRNs at BPAD**. Picking a
+   date narrows it to the bills received from that day on.
 3. Its **GRN No** has no match in the Vendor Ageing report's **GRN_NO**, from any upload. The match
    is the one the reconciliation uses: GRN_NO with its branch code split off, both sides with case
    and separators ignored.
