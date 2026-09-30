@@ -19,6 +19,7 @@ import {
   CHEQUE_NOT_PREPARED_TAB,
   CHEQUE_NOT_PREPARED_VIEW,
   CSD_CARDS,
+  IN_BPAD,
   MISSING,
   NOT_IN_BPAD,
   NOT_INTEGRATED_CARD,
@@ -74,7 +75,7 @@ const SEARCH_DELAY_MS = 300;
  * BPAD, ALL_GRNS, MISSING, NOT_IN_BPAD and deptLabel are imported rather than
  * declared here: the export builds a sheet per card (see sectionSheets in
  * services/resultsViews.js) and so has to name the same views, the same
- * register filter and the same "the register cannot place this" bucket that
+ * GRN Store card and the same "the register cannot place this" bucket that
  * the cards on this page do. One spelling, in the file both read.
  *
  * BPAD has a card, being a population with a count and a value, but reads a
@@ -110,11 +111,10 @@ const TABS = [
   //
   // `countKey` because the summary carries it under its own name rather than
   // as a reconciliation bucket -- and `bpadRegister` rather than `bpad`
-  // because this card is about the register. The tab lists every GRN in scope,
-  // including the ones the register had no entry for, so its pager counts more
-  // rows than the register holds records; the gap is stated in the tab's own
-  // banner. The card asks "how many records are in BPAD", so it answers with
-  // the records that are in BPAD.
+  // because this card is about the register. The card asks "how many records
+  // are in BPAD", so it answers with the records that are in BPAD -- the same
+  // rows the tab lists. `bpad` also counts the GRNs the register had no entry
+  // for, which are not in BPAD and not on the tab.
  
   TURNAROUND_TAB,
 ];
@@ -214,7 +214,9 @@ const TOTAL_ROW = [ALL_GRNS, MISSING, BPAD, 'PENDING'];
  *
  * The two rows are not the same shape behind the count, and deliberately not.
  * Pending's five desks ARE its breakdown: they divide the figure beside them
- * and sum back to it exactly, NOT_IN_BPAD included. On Accounts only the
+ * and sum back to it exactly -- with a register on file that figure is the
+ * bills it places at a desk, NOT_IN_BPAD being the GRN Store card's (see
+ * bucketFigure). On Accounts only the
  * cheque pair does that, which is why it comes first -- see ACCOUNTS_ROW in
  * services/resultsViews.js for that order. The CSD four do not: they go with
  * Accounts because that is where a sent GRN comes from -- only a matched row
@@ -230,8 +232,9 @@ const TOTAL_ROW = [ALL_GRNS, MISSING, BPAD, 'PENDING'];
  * reconciliation at all -- it reads the register's own table, and how many
  * GRNs are pending or through accounts says nothing about where a bill is
  * sitting. Its row is built entirely at render time: its own BPAD count, then
- * the register's own two questions -- which desk, and whether the register
- * knew the GRN at all.
+ * the register's desks, then Not Integrated in Accounts. The GRNs the register
+ * has no entry for are not in BPAD and not on this view; their card, Pending
+ * GRNs at GRN Store, stands on the Total GRNS row (see TOTAL_ROW).
  *
  * One thing the old arrangement bought that this does not: with the same four
  * cards in the same order everywhere, a press could never move a different
@@ -275,8 +278,9 @@ const CARD_BY_ID = Object.fromEntries([
   [ACCOUNTS_QUEUE_CARD.progress, { kind: 'progress', ...ACCOUNTS_QUEUE_CARD }],
   [ACCOUNTS_RECEIVED_CARD.progress, { kind: 'progress', ...ACCOUNTS_RECEIVED_CARD }],
   // The GRNs the register has no entry for -- still at the GRN store rather
-  // than pending at a desk. Filed under the register's own filter value, and
-  // named here so the card and its sheet in the workbook cannot drift apart.
+  // than pending at a desk. MISSING is only this card's id: pressing it
+  // narrows the Total GRNS rows by NOT_IN_BPAD. Named here so the card and its
+  // sheet in the workbook cannot drift apart.
   [MISSING, { kind: 'missing', label: 'Pending GRNs at GRN Store' }],
   // The Cheque Not Prepared section's Stents / Regular cards.
   ...SUPPLY_TYPE_CARDS.map((card) => [card.id, { kind: 'supplyType', ...card }]),
@@ -378,14 +382,10 @@ export default function Results() {
   // are never on screen together, and sharing one would carry a filter from
   // one view into the other the moment the view changed.
   const [pendingDept, setPendingDept] = useState('');
-  // Whether the BPAD tab is narrowed to the GRNs with no register entry, by
-  // the Not in BPAD card. Its own state rather than a value of `dept`: it is
-  // the other column, and the two cannot both hold at once.
-  const [register, setRegister] = useState('');
   // Whether the BPAD tab is narrowed to the Not Integrated in Accounts
   // card's bills: at Accounts in the register, with no GRN in the Vendor
-  // Ageing report. Its own state, like `register`, and never on at the same
-  // time as a desk or Not in BPAD.
+  // Ageing report. Its own state rather than a value of `dept`, and never on
+  // at the same time as a desk.
   const [notIntegrated, setNotIntegrated] = useState(false);
   // The Accounts Received Date that card counts from, to the latest -- the
   // "Accounts received from" picker on the BPAD view -- or '' for every date.
@@ -474,6 +474,33 @@ export default function Results() {
   // CHEQUE_NOT_PREPARED_TAB.
   const apiStatus = inChequeNotPrepared ? CHEQUE_NOT_PREPARED_TAB.rowStatus : rowStatus;
   const apiProgress = inChequeNotPrepared ? CHEQUE_NOT_PREPARED_TAB.progress : progress;
+  // Whether a BPAD register is on file for these GRNs. With one, the Pending
+  // view is "Pending GRNs at BPAD": its card counts the bills the register
+  // places at a desk (see bucketFigure), and the GRNs it has no entry for are
+  // still at the GRN store -- not in BPAD, and counted by their own card on
+  // the Total GRNS row. Whatever the search box says (bpad.onFile, not
+  // bpad.count), so typing a search does not turn the view into another one.
+  const registerOnFile = summary?.bpad?.onFile > 0;
+  // So its rows are those same bills, unless a desk card has narrowed them to
+  // one desk. IN_BPAD is the filter the export already gives the Pending
+  // sheets (see sectionSheets), so the card, the table and the file agree.
+  const apiDept = pendingDept || (rowStatus === 'PENDING' && registerOnFile ? IN_BPAD : '');
+  // Those rows carry the register's desk and received dates (the server adds
+  // them whenever a `dept` is asked for), so the table shows them -- with Age
+  // from GRN Date by the BPAD tab's rule, and the "Age as of" picker for the
+  // bills still at Stores. Wherever the Pending GRNs at BPAD rows are on
+  // screen: its own view, and Total GRNS narrowed to its pending half, which
+  // stands under the same cards and exports the same sheets.
+  const showPendingBpad = rowStatus === 'PENDING' && registerOnFile;
+  // And the Pending GRNs at GRN Store rows -- Total GRNS narrowed by that card.
+  // The register has no entry for them, so there is no desk or received date
+  // to show: only Age from GRN Date, counted to the same "Age as of" date as a
+  // bill still at Stores, with the picker for it.
+  const showGrnStoreAge = status === ALL_GRNS && pendingDept === NOT_IN_BPAD;
+  // Which "as of" the toolbar's date picker is, where it shows: the Age from
+  // GRN Date's on BPAD, Pending GRNs at BPAD and the GRN Store, the Ageing's
+  // on the Accounts views.
+  const ageAsOf = status === BPAD || showPendingBpad ? 'bpad' : showGrnStoreAge ? 'store' : 'accounts';
   // Which rows request is the latest -- see loadRows.
   const rowsRequest = useRef(0);
 
@@ -506,7 +533,7 @@ export default function Results() {
         actionCounts: isAccountsSection(status),
         location,
         msme,
-        dept: pendingDept,
+        dept: apiDept,
         supplyType: inChequeNotPrepared ? supplyType : undefined,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
       })
@@ -530,7 +557,7 @@ export default function Results() {
     action,
     location,
     msme,
-    pendingDept,
+    apiDept,
     inChequeNotPrepared,
     supplyType,
     byCheque,
@@ -741,18 +768,22 @@ export default function Results() {
     // The match filter belongs to Total GRNS and its dropdown is only rendered
     // there, so leaving it set would go on narrowing the next view invisibly.
     if (next !== ALL_GRNS) setMatchFilter('');
-    // Same for the department and the register filter: both are the BPAD
-    // register's own columns, and no other tab has either to be narrowed by.
+    // Same for the department and the Not Integrated card: both narrow the
+    // BPAD register's own rows, and no other tab has either to be narrowed by.
     if (next !== BPAD) {
       setDept('');
-      setRegister('');
       setNotIntegrated(false);
     }
     // And the desk breakdown, which belongs to the pending rows. Cleared on
     // the way to anything else rather than only on the way to a view without
     // cards, because it narrows the rows themselves: left set, it would go on
     // hiding rows on a view that shows nothing to say why.
-    if (next !== 'PENDING') setPendingDept('');
+    //
+    // The Pending GRNs at GRN Store card's value too, on the way to Pending:
+    // that card is on the Total GRNS row, and Pending is "Pending GRNs at
+    // BPAD" -- carried over, it would list only the GRNs that are not in BPAD,
+    // under a row with no card lit to say so.
+    if (next !== 'PENDING' || pendingDept === NOT_IN_BPAD) setPendingDept('');
   }
 
   /**
@@ -775,36 +806,24 @@ export default function Results() {
   /**
    * Narrow the BPAD tab to one department, or '' for every one of them.
    *
-   * Clears the Not in BPAD card, because a GRN the register never knew has no
-   * Pending With Dept. value -- the two together would always be no rows, and
-   * an empty table with two things lit up says nothing about which one emptied
+   * Clears the Not Integrated card, which is already a narrowing of one desk
+   * -- the two together would be no rows or that card's own rows, and an
+   * empty table with two things lit up says nothing about which one emptied
    * it.
    */
   function selectDept(next) {
     setDept(next);
-    if (next) setRegister('');
-    // And the Not Integrated card, which is already a narrowing of one desk.
-    if (next) setNotIntegrated(false);
-  }
-
-  /** Show only the GRNs with no register entry, or '' for every row. */
-  function selectRegister(next) {
-    setRegister(next);
-    // Same exclusion, from the other side.
-    if (next) setDept('');
     if (next) setNotIntegrated(false);
   }
 
   /**
-   * Show only the Not Integrated in Accounts bills. The desk and Not in
-   * BPAD filters go, the same exclusion they make with each other: a GRN the
-   * register never knew has no desk, and any desk but Accounts has none of
-   * these bills, so either left on beside it would only ever empty the table.
+   * Show only the Not Integrated in Accounts bills. The desk filter goes, the
+   * same exclusion from the other side: any desk but Accounts has none of
+   * these bills, so one left on beside it would only ever empty the table.
    */
   function selectNotIntegrated() {
     setNotIntegrated(true);
     setDept('');
-    setRegister('');
   }
 
   /**
@@ -846,8 +865,10 @@ export default function Results() {
     setPage(1);
     // Total GRNS narrowed to its pending half shows the desk cards too, since
     // those are the same rows -- but changing which half is showing changes
-    // the population under them, so the desk goes back to all of them.
-    if (next !== 'PENDING') setPendingDept('');
+    // the population under them, so the desk goes back to all of them. The
+    // GRN Store card's value as well: the pending half is headed by Pending
+    // GRNs at BPAD and has no GRN Store card to show it is still set.
+    if (next !== 'PENDING' || pendingDept === NOT_IN_BPAD) setPendingDept('');
   }
 
   /**
@@ -950,33 +971,34 @@ export default function Results() {
     ...(CARDS_FOR[rowStatus] ?? [])
       .map((id) => CARD_BY_ID[id])
       .filter(Boolean)
-      // Nothing in the register yet: a Not in BPAD card would report a zero
-      // about a file nobody has uploaded. Same suppression the BPAD row makes.
-      .filter((card) => card.kind !== 'missing' || summary?.bpad?.count > 0)
+      // Nothing in the register yet: a GRN Store card would report a zero
+      // about a file nobody has uploaded. On whether a register is on file at
+      // all, not on its entries -- a register that knew none of these GRNs
+      // leaves every pending one at the GRN store, which is this card's count.
+      .filter((card) => card.kind !== 'missing' || registerOnFile)
       // The Cheque Not Prepared section's "Not in Vendor Master" card, only
       // while there are such GRNs -- see SUPPLY_TYPE_CARDS.
       .filter((card) => cardShown(card, summary, supplyType)),
     // The BPAD view's whole row, built here rather than in CARDS_FOR because
     // it is the register's own data: whatever desks the uploaded file happens
-    // to name, and whether it knew each GRN at all.
+    // to name.
     //
-    // Not in BPAD leads, ahead of the desks, because it is the exception --
-    // the same reason the table itself lists those rows first. Every card here
-    // is a filter on the rows below: pressing one narrows the tab to it, and
-    // the BPAD card heading the row goes back to everything. The two kinds
-    // are mutually exclusive, because a GRN the register never knew has no
-    // desk to be sitting at.
+    // Every card here is a filter on the rows below: pressing one narrows the
+    // tab to it, and the BPAD card heading the row goes back to everything.
+    // No card for the GRNs the register has no entry for: they are not in
+    // BPAD and not on this tab -- their card, Pending GRNs at GRN Store,
+    // stands on the Total GRNS row (see TOTAL_ROW).
     //
-    // Suppressed entirely with nothing in the register, where a row of zeroes
-    // would sit over BpadView's own "no register uploaded yet" notice and
-    // answer a question nobody asked.
+    // Suppressed entirely with no register entries for these GRNs -- none
+    // uploaded, or one that knew none of them -- where a row of zeroes would
+    // sit over BpadView's own notice saying so and answer a question nobody
+    // asked. On bpadRegister, the entries the tab lists, rather than bpad,
+    // which also counts the GRNs the register had no entry for.
     //
     // Headed by the BPAD count card itself, the way Pending and Accounts lead
-    // with their own count: pressing it clears the desk filter -- and the Not
-    // in BPAD one, which this row no longer carries a card for; that card
-    // stands on the Total GRNS row instead (see TOTAL_ROW) and arrives here
-    // with its filter already set. See rowHead.
-    ...(status === BPAD && summary?.bpad?.count > 0
+    // with their own count: pressing it clears the desk and Not Integrated
+    // filters. See rowHead.
+    ...(status === BPAD && summary?.bpadRegister?.count > 0
       ? [
           CARD_BY_ID[BPAD],
           // Accounts is the one desk this page has a section of its own for,
@@ -1007,7 +1029,7 @@ export default function Results() {
     // Suppressed with no register uploaded as well: the breakdown is the
     // register's answer, and without one every pending GRN falls into its
     // "cannot place this" bucket -- one card repeating the count beside it.
-    ...(rowStatus === 'PENDING' && summary?.PENDING?.count > 0 && summary?.bpad?.count > 0
+    ...(rowStatus === 'PENDING' && summary?.PENDING?.count > 0 && registerOnFile
       ? (summary.pendingDepartments ?? [])
           // Not the register's "cannot place this" bucket: those are the GRNs
           // still at the GRN store, and they have their own card on the Total
@@ -1036,7 +1058,7 @@ export default function Results() {
     // -- the export's sheet list is built on every render, not only once the
     // cards are on screen.
     const own = tabFigure(card, summary) ?? { count: 0, amount: 0 };
-    if (card.status !== 'PENDING' || !(summary?.bpad?.count > 0) || !summary.pendingDepartments) return own;
+    if (card.status !== 'PENDING' || !registerOnFile || !summary.pendingDepartments) return own;
     // No desk placed at all is a zero, not the whole bucket: the rest are on
     // the GRN Store card, and counting them here too would count them twice.
     const placed = summary.pendingDepartments.filter((d) => d.dept !== NOT_IN_BPAD);
@@ -1055,7 +1077,7 @@ export default function Results() {
    */
   const bucketLabel = (card) => {
     if (card.status !== 'PENDING') return card.label;
-    return summary?.bpad?.count > 0 ? 'Pending GRNs at BPAD' : 'Pending GRNs';
+    return registerOnFile ? 'Pending GRNs at BPAD' : 'Pending GRNs';
   };
 
   // Which bucket the view is about, for the one card that gets the ring. On
@@ -1091,7 +1113,7 @@ export default function Results() {
     labelFor: (card) => (card.kind === 'bucket' ? bucketLabel(card) : card.label),
     // ...and with a register on file the Pending sheets hold the bills it
     // places, which is the figure that card carries.
-    pendingInBpad: summary?.bpad?.count > 0,
+    pendingInBpad: registerOnFile,
   });
 
   /**
@@ -1182,16 +1204,14 @@ export default function Results() {
       };
     }
     if (rowStatus === BPAD) {
-      // The desk cards set `dept`, Not in BPAD sets `register` and Not
-      // Integrated in Accounts sets `notIntegrated`, and none of them
-      // stands with another -- so any one is what narrows this row, and
-      // clearing all three is "all of them".
+      // The desk cards set `dept` and Not Integrated in Accounts sets
+      // `notIntegrated`, and neither stands with the other -- so either is
+      // what narrows this row, and clearing both is "all of them".
       return {
-        on: Boolean(dept || register || notIntegrated),
+        on: Boolean(dept || notIntegrated),
         noun: 'BPAD row',
         clear: () => {
           setDept('');
-          setRegister('');
           setNotIntegrated(false);
         },
       };
@@ -1282,10 +1302,13 @@ export default function Results() {
               aria-label="Choose what the table below shows"
             >
               {TABS.map((tab) => {
-                const bucket = tabFigure(tab, summary);
+                // Pending as its card reads it: with a register on file, the
+                // bills it places at a desk -- the rows that option opens.
+                const pendingAtBpad = tab.status === 'PENDING' && registerOnFile;
+                const bucket = pendingAtBpad ? bucketFigure(tab) : tabFigure(tab, summary);
                 return (
                   <option key={tab.status} value={tab.status}>
-                    {tab.label}
+                    {pendingAtBpad ? bucketLabel(tab) : tab.label}
                     {bucket ? ` (${bucket.count.toLocaleString('en-IN')})` : ''}
                   </option>
                 );
@@ -1855,28 +1878,34 @@ export default function Results() {
           )}
           {/* The day a bill with no cheque yet counts its Ageing to -- today
               until changed, and back to today if cleared. On the Accounts
-              views, the ones with an Ageing column, and on BPAD, where it is
-              the day a bill still at Stores counts its Age from GRN Date to.
-              One date for the page, so a month-end reading holds across both. */}
-          {(isAccountsSection(status) || status === BPAD) && (
+              views, the ones with an Ageing column; on BPAD and Pending GRNs
+              at BPAD, where it is the day a bill still at Stores counts its
+              Age from GRN Date to; and on Pending GRNs at GRN Store, where
+              every GRN counts its Age from GRN Date to it. One date for the
+              page, so a month-end reading holds across all of them. */}
+          {(isAccountsSection(status) || status === BPAD || showPendingBpad || showGrnStoreAge) && (
             <label
               className="ageing-asof"
               title={
-                status === BPAD
+                ageAsOf === 'bpad'
                   ? 'Age from GRN Date counts to this date for a bill still pending at Stores'
-                  : 'Ageing counts to this date for a bill with no cheque date yet'
+                  : ageAsOf === 'store'
+                    ? 'Age from GRN Date counts to this date for the GRNs still at the GRN store'
+                    : 'Ageing counts to this date for a bill with no cheque date yet'
               }
             >
-              {status === BPAD ? 'Age as of' : 'Ageing as of'}
+              {ageAsOf === 'accounts' ? 'Ageing as of' : 'Age as of'}
               <input
                 className="field__input stage-filter"
                 type="date"
                 value={ageingAsOf}
                 onChange={(e) => setAgeingAsOf(e.target.value || todayIso())}
                 aria-label={
-                  status === BPAD
+                  ageAsOf === 'bpad'
                     ? 'Count the Age from GRN Date of bills still at Stores to this date'
-                    : 'Count the Ageing of bills with no cheque yet to this date'
+                    : ageAsOf === 'store'
+                      ? 'Count the Age from GRN Date of the GRNs still at the GRN store to this date'
+                      : 'Count the Ageing of bills with no cheque yet to this date'
                 }
               />
             </label>
@@ -1974,12 +2003,12 @@ export default function Results() {
           location={location}
           msme={msme}
           dept={dept}
-          register={register}
           notIntegrated={notIntegrated}
           accountsFrom={accountsFrom}
           onDepartments={setDepartments}
           onNotIntegrated={setNotIntegratedFigure}
           ageingAsOf={ageingAsOf}
+          registerOnFile={registerOnFile}
         />
       ) : status === TURNAROUND ? (
         <TurnaroundView
@@ -2009,6 +2038,8 @@ export default function Results() {
               onToggleRow={toggleSelectRow}
               accountsView={status === VALID ? accountsView : inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : undefined}
               ageingAsOf={ageingAsOf}
+              showBpad={showPendingBpad}
+              showGrnStoreAge={showGrnStoreAge}
             />
             <div className="pager">
               <span className="pager__info">

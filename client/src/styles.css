@@ -2086,7 +2086,8 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 }
 .stat--go:hover .stat__go { opacity: 1; transform: translateX(3px); }
 
-/* The GRNs the BPAD register has no entry for, on the BPAD view. Amber rather
+/* The GRNs the BPAD register has no entry for -- the Pending GRNs at GRN Store
+   card on the Total GRNS row, and the Pending view's desk for them. Amber rather
    than red: it is work outstanding -- a delivery with no vendor invoice raised
    against it yet -- and not an error, which is the same reading Pending takes
    the colour for. */
@@ -3291,6 +3292,11 @@ select.stage-filter { width: auto; min-width: 150px; }
 /* A match whose bill number did not agree. The review blue, not the danger
    red: the GRN did reach accounts, something just needs reading. */
 .pill--diff { background: var(--st-review-soft); color: var(--st-review); }
+/* Not Integrated, in the Pending GRNs at BPAD view's Remarks: a bill BPAD says
+   Accounts has that the Vendor Ageing report does not. The danger red of the
+   Not Integrated in Accounts card (.stat--gap), so the remark and the card
+   counting the same bills read as one thing. */
+.pill--gap { background: var(--danger-soft); color: var(--danger); }
 
 /* The reconciliation bucket a row is in, on the Total GRNS tab -- the one tab
    whose rows are not all of a kind. Same two tones as the Pending and Valid

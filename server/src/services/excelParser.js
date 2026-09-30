@@ -403,8 +403,8 @@ export function readBankStatement(buffer) {
    and only the few thousand about GRNs this system already knows are wanted.
    Building all 327,000 row objects and then throwing away 99% of them would
    cost several hundred megabytes for no purpose, so the rows that are not kept
-   are never built: `keep` is asked about two small strings per source row, and
-   only an answer of true assembles anything.
+   are never built: `keep` is asked about three small strings per source row,
+   and only an answer of true assembles anything.
    ========================================================================== */
 
 /**
@@ -444,9 +444,11 @@ function bpadDate(value) {
  * is found under the name it reads as.
  *
  * @param {Buffer} buffer
- * @param {(vendorCodeKey: string, grnNoKey: string) => boolean} [keep]
- *   Called once per source row, before anything is built. Default keeps every
- *   row, which is what makes this readable on its own for a smaller register.
+ * @param {(vendorCodeKey: string, grnNoKey: string, locationKey: string) => boolean} [keep]
+ *   Called once per source row, before anything is built, with the row's
+ *   Vendor Code, GRN No and Location each folded through normKey. Default keeps
+ *   every row, which is what makes this readable on its own for a smaller
+ *   register.
  * @returns {{ sheetName, headerRow, headers, rows, scanned }} `scanned` is how
  *   many data rows the sheet held, against `rows.length` kept -- the pair is
  *   what the upload reports back.
@@ -474,14 +476,15 @@ export function readBpadReport(buffer, { keep = () => true } = {}) {
     scanned += 1;
 
     const vendorCode = toText(get('VENDOR CODE'));
+    const location = toText(get('LOCATION'));
     const grnNoKey = normKey(grnNo);
     const vendorCodeKey = normKey(vendorCode);
-    if (!keep(vendorCodeKey, grnNoKey)) continue;
+    if (!keep(vendorCodeKey, grnNoKey, normKey(location))) continue;
 
     rows.push({
       sourceRowNo: i + 1,
       slNo: toNumber(get('SL.NO.', 'SL.NO')),
-      location: toText(get('LOCATION')),
+      location,
       warehouse: toText(get('WAREHOUSE')),
       vendorCode,
       vendorCodeKey,

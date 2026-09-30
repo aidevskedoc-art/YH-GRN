@@ -184,10 +184,19 @@ function fileNames(files) {
  * have no entry for are stored too (see bpadRowsForGrns), and those rows are
  * built from what the GRN report knows about them.
  *
+ * AND THE BRANCH, where one is configured with a BPAD location. The register
+ * is the whole group's, and branches number some GRN series independently --
+ * Malakpet has a GFEVT0000013 raised against the same vendor as Secunderabad's
+ * -- so vendor code and GRN number alone can let another branch's bill in
+ * beside this one's. Each GRN therefore also carries `bpadLocationKeys`: the
+ * register Locations its branch is known by, which the register row's own
+ * Location has to be one of. See bpadLocationsFor for how the branch is found,
+ * and when it is null (no check, the match as it was before).
+ *
  * The GRN rows are passed in rather than read back out of the table because at
  * this point they have only been parsed; saveBatch inserts them afterwards.
  */
-async function grnMatchKeys(grnRows) {
+async function grnMatchKeys(grnRows, branches) {
   const identities = new Map();
 
   const add = (id) => {
@@ -195,7 +204,13 @@ async function grnMatchKeys(grnRows) {
     const key = `${normKey(id.vendorCode)}|${id.grnNoKey}`;
     // First writer wins. The same GRN can appear in more than one upload, and
     // findLatest-style ordering below hands them over newest first.
-    if (!identities.has(key)) identities.set(key, { ...id, vendorCodeKey: normKey(id.vendorCode) });
+    if (!identities.has(key)) {
+      identities.set(key, {
+        ...id,
+        vendorCodeKey: normKey(id.vendorCode),
+        bpadLocationKeys: bpadLocationsFor(id.grnLocation, branches),
+      });
+    }
   };
 
   if (grnRows.length > 0) {
@@ -210,6 +225,7 @@ async function grnMatchKeys(grnRows) {
         poNumber: row.poNo,
         invNo: row.billNo,
         invDate: row.billDate,
+        grnLocation: row.location,
       });
     }
     return identities;
@@ -221,7 +237,7 @@ async function grnMatchKeys(grnRows) {
   const { rows } = await query(
     `SELECT DISTINCT ON (vendor_code, dpr_no_key)
             vendor_code, vendor_name, dpr_no, dpr_no_key, dpr_date,
-            total_amount, po_no, bill_no, bill_date
+            total_amount, po_no, bill_no, bill_date, location
      FROM grn_transactions
      WHERE vendor_code IS NOT NULL AND vendor_code <> ''
      ORDER BY vendor_code, dpr_no_key, batch_id DESC, id DESC`,
@@ -237,6 +253,7 @@ async function grnMatchKeys(grnRows) {
       poNumber: row.po_no,
       invNo: row.bill_no,
       invDate: row.bill_date,
+      grnLocation: row.location,
     });
   }
 
@@ -244,13 +261,111 @@ async function grnMatchKeys(grnRows) {
 }
 
 /**
- * One BPAD row per GRN in scope: the register's own rows, plus a row for every
- * GRN the register turned out to have no entry for.
+ * Every configured branch, as the two names the BPAD match needs: the fragment
+ * of the GRN report's Location that finds the branch, and the register
+ * Location it is known by ('' where none is configured). The code and the
+ * register Location as typed ride along for bpadLocationMismatch's message.
  *
- * The tab is "the BPAD position of the GRNs in this upload", so a GRN the
- * register never heard of is an answer rather than an omission -- and a silent
- * omission is the worst version of it, since a reader counting 3,392 rows
- * against 3,402 GRNs has no way to tell which ten are missing or why.
+ * Every branch, ticked or not. The tick box scopes what the screens show; it
+ * does not change what a branch is called, and a register row belongs to the
+ * branch it names whether or not that branch is being looked at today.
+ */
+async function branchBpadLocations() {
+  const { rows } = await query('SELECT branch_code, location, bpad_location FROM branch_configs');
+  return rows
+    .map((r) => ({
+      branchCode: r.branch_code,
+      bpadLocation: r.bpad_location,
+      locationKey: String(r.location ?? '').trim().toUpperCase(),
+      bpadLocationKey: normKey(r.bpad_location),
+    }))
+    .filter((b) => b.locationKey !== '');
+}
+
+/**
+ * Why the upload is being refused, when a branch's BPAD location looks
+ * mistyped -- or null when none does.
+ *
+ * A BPAD location that is not the register's code for the branch ("SDB" for
+ * SBD, or the GRN report's "SECUNDERABAD" typed in the wrong box) does not fail
+ * loudly on its own: every register row for the branch's GRNs is turned away
+ * as another branch's, each GRN is stored as a filler row the register "has no
+ * entry for", and those fillers replace the good rows already stored (see
+ * clearBpadRecordsFor). One upload would quietly empty the branch's BPAD tab.
+ *
+ * The register is the whole group's, so the right code for a branch appears in
+ * its Location column somewhere. A configured code the register never writes,
+ * while rows about that branch's GRNs WERE turned away for naming something
+ * else, is a code that cannot be right -- so the upload stops before storing
+ * anything and says which branch, what it is set to, and what the register
+ * wrote instead. Refusing costs one corrected setting and one re-upload; the
+ * alternative costs the branch's register data until somebody notices.
+ *
+ * @param {Map<string, Map<string, number>>} turnedAway configured code ->
+ *   register Location -> rows turned away for GRNs requiring that code
+ * @param {Set<string>} registerLocations every Location the registers carry
+ */
+function bpadLocationMismatch(turnedAway, registerLocations, branches) {
+  const problems = [];
+  for (const [key, locations] of turnedAway) {
+    if (registerLocations.has(key)) continue;
+    const names = branches
+      .filter((b) => b.bpadLocationKey === key)
+      .map((b) => `${b.branchCode} has Location (BPAD) "${b.bpadLocation}"`);
+    const found = [...locations]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([loc, n]) => `${loc || '(blank)'} (${n.toLocaleString('en-IN')} row${n === 1 ? '' : 's'})`);
+    problems.push(
+      `${names.join(' and ')}, but no row in the BPAD register has that Location. ` +
+        `The register writes this branch's GRNs under ${found.join(', ')}.`,
+    );
+  }
+  if (problems.length === 0) return null;
+  return (
+    `${problems.join(' ')} Correct Location (BPAD) on the Configuration screen, or clear it, ` +
+    'and upload again. Nothing from this upload was stored.'
+  );
+}
+
+/**
+ * The register Locations a GRN's register rows may carry, or null for any.
+ *
+ * The GRN's branch is found the way every screen finds it from the stores
+ * side: the GRN report's Location contains the branch's configured Location
+ * (branchScope in services/branchScope.js), case-folded, so "YASHODA
+ * HEALTHCARE SERVICES LIMITED, SECUNDERABAD" is the SECUNDERABAD branch.
+ *
+ * Null -- no check, vendor code and GRN number alone, as before this existed --
+ * when the GRN names no configured branch, or when a branch it names has no
+ * BPAD location. The second is what keeps the field optional: a branch nobody
+ * has filled it in for goes on matching exactly as it did, rather than having
+ * every register row turned away for failing a test nobody set. Where the
+ * Location names more than one branch, a row naming any of theirs is kept.
+ */
+function bpadLocationsFor(grnLocation, branches) {
+  const text = String(grnLocation ?? '').toUpperCase();
+  if (text === '') return null;
+  const named = branches.filter((b) => text.includes(b.locationKey));
+  if (named.length === 0 || named.some((b) => b.bpadLocationKey === '')) return null;
+  return new Set(named.map((b) => b.bpadLocationKey));
+}
+
+/**
+ * One BPAD row per GRN in scope: the register's own rows, plus a row for every
+ * GRN the register turned out to have no entry for (inRegister false).
+ *
+ * Those extra rows are stored but never shown as BPAD rows: a GRN the register
+ * has no entry for is not in BPAD -- it is still at the GRN store, and the
+ * Pending GRNs at GRN Store card is where it is counted. The BPAD tab, its
+ * export, its desk cards and its Not Integrated card all read the register's
+ * own entries only (BPAD_IN_REGISTER in routes/results.js). They are written
+ * anyway because this upload's "no entry" is still an answer for that GRN:
+ * they replace an older register's row for it (clearBpadRecordsFor clears the
+ * keys an upload writes), so the Pending breakdown moves the GRN to the GRN
+ * store bucket rather than leaving it on a desk the register no longer lists;
+ * and they keep the summary's bpad.onFile above zero once a register is on
+ * file, even one that knew none of these GRNs.
  *
  * A row built this way carries only the facts the GRN report and the register
  * spell the same way: the vendor, the GRN number, its date and value, the PO,
@@ -394,10 +509,35 @@ batchesRouter.post(
     // file where there are not. See grnMatchKeys.
     let bpads = [];
     let bpadRows = [];
+    // Register rows whose vendor code and GRN number matched one of these GRNs
+    // but whose Location named a different branch -- see grnMatchKeys. Counted
+    // rather than dropped quietly, so an upload that turned some away says so.
+    let bpadOtherBranchCount = 0;
     if (bpadFiles.length > 0) {
-      const identities = await grnMatchKeys(grnRows);
-      const keep = (vendorCodeKey, grnNoKey) => identities.has(`${vendorCodeKey}|${grnNoKey}`);
+      const branches = await branchBpadLocations();
+      const identities = await grnMatchKeys(grnRows, branches);
+      // For bpadLocationMismatch: every Location the registers write, and what
+      // the turned-away rows wrote, by the code their GRN's branch required.
+      const registerLocations = new Set();
+      const turnedAway = new Map();
+      const keep = (vendorCodeKey, grnNoKey, locationKey) => {
+        registerLocations.add(locationKey);
+        const id = identities.get(`${vendorCodeKey}|${grnNoKey}`);
+        if (!id) return false;
+        if (id.bpadLocationKeys && !id.bpadLocationKeys.has(locationKey)) {
+          bpadOtherBranchCount += 1;
+          for (const required of id.bpadLocationKeys) {
+            const seen = turnedAway.get(required) ?? new Map();
+            seen.set(locationKey, (seen.get(locationKey) ?? 0) + 1);
+            turnedAway.set(required, seen);
+          }
+          return false;
+        }
+        return true;
+      };
       bpads = readEach(bpadFiles, 'BPAD register', (buffer) => readBpadReport(buffer, { keep }));
+      const mismatch = bpadLocationMismatch(turnedAway, registerLocations, branches);
+      if (mismatch) return res.status(400).json({ error: mismatch });
       const registerRows = lastFilePerKey(
         bpads.map((b) => b.rows),
         (r) => (r.vendorCodeKey && r.grnNoKey ? `${r.vendorCodeKey}|${r.grnNoKey}` : null),
@@ -468,6 +608,7 @@ batchesRouter.post(
         bankRows: bankRowCount,
         bpadFile: fileNames(bpadFiles),
         bpadStoredRows: bpadRows.length,
+        bpadOtherBranchRows: bpadOtherBranchCount,
         reopenedRejections,
         // Rows already stored that this upload replaced -- see saveBatch.
         replaced,
@@ -485,11 +626,16 @@ batchesRouter.post(
       bankAccountNo: firstBank?.accountNo ?? null,
       // Three figures, because they answer three different questions: how big
       // the registers were, how much of them was about these GRNs, and how many
-      // rows the tab will therefore show. A register that matched nothing says
-      // so, rather than reading like a file that failed to parse.
+      // rows were stored -- the matched ones, which the BPAD tab shows, plus one
+      // per GRN the register had no entry for (see bpadRowsForGrns), which it
+      // does not. A register that matched nothing says so, rather than reading
+      // like a file that failed to parse.
       bpadRowCount: bpads.reduce((sum, b) => sum + b.scanned, 0),
       bpadMatchedCount: bpads.reduce((sum, b) => sum + b.rows.length, 0),
       bpadStoredCount: bpadRows.length,
+      // Register rows that named one of these GRNs but another branch's
+      // Location, and were not kept -- see grnMatchKeys.
+      bpadOtherBranchCount,
       // How many GRNs this upload took back off the CSD queue by carrying a
       // bill CSD had rejected -- see reopenRejectedFor in services/ingest.js.
       // Worth reporting rather than doing quietly: those GRNs have just

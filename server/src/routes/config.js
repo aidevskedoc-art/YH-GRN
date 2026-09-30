@@ -1,9 +1,10 @@
 /**
  * Branches, as configured.
  *
- * A branch is the same place seen from three files, and this is where the three
- * names for it are written down: the ageing report's DivisionCode, a fragment
- * of the GRN report's Location, and the account its bank statement is for.
+ * A branch is the same place seen from several files, and this is where its
+ * names are written down: the ageing report's DivisionCode, a fragment of the
+ * GRN report's Location, the account its bank statement is for, and the BPAD
+ * register's Location.
  *
  * Reading is open to any signed-in account, because every screen that shows
  * figures has to know which branches are in scope in order to say so. Writing
@@ -15,16 +16,17 @@ import { query } from '../db/pool.js';
 import { requireAuth, requireScreen } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
 import { changedFields, logActivity } from '../services/activityLog.js';
+import { normKey } from '../services/normalize.js';
 
 export const configRouter = express.Router();
 
 /** The branch fields the activity log records on create and compares on update. */
-const LOGGED_BRANCH_FIELDS = ['branchCode', 'location', 'accountNo', 'isSelected'];
+const LOGGED_BRANCH_FIELDS = ['branchCode', 'location', 'accountNo', 'bpadLocation', 'isSelected'];
 
 configRouter.use(requireAuth);
 
 const BRANCH_COLUMNS = `
-  SELECT b.id, b.branch_code, b.location, b.account_no, b.is_selected, b.created_at
+  SELECT b.id, b.branch_code, b.location, b.account_no, b.bpad_location, b.is_selected, b.created_at
   FROM branch_configs b`;
 
 function mapBranch(row) {
@@ -33,6 +35,7 @@ function mapBranch(row) {
     branchCode: row.branch_code,
     location: row.location,
     accountNo: row.account_no,
+    bpadLocation: row.bpad_location,
     isSelected: row.is_selected,
     createdAt: row.created_at,
   };
@@ -42,6 +45,19 @@ function mapBranch(row) {
 function toText(value) {
   const text = String(value ?? '').trim();
   return text === '' ? null : text;
+}
+
+/**
+ * The BPAD register's Location as typed, or null.
+ *
+ * Kept as typed -- "Sbd" stays "Sbd" -- because the upload folds both sides
+ * through normKey before comparing. A value that folds to nothing ("-") could
+ * never match a register row, so it is stored as blank rather than as a filter
+ * that would quietly turn away every one of the branch's rows.
+ */
+function toBpadLocation(value) {
+  const text = toText(value);
+  return text && normKey(text) ? text : null;
 }
 
 /** An account number as the statement writes it: digits, nothing else. */
@@ -70,13 +86,16 @@ configRouter.get(
 /**
  * POST /api/config/branches
  *
- * Body: branchCode, location, accountNo, isSelected.
+ * Body: branchCode, location, accountNo, bpadLocation, isSelected.
  *
  * A branch code and a location are both required: one identifies the branch on
  * the accounts side and the other on the stores side, and a branch known by
  * only one of them would silently drop half the rows it is meant to select. The
  * account number is optional -- it narrows which bank statement's cheques count
- * as this branch's, and an installation with one account does not need it.
+ * as this branch's, and an installation with one account does not need it. So
+ * is the BPAD location -- it narrows which register rows an upload keeps for
+ * this branch's GRNs (see grnMatchKeys in routes/batches.js), and left blank
+ * they are matched on vendor code and GRN number alone, as before.
  */
 configRouter.post(
   '/branches',
@@ -99,13 +118,14 @@ configRouter.post(
 
     try {
       const { rows } = await query(
-        `INSERT INTO branch_configs (branch_code, location, account_no, is_selected, created_by)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO branch_configs (branch_code, location, account_no, bpad_location, is_selected, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id`,
         [
           branchCode,
           location,
           toAccountNo(req.body?.accountNo),
+          toBpadLocation(req.body?.bpadLocation),
           Boolean(req.body?.isSelected),
           req.user.id,
         ],
@@ -135,13 +155,14 @@ configRouter.post(
 /**
  * PATCH /api/config/branches/:id
  *
- * Body: any subset of branchCode, location, accountNo, isSelected. Absent
- * fields are left alone, so the tick box sends one field and the edit form
- * sends the rest.
+ * Body: any subset of branchCode, location, accountNo, bpadLocation,
+ * isSelected. Absent fields are left alone, so the tick box sends one field and
+ * the edit form sends the rest.
  *
- * accountNo is the one field that can be cleared: '' and null both mean "this
- * branch has no account recorded", which is a legitimate state and not an
- * error. A branch code or a location cleared to nothing is refused -- see POST.
+ * accountNo and bpadLocation are the fields that can be cleared: '' and null
+ * both mean "not recorded for this branch", which is a legitimate state and not
+ * an error. A branch code or a location cleared to nothing is refused -- see
+ * POST.
  */
 configRouter.patch(
   '/branches/:id',
@@ -176,6 +197,11 @@ configRouter.patch(
     if ('accountNo' in req.body) {
       params.push(toAccountNo(req.body.accountNo));
       assignments.push(`account_no = $${params.length}`);
+    }
+
+    if ('bpadLocation' in req.body) {
+      params.push(toBpadLocation(req.body.bpadLocation));
+      assignments.push(`bpad_location = $${params.length}`);
     }
 
     if ('isSelected' in req.body) {
@@ -243,7 +269,7 @@ configRouter.delete(
     }
     const { rows } = await query(
       `DELETE FROM branch_configs b WHERE b.id = $1
-       RETURNING b.branch_code, b.location, b.account_no, b.is_selected, b.created_at,
+       RETURNING b.branch_code, b.location, b.account_no, b.bpad_location, b.is_selected, b.created_at,
                  (SELECT COALESCE(u.full_name, u.username) FROM users u WHERE u.id = b.created_by) AS created_by`,
       [id],
     );
@@ -257,6 +283,7 @@ configRouter.delete(
         branchCode: rows[0].branch_code,
         location: rows[0].location,
         accountNo: rows[0].account_no,
+        bpadLocation: rows[0].bpad_location,
         isSelected: rows[0].is_selected,
         createdBy: rows[0].created_by,
         createdAt: rows[0].created_at,

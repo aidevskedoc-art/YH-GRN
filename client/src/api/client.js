@@ -220,15 +220,13 @@ export const api = {
    *
    * No `status` or `progress`: every row on this tab is in the register
    * because it matched a GRN on file, and the register's own verdict on a bill
-   * is a column of it rather than something this system decided.
+   * is a column of it rather than something this system decided. The GRNs the
+   * register has no entry for are not rows here -- they are still at the GRN
+   * store, and the Total GRNS row has a card of their own for them.
    *
    * `dept` is that column -- Pending With Dept. -- narrowed to one of the
    * desks a bill can be sitting at. The response carries the full list of them
    * back as `departments`, so the dropdown is built from the register itself.
-   *
-   * `register` narrows the other column the tab has of its own: 'missing' for
-   * the GRNs the register had no entry for, which is what the Not in BPAD card
-   * asks for.
    *
    * `notIntegrated` narrows it to the Not Integrated in Accounts card's
    * rows: bills the register has at Accounts that the Vendor Ageing report has
@@ -238,14 +236,13 @@ export const api = {
    */
   bpad: (
     id,
-    { page = 1, pageSize = 50, q, location, msme, dept, register, notIntegrated, accountsFrom } = {},
+    { page = 1, pageSize = 50, q, location, msme, dept, notIntegrated, accountsFrom } = {},
   ) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (location) params.set('location', location);
     if (msme) params.set('msme', msme);
     if (dept) params.set('dept', dept);
-    if (register) params.set('register', register);
     if (notIntegrated) params.set('notIntegrated', '1');
     if (accountsFrom) params.set('accountsFrom', accountsFrom);
     return request(`/batches/${id}/bpad?${params}`);
@@ -372,15 +369,15 @@ export const api = {
     request(`/accounts-returns/${id}/forward`, { method: 'PATCH', body }),
 
   /* --- Branches ------------------------------------------------------------
-     What a branch is called in each of the three files, and which branches are
-     in scope. Reading is open to any signed-in account, because every screen
+     What a branch is called in each of the files, and which branches are in
+     scope. Reading is open to any signed-in account, because every screen
      showing figures has to be able to say what it is showing; writing needs the
      Configuration screen. */
 
   /** Every configured branch, ticked ones first. */
   listBranches: () => request('/config/branches'),
 
-  /** Body: branchCode, location, accountNo, isSelected. */
+  /** Body: branchCode, location, bpadLocation, accountNo, isSelected. */
   createBranch: (body) => request('/config/branches', { method: 'POST', body }),
 
   /** Any subset of the same fields. The tick box sends only isSelected. */
@@ -452,14 +449,14 @@ export const api = {
    * `status` is which view's rows; the rest are the narrowings the cards on a
    * view set, so that a section's workbook can ask for one card's rows per
    * sheet. `progress` is the Status column's own filter (the CSD stages and
-   * the cheque pair), `dept` one BPAD desk, `register` the 'missing' rows,
-   * `notIntegrated` and `accountsFrom` the BPAD view's Not Integrated in
-   * Accounts card. Anything left out narrows nothing.
+   * the cheque pair), `dept` one BPAD desk, `notIntegrated` and
+   * `accountsFrom` the BPAD view's Not Integrated in Accounts card. Anything
+   * left out narrows nothing.
    */
   exportRows: (
     id,
     status,
-    { q, progress, location, msme, dept, register, supplyType, view, notIntegrated, accountsFrom } = {},
+    { q, progress, location, msme, dept, supplyType, view, notIntegrated, accountsFrom } = {},
   ) => {
     const params = new URLSearchParams();
     if (status) params.set('status', status);
@@ -470,7 +467,6 @@ export const api = {
     if (location) params.set('location', location);
     if (msme) params.set('msme', msme);
     if (dept) params.set('dept', dept);
-    if (register) params.set('register', register);
     if (supplyType) params.set('supplyType', supplyType);
     if (notIntegrated) params.set('notIntegrated', '1');
     if (accountsFrom) params.set('accountsFrom', accountsFrom);

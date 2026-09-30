@@ -60,19 +60,12 @@ export const ALL_GRNS = 'ALL';
 export const BPAD = 'BPAD';
 
 /**
- * The BPAD rows the register had no entry for -- what the Not in BPAD card
- * asks for. The server knows the word (see bpadRegisterFilter in
- * routes/results.js); '' is every row.
+ * The Pending GRNs at GRN Store card's id: the pending GRNs the BPAD register
+ * has no entry for. They are not in BPAD, so the card stands on the Total GRNS
+ * row and narrows those rows by NOT_IN_BPAD below -- the BPAD view does not
+ * list them at all (see BPAD_IN_REGISTER in routes/results.js).
  */
 export const MISSING = 'missing';
-
-/**
- * Its opposite: the rows the register does have an entry for, which is what
- * the BPAD card counts (see bpadRegister in routes/results.js). The BPAD view
- * itself lists every GRN in scope and says so in its own banner, so only the
- * card's sheet carries this -- see cardSheet.
- */
-export const IN_REGISTER = 'in';
 
 /**
  * The bucket the Pending breakdown puts the GRNs it cannot place in -- the
@@ -761,7 +754,7 @@ export function bulkCategory(row, canCsd) {
  * One card's sheet: its label, and the rows pressing it puts on screen.
  *
  * The filters are exactly the ones each card sets -- `progress` for a CSD
- * stage or a cheque card, `dept` for a desk, `register` for Not in BPAD -- so
+ * stage or a cheque card, `dept` for a desk or the GRN Store card -- so
  * a sheet holds what its card counts, and the two cannot report different
  * populations under one name.
  */
@@ -783,8 +776,8 @@ function narrowedSheet(status, label, filters) {
  * `kind` is the page's own tag on each card (see CARD_BY_ID on both screens),
  * and every kind is a different question: a bucket card names a whole view, a
  * CSD or cheque card a value of the Status column, a desk card a value of the
- * register's Pending With Dept., and the missing card the register's other
- * column.
+ * register's Pending With Dept., and the missing card the Total GRNS rows the
+ * register cannot place at a desk.
  */
 function cardSheet(card) {
   switch (card.kind) {
@@ -799,12 +792,8 @@ function cardSheet(card) {
         ...(card.progress ? { progress: card.progress } : {}),
         sheetName: card.label,
         title: titleForStatus(card.status),
-        // Except BPAD, whose card counts the register's entries while the view
-        // lists every GRN in scope, the ones it has no entry for included. The
-        // sheet holds what the card says it does; the view's own workbook still
-        // gets the whole tab, since that card is the section there and is
-        // dropped for it below.
-        ...(card.status === BPAD ? { register: IN_REGISTER } : {}),
+        // BPAD included: its card counts the register's entries and the view
+        // lists exactly those, so the sheet needs no narrowing to match it.
       };
     // Both read the Status column, which already knows the four stages and the
     // two cheque answers by name -- see PROGRESS in routes/results.js.
@@ -816,8 +805,7 @@ function cardSheet(card) {
     // under the sentinel, the same value the card hands the table.
     case 'pendingDept':
       return narrowedSheet('PENDING', deptLabel(card.dept), { dept: card.dept });
-    // The register's own two questions: which desk, and whether it knew the
-    // GRN at all.
+    // The register's own question: which desk.
     //
     // The Accounts desk is the same sheet as any other. Its card opens the
     // Accounts section rather than narrowing the table, but the sheet reports

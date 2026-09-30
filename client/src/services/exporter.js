@@ -21,7 +21,7 @@
 import { api } from '../api/client.js';
 import { CHECKPOINTS, STAGE_KEYS, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
 import { chequeNotRequired, chequePrepared, paymentNotRequired } from './cheque.js';
-import { ageingDays, bpadAgeDays, todayIso } from './ageing.js';
+import { ageingDays, asBpadAgeRow, bpadAgeDays, grnStoreAgeDays, todayIso } from './ageing.js';
 
 /*
  * The GRNs / Cheques switch's two values. Spelled here rather than imported
@@ -228,6 +228,67 @@ const GRN_COLUMNS = [
 ];
 
 /**
+ * The Pending GRNs at BPAD sheets: the GRN report's columns above, then where
+ * the BPAD register says each bill is -- the same four columns the table adds
+ * on that view (see showBpad in ResultsTable.jsx), after the amounts as there.
+ *
+ * GRN Date comes back for these sheets, being what the Age is counted from:
+ * the GRN report's own, as on the table's row (see asBpadAgeRow). The Age is
+ * worked out in sheetRows by the table's own rule (bpadAgeDays in
+ * services/ageing.js): Accounts Received Date at Accounts, the "Age as of"
+ * date picked on screen at Stores, BPAD Received Date at any other desk.
+ */
+const PENDING_BPAD_COLUMNS = [
+  ...GRN_COLUMNS,
+  { key: 'pendingWithDept', label: 'Department' },
+  { key: 'bpadReceivedDate', label: 'BPAD Received Date', date: true },
+  { key: 'accountsReceivedDate', label: 'Accounts Received Date', date: true },
+  { key: 'dprDate', label: 'GRN Date', date: true },
+  { key: 'ageing', label: 'Age from GRN Date', integer: true },
+  // Not Integrated on the Accounts bills the Vendor Ageing report has no GRN
+  // for, as the table's Remarks -- see toCell.
+  { key: 'bpadRemarks', label: 'Remarks' },
+];
+
+/**
+ * The Pending GRNs at GRN Store sheet: the Total GRNS layout its card narrows
+ * (COLUMNS, GRN Date among them), then Age from GRN Date as the table adds it
+ * on that view -- to the "Age as of" date picked on screen for every row, the
+ * register having no entry for any of them (grnStoreAgeDays in
+ * services/ageing.js). Straight after Ded.Amount, where the table puts it.
+ */
+const GRN_STORE_COLUMNS = COLUMNS.flatMap((c) =>
+  c.key === 'dedAmount' ? [c, { key: 'ageing', label: 'Age from GRN Date', integer: true }] : [c],
+);
+
+/**
+ * The Pending breakdown's bucket for the GRNs the register cannot place -- the
+ * GRN Store card's filter value. Spelled here rather than imported from
+ * resultsViews.js (NOT_IN_BPAD there), which imports this file.
+ */
+const NOT_IN_BPAD = '__not_in_bpad__';
+
+/**
+ * Whether a sheet is the Pending GRNs at GRN Store card's: Total GRNS rows
+ * narrowed by NOT_IN_BPAD -- see cardSheet's 'missing' case in
+ * resultsViews.js.
+ */
+function isGrnStoreSheet(spec) {
+  return spec.status === 'ALL' && spec.dept === NOT_IN_BPAD;
+}
+
+/**
+ * Whether a sheet is Pending GRNs at BPAD rows: Pending, narrowed by the
+ * register's `dept` -- every desk it places (IN_BPAD) or one desk's card.
+ * Those are asked for with the register joined, so their rows carry its desk
+ * and dates (see rowSelect on the server). sectionSheets only puts a `dept` on
+ * a Pending sheet with a register on file.
+ */
+function isPendingBpadSheet(spec) {
+  return spec.status === 'PENDING' && Boolean(spec.dept) && spec.dept !== NOT_IN_BPAD;
+}
+
+/**
  * The BPAD register's own columns, in the register's own order and spelled the
  * way it spells them -- the same reasoning as GRN_COLUMNS above: the sheet is
  * meant to be checkable against the file it was extracted from, and reordering
@@ -273,7 +334,9 @@ const BPAD_COLUMNS = [
   { key: 'pendReason', label: 'Pend.Reason/Pend Dept' },
   // Days from GRN Date, per desk, with Stores counting to the "as of" date
   // picked on screen -- see bpadAgeDays in services/ageing.js and sheetRows.
-  { key: 'ageing', label: 'Ageing', integer: true },
+  // Named as the tab heads it, and as the Pending GRNs at BPAD sheet does, so
+  // one workbook carrying both calls the one figure one thing.
+  { key: 'ageing', label: 'Age from GRN Date', integer: true },
 ];
 
 /**
@@ -512,14 +575,23 @@ function slug(text) {
 }
 
 /**
- * Which column set a given export uses. Pending gets the GRN report's own.
+ * Which column set a given export uses. Pending gets the GRN report's own --
+ * and a Pending GRNs at BPAD sheet (`pendingBpad`, see isPendingBpadSheet)
+ * those plus the register's desk, received dates and Age from GRN Date.
  *
  * Total GRNs falls through to COLUMNS, which is the layout built for exactly
  * that: both sides of the match on one row, with Status saying which bucket
- * each is in -- the sheet the screen's Match column exists for.
+ * each is in -- the sheet the screen's Match column exists for. The GRN Store
+ * card's sheet (`grnStore`, see isGrnStoreSheet) gets GRN_STORE_COLUMNS
+ * instead: those plus Age from GRN Date.
  */
-export function columnsForStatus(status, spans = [], view) {
-  if (status === 'PENDING') return GRN_COLUMNS;
+export function columnsForStatus(status, spans = [], view, { pendingBpad = false, grnStore = false } = {}) {
+  // With the register's columns where the sheet is Pending GRNs at BPAD rows
+  // -- see isPendingBpadSheet.
+  if (status === 'PENDING') return pendingBpad ? PENDING_BPAD_COLUMNS : GRN_COLUMNS;
+  // With Age from GRN Date where it is the GRN Store card's -- see
+  // isGrnStoreSheet.
+  if (status === 'ALL' && grnStore) return GRN_STORE_COLUMNS;
   if (status === 'TURNAROUND') return turnaroundColumns(spans);
   // `view` is the GRNs / Cheques switch, where the screen has one; without it
   // a sheet carries every column, as before.
@@ -584,6 +656,11 @@ function toCell(row, column) {
     // Negative: the cheque was cut before the bill reached Accounts -- an advance.
     return row.ageingDays < 0 ? 'Cheque date (before handover)' : 'Cheque date';
   }
+  // The Pending GRNs at BPAD sheets' Remarks: the words the table's pill
+  // carries (NOT_INTEGRATED_REMARK in ResultsTable.jsx), on the rows the
+  // server flags -- at Accounts in the register, with no GRN in the Vendor
+  // Ageing report. Empty on every other row.
+  if (column.key === 'bpadRemarks') return row.bpadNotIntegrated ? 'Not Integrated in Accounts' : null;
   // Words rather than Yes/No: this is read by people, and Excel's filter
   // dropdown should offer the answer rather than make one up from the
   // heading. Null where the question does not apply
@@ -906,9 +983,9 @@ function save(blob, fileName) {
  *
  * A sheet is described by which view's rows it holds (`status`) and which of
  * that view's cards narrowed them -- `progress` for a CSD stage or the cheque
- * pair, `dept` for a BPAD desk, `register` for the GRNs the register never
- * knew, `notIntegrated` (with its `accountsFrom`) for the BPAD bills at
- * Accounts the ageing report does not have. Nothing narrowing is the view's
+ * pair, `dept` for a BPAD desk or a Pending one, `notIntegrated` (with its
+ * `accountsFrom`) for the BPAD bills at Accounts the ageing report does not
+ * have. Nothing narrowing is the view's
  * own sheet. See sectionSheets in services/resultsViews.js, which turns the
  * cards into these.
  *
@@ -923,7 +1000,6 @@ async function sheetRows(batchId, spec, { q, location, msme, spans, view, ageing
     msme,
     progress: spec.progress,
     dept: spec.dept,
-    register: spec.register,
     supplyType: spec.supplyType,
     notIntegrated: spec.notIntegrated,
     accountsFrom: spec.accountsFrom,
@@ -947,9 +1023,17 @@ async function sheetRows(batchId, spec, { q, location, msme, spans, view, ageing
           // services/ageing.js. Over the server's own figure, which is as of
           // today.
           raw.map((r) => ({ ...r, ageing: bpadAgeDays(r, ageingAsOf) }))
-        : // The Ageing, as the table shows it: to the cheque date, or to the
-          // "as of" date picked on screen -- see services/ageing.js.
-          raw.map((r) => ({ ...r, ageingDays: ageingDays(r, ageingAsOf), ageingAsOf }));
+        : isPendingBpadSheet(spec)
+          ? // The same Age for the Pending GRNs at BPAD rows, counted from
+            // the GRN Date on the row, as the table counts it.
+            raw.map((r) => ({ ...r, ageing: bpadAgeDays(asBpadAgeRow(r), ageingAsOf) }))
+          : isGrnStoreSheet(spec)
+            ? // The GRN Store's Age from GRN Date: every row to the date
+              // picked on screen, as the table counts it.
+              raw.map((r) => ({ ...r, ageing: grnStoreAgeDays(r, ageingAsOf) }))
+            : // The Ageing, as the table shows it: to the cheque date, or to
+              // the "as of" date picked on screen -- see services/ageing.js.
+              raw.map((r) => ({ ...r, ageingDays: ageingDays(r, ageingAsOf), ageingAsOf }));
   return { name, rows };
 }
 
@@ -996,7 +1080,7 @@ async function inBatches(items, work) {
  * it is per section: a reader on Total GRNS was not asking about CSD stages,
  * and eleven sheets to find the four they wanted is a worse answer than four.
  *
- * `sheets` is `[{ sheetName, status, progress, dept, register, title }]` --
+ * `sheets` is `[{ sheetName, status, progress, dept, title }]` --
  * built by sectionSheets in services/resultsViews.js out of the same card
  * declarations the row on screen is rendered from, so a card renamed or
  * reordered there moves its sheet with it and nothing here has to be edited.
@@ -1035,7 +1119,10 @@ export async function exportSection(
   const built = sheets.map((s, i) => ({
     sheetName: s.sheetName,
     rows: fetched[i].rows,
-    columns: columnsForStatus(s.status, spans, viewFor(s)),
+    columns: columnsForStatus(s.status, spans, viewFor(s), {
+      pendingBpad: isPendingBpadSheet(s),
+      grnStore: isGrnStoreSheet(s),
+    }),
     // A card's sheet says which card it is above its headers; a section's own
     // sheet is just the report.
     title: s.title ?? titleForStatus(s.status),

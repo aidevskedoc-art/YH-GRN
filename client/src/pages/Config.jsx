@@ -7,32 +7,47 @@ import { useConfirm } from '../components/ConfirmDialog.jsx';
 /**
  * Branches, as configured.
  *
- * A branch is one place that three files each call something different, and
- * this screen is where the three names are written down side by side:
+ * A branch is one place that each file calls something different, and this
+ * screen is where those names are written down side by side:
  *
- *   Branch code   the ageing report's DivisionCode        SE1
- *   Location      part of the GRN report's Location        SECUNDERABAD
- *   Account no.   the account its bank statement is for    59219911199911
+ *   Branch code       the ageing report's DivisionCode        SE1
+ *   Location          part of the GRN report's Location        SECUNDERABAD
+ *   Location (BPAD)   the BPAD register's Location             SBD
+ *   Account no.       the account its bank statement is for    59219911199911
  *
  * The tick box is the point of the screen. Ticking a branch narrows the results
  * and CS Department screens to its rows; untick everything and they show
  * everything, which is what they did before this screen existed.
  *
- * Two things this screen deliberately does not do. It does not touch an upload:
- * every row of every file is still stored and reconciled whatever is ticked, so
- * a branch can be ticked and unticked all day and nothing is lost. And the ticks
+ * Location (BPAD) is the one field that acts on an upload rather than on what
+ * is shown: filled in, a BPAD register uploaded afterwards keeps a row for one
+ * of this branch's GRNs only when the row's Location is this -- so another
+ * branch's bill carrying the same GRN number and vendor stays out. Left blank,
+ * the register is matched on vendor code and GRN number alone, as before.
+ *
+ * Two things this screen deliberately does not do. The ticks do not touch an
+ * upload: every row of every file is still stored and reconciled whatever is
+ * ticked, so a branch can be ticked and unticked all day and nothing is lost.
+ * And the ticks
  * are not personal -- they are settings for the installation, so two people
  * looking at the same figures are looking at the same rows. The lead paragraph
  * says so, because a tick box that quietly changes somebody else's screen is
  * one worth warning about.
  */
 
-const BLANK = { id: null, branchCode: '', location: '', accountNo: '', isSelected: false };
+const BLANK = {
+  id: null,
+  branchCode: '',
+  location: '',
+  bpadLocation: '',
+  accountNo: '',
+  isSelected: false,
+};
 
 /**
  * The add/edit panel.
  *
- * The three fields carry examples rather than descriptions. "DivisionCode from
+ * The four fields carry examples rather than descriptions. "DivisionCode from
  * the ageing report" tells somebody who already knows; "SE1" tells somebody
  * looking at the file.
  */
@@ -53,8 +68,9 @@ function BranchForm({ initial, saving, error, onSave, onClose }) {
         <div className="sheet__head">
           <h2>{editing ? `Edit ${initial.branchCode}` : 'New branch'}</h2>
           {/* <p className="sheet__lead">
-            What this branch is called in each of the three reports. The code and the location are
-            how its rows are recognised; the account number is how its bank statement is.
+            What this branch is called in each report. The code and the location are how its rows
+            are recognised; the account number is how its bank statement is; the BPAD location is
+            which register rows are its own.
           </p> */}
         </div>
 
@@ -94,22 +110,40 @@ function BranchForm({ initial, saving, error, onSave, onClose }) {
             </label>
           </div>
 
-          <label className="field">
-            <span className="field__label">Account number</span>
-            <input
-              className="field__input"
-              value={form.accountNo ?? ''}
-              onChange={(e) => set({ accountNo: e.target.value })}
-              placeholder="59219911199911"
-              autoComplete="off"
-              inputMode="numeric"
-            />
-            {/* <span className="field__hint">
-              Optional. Read from the bank statement&rsquo;s letterhead. Filled in, only that
-              account&rsquo;s statements decide whether this branch&rsquo;s cheques cleared; left
-              blank, every uploaded statement counts, as before.
-            </span> */}
-          </label>
+          <div className="form-grid">
+            <label className="field">
+              <span className="field__label">Location (BPAD)</span>
+              <input
+                className="field__input"
+                value={form.bpadLocation ?? ''}
+                onChange={(e) => set({ bpadLocation: e.target.value })}
+                placeholder="SBD"
+                autoComplete="off"
+              />
+              {/* <span className="field__hint">
+                Optional. The BPAD register&rsquo;s <strong>Location</strong> for this branch. Filled
+                in, a register row is kept only when this matches too, not just the GRN number and
+                vendor. Applies to registers uploaded from now on.
+              </span> */}
+            </label>
+
+            <label className="field">
+              <span className="field__label">Account number</span>
+              <input
+                className="field__input"
+                value={form.accountNo ?? ''}
+                onChange={(e) => set({ accountNo: e.target.value })}
+                placeholder="59219911199911"
+                autoComplete="off"
+                inputMode="numeric"
+              />
+              {/* <span className="field__hint">
+                Optional. Read from the bank statement&rsquo;s letterhead. Filled in, only that
+                account&rsquo;s statements decide whether this branch&rsquo;s cheques cleared; left
+                blank, every uploaded statement counts, as before.
+              </span> */}
+            </label>
+          </div>
         </div>
 
         <div className="sheet__foot">
@@ -175,6 +209,7 @@ export default function Config() {
         await api.createBranch({
           branchCode: values.branchCode,
           location: values.location,
+          bpadLocation: values.bpadLocation,
           accountNo: values.accountNo,
           isSelected: values.isSelected,
         });
@@ -182,6 +217,7 @@ export default function Config() {
         await api.updateBranch(values.id, {
           branchCode: values.branchCode,
           location: values.location,
+          bpadLocation: values.bpadLocation,
           accountNo: values.accountNo,
         });
       }
@@ -219,7 +255,7 @@ export default function Config() {
         <div>
           <h2 className="page__title">Configuration</h2>
           <p className="page__lead">
-            What each branch is called in the three reports, and which branches the figures are
+            What each branch is called in each report, and which branches the figures are
             narrowed to. These ticks apply to everyone — they are settings for this installation,
             not for your own screen.
           </p>
@@ -271,6 +307,7 @@ export default function Config() {
                 <th>In scope</th>
                 <th>Branch code</th>
                 <th>Location</th>
+                <th>Location (BPAD)</th>
                 <th>Account number</th>
                 <th>Action</th>
               </tr>
@@ -278,7 +315,7 @@ export default function Config() {
             <tbody>
               {branches.length === 0 && (
                 <tr>
-                  <td className="table__empty" colSpan={5}>
+                  <td className="table__empty" colSpan={6}>
                     No branches yet
                   </td>
                 </tr>
@@ -299,6 +336,9 @@ export default function Config() {
                   <td className="table__mono">{row.branchCode}</td>
                   <td>{row.location}</td>
                   <td className="table__mono">
+                    {row.bpadLocation || <span className="table__miss">&mdash;</span>}
+                  </td>
+                  <td className="table__mono">
                     {row.accountNo || <span className="table__miss">&mdash;</span>}
                   </td>
                   <td>
@@ -306,7 +346,13 @@ export default function Config() {
                       <button
                         type="button"
                         className="ghost ghost--sm"
-                        onClick={() => setForm({ ...row, accountNo: row.accountNo ?? '' })}
+                        onClick={() =>
+                          setForm({
+                            ...row,
+                            accountNo: row.accountNo ?? '',
+                            bpadLocation: row.bpadLocation ?? '',
+                          })
+                        }
                         title={`Edit ${row.branchCode}`}
                       >
                         <IconPencil size={13} /> Edit

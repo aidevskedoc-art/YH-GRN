@@ -1,11 +1,13 @@
 /**
  * The branch filter, as SQL.
  *
- * The configuration screen holds one row per branch naming the three ways the
- * three source files spell it -- the ageing report's DivisionCode, a fragment
- * of the GRN report's Location, and the account its bank statement is for --
- * and a tick box saying whether it is in scope. These are the clauses that turn
- * whatever is ticked into what the screens show.
+ * The configuration screen holds one row per branch naming the ways the source
+ * files spell it -- the ageing report's DivisionCode, a fragment of the GRN
+ * report's Location, the account its bank statement is for, and the BPAD
+ * register's Location -- and a tick box saying whether it is in scope. These
+ * are the clauses that turn whatever is ticked into what the screens show. The
+ * BPAD register's Location is not among them: only the upload reads it (see
+ * grnMatchKeys in routes/batches.js).
  *
  * Written against branch_configs directly rather than read into JavaScript and
  * bound as parameters. Three reasons, and the third is the one that decides it:
@@ -119,9 +121,9 @@ export function bankAccountScope(batchColumn) {
 /**
  * The bank account a row's branch banks through, as SQL.
  *
- * The account number lives on the branch, not on the GRN: it is the third of
- * the three names the configuration screen holds for a branch, and it is the
- * one the bank statement is written against. So the column shown beside a
+ * The account number lives on the branch, not on the GRN: it is one of the
+ * names the configuration screen holds for a branch, and it is the one the
+ * bank statement is written against. So the column shown beside a
  * result is the configured account of whichever branch that result belongs to.
  *
  * A row is tied to its branch exactly as `branchScope` ties it -- the ageing

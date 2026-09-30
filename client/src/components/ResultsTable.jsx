@@ -4,7 +4,7 @@ import { IconCheck, IconSend, IconUndo } from './icons.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import Sheet from './Sheet.jsx';
 import { chequePrepared } from '../services/cheque.js';
-import { ageingDays, todayIso } from '../services/ageing.js';
+import { ageingDays, asBpadAgeRow, bpadAgeDays, bpadDesk, grnStoreAgeDays, todayIso } from '../services/ageing.js';
 import { useConfirm } from './ConfirmDialog.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
 import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, canHandToCsd } from '../services/resultsViews.js';
@@ -290,6 +290,79 @@ function AgeingDays({ row, asOf }) {
     <span title={title}>
       {days.toLocaleString('en-IN')} day{Math.abs(days) === 1 ? '' : 's'}
     </span>
+  );
+}
+
+/**
+ * The Age from GRN Date cell -- see bpadAgeDays in services/ageing.js. At
+ * Stores it counts to `asOf`, the "Age as of" date in the toolbar; at any
+ * other desk to the date the bill reached it. The dates it counts between are
+ * in the tooltip, so it can be checked.
+ *
+ * The BPAD tab's and the Pending GRNs at BPAD view's, both: `row` is a BPAD
+ * row, or a pending row through asBpadAgeRow, which reads the same.
+ */
+export function BpadAgeDays({ row, asOf }) {
+  const days = bpadAgeDays(row, asOf);
+  if (days === null) return <span className="table__miss">&mdash;</span>;
+  const desk = bpadDesk(row);
+  const to =
+    desk === 'STORES'
+      ? `still at Stores — days to ${asOf === todayIso() ? 'today' : formatDate(asOf)}`
+      : desk === 'ACCOUNTS'
+        ? `reached Accounts ${formatDate(row.accountsReceivedDate)}`
+        : `reached BPAD ${formatDate(row.bpadReceivedDate)}`;
+  return <span title={`GRN dated ${formatDate(row.grnDate)}, ${to}`}>{days.toLocaleString('en-IN')}</span>;
+}
+
+/**
+ * The Pending GRNs at BPAD view's Remarks, on the Accounts bills the Vendor
+ * Ageing report has no GRN for -- BPAD has handed them to Accounts, the
+ * Accounts system has not picked them up. The same bills the Not Integrated
+ * in Accounts card counts on the BPAD view, and named the same. The export's
+ * Remarks column spells it too (exporter.js cannot import this file).
+ */
+const NOT_INTEGRATED_REMARK = 'Not Integrated in Accounts';
+const NOT_INTEGRATED_TITLE =
+  'Not Integrated: the BPAD register has the bill at Accounts, but the Vendor Ageing report has no GRN for it';
+
+/**
+ * The Pending GRNs at GRN Store view's Age from GRN Date cell -- see
+ * grnStoreAgeDays in services/ageing.js. Every row counts to `asOf`, the "Age
+ * as of" date in the toolbar: none of them has reached a desk. The dates it
+ * counts between are in the tooltip, as on the BPAD tab's column.
+ */
+export function GrnStoreAgeDays({ row, asOf }) {
+  const days = grnStoreAgeDays(row, asOf);
+  if (days === null) {
+    return (
+      <span className="table__miss" title="No GRN Date to count from">
+        &mdash;
+      </span>
+    );
+  }
+  const to = asOf === todayIso() ? 'today' : formatDate(asOf);
+  return (
+    <span title={`GRN dated ${formatDate(row.dprDate)}, still at the GRN store — days to ${to}`}>
+      {days.toLocaleString('en-IN')}
+    </span>
+  );
+}
+
+/** That column's header tooltip: what it counts, with the date written out. */
+export function grnStoreAgeHeaderTitle(asOf) {
+  return `Days from GRN Date to ${formatDate(asOf)} (the Age as of date) — still at the GRN store, with no BPAD desk on record to stop at`;
+}
+
+/**
+ * What the Age from GRN Date header says it counts, for its tooltip -- the rule
+ * per desk, with the "Age as of" date Stores counts to written out.
+ */
+export function bpadAgeHeaderTitle(asOf) {
+  return (
+    'Days from GRN Date — Accounts: to Accounts Received Date; ' +
+    `Stores: to ${formatDate(asOf)} (the Age as of date); ` +
+    'every other department: to BPAD Received Date'
   );
 }
 
@@ -847,7 +920,10 @@ export function ForwardDetailsDialog({ subject, to, busy, error, onSubmit, onClo
  * The results grid, in one of two layouts.
  *
  * Pending rows have no ageing entry, so every ageing column would be blank:
- * that layout is the GRN report's own columns and nothing else.
+ * that layout is the GRN report's own columns -- plus, as Pending GRNs at BPAD
+ * (`showBpad`), the register's Department, BPAD Received Date, Accounts
+ * Received Date and Age from GRN Date, as the BPAD tab shows them, and a
+ * Remarks column marking the Accounts bills that are Not Integrated.
  *
  * Valid GRNs is the accounts-side view, and it is the ageing report's own
  * figures throughout: Division (DivisionCode) in place of the GRN report's
@@ -876,8 +952,23 @@ export default function ResultsTable({
   // how the results screen shows the Accounts view.
   accountsView,
   // The date a bill with no cheque yet counts its Ageing to -- the page's
-  // "Ageing as of" input, today until it is changed. See AgeingDays.
+  // "Ageing as of" input, today until it is changed. See AgeingDays. On the
+  // Pending GRNs at BPAD view, the day a bill still at Stores counts its Age
+  // from GRN Date to -- the same input, reading "Age as of" there. And on the
+  // Pending GRNs at GRN Store rows (showGrnStoreAge), the day every row counts
+  // its Age from GRN Date to -- see GrnStoreAgeDays.
   ageingAsOf = todayIso(),
+  // Whether these are the Pending GRNs at BPAD rows -- pending, with a BPAD
+  // register on file -- which carry the register's desk and received dates
+  // (see mapRow on the server). Adds Department, BPAD Received Date, Accounts
+  // Received Date and Age from GRN Date, as the BPAD tab shows them, and
+  // Remarks -- Not Integrated on the Accounts bills the Vendor Ageing report
+  // has no GRN for.
+  showBpad = false,
+  // Whether these are the Pending GRNs at GRN Store rows -- Total GRNS
+  // narrowed by that card. Adds Age from GRN Date, counted to the "Age as of"
+  // date: the register has no entry for these, so no desk date to stop at.
+  showGrnStoreAge = false,
 }) {
   const { can } = useAuth();
 
@@ -885,7 +976,8 @@ export default function ResultsTable({
   // carry?
   //
   // `showGrnSide` is the stores' side -- Warehouse and Total Amount. Pending
-  // has nothing else, and Valid GRNS deliberately drops them, so that no
+  // has nothing else (bar the BPAD register's four columns, where `showBpad`
+  // adds them), and Valid GRNS deliberately drops them, so that no
   // column on the accounts tab is the stores' number. Total GRNS keeps them,
   // because on a mixed list they are the only identity and the only money
   // figure a pending row has.
@@ -943,7 +1035,7 @@ export default function ResultsTable({
   const [forwardFormError, setForwardFormError] = useState('');
 
   // The header row below, counted. Seven columns every layout shares --
-  // Division through Vendor Code -- and the rest by the same two flags. Kept
+  // Division through Vendor Code -- and the rest by the flags above. Kept
   // in step by hand; it is only read to span the "nothing found" row across
   // the full width.
   const columnCount =
@@ -955,6 +1047,10 @@ export default function ResultsTable({
     (showGrnDetail ? 3 : 0) + // GRN Date, Bill No, Bill Date
     // Bill.Amount, Transport Amount, Total Amount, Add.Amount, Ded.Amount
     (showGrnSide ? 5 : 0) +
+    // Department, BPAD Received Date, Accounts Received Date, Age from GRN
+    // Date, Remarks
+    (showBpad ? 5 : 0) +
+    (showGrnStoreAge ? 1 : 0) + // Age from GRN Date, at the GRN store
     // Focus doc_no and the amounts, or the Cheque Amount in their place
     (showAgeing ? (showGrnDetail ? 1 + AMOUNT_COLUMNS.length : 1) : 0) +
     // Cheque No (pinned up front on Cheque view), Cheque Date, PaymentDocNo,
@@ -1323,6 +1419,31 @@ export default function ResultsTable({
             {showGrnSide && <th className="table__num">Total Amount</th>}
             {showGrnSide && <th className="table__num">Add.Amount</th>}
             {showGrnSide && <th className="table__num">Ded.Amount</th>}
+            {/* Where the BPAD register says each pending bill is, straight
+                after the GRN report's own columns: its Pending With Dept. and
+                the two dates the register reports, as the BPAD tab shows them
+                -- then Age from GRN Date, by the BPAD tab's own rule. See
+                BpadAgeDays. */}
+            {showBpad && <th title="Pending With Dept. in the BPAD register">Department</th>}
+            {showBpad && <th>BPAD Received Date</th>}
+            {showBpad && <th>Accounts Received Date</th>}
+            {showBpad && (
+              <th className="table__num" title={bpadAgeHeaderTitle(ageingAsOf)}>
+                Age from GRN Date
+              </th>
+            )}
+            {/* Not Integrated on the Accounts bills the Vendor Ageing report
+                has no GRN for -- the Not Integrated in Accounts card's bills,
+                by the card's own test (bpadNotIntegrated on the server). */}
+            {showBpad && <th title={NOT_INTEGRATED_TITLE}>Remarks</th>}
+            {/* The same place on the Pending GRNs at GRN Store rows, where the
+                one rule is GRN Date to the "Age as of" date. See
+                GrnStoreAgeDays. */}
+            {showGrnStoreAge && (
+              <th className="table__num" title={grnStoreAgeHeaderTitle(ageingAsOf)}>
+                Age from GRN Date
+              </th>
+            )}
             {showAgeing && showGrnDetail && <th>Focus doc_no</th>}
             {showAgeing &&
               showGrnDetail &&
@@ -1440,6 +1561,38 @@ export default function ResultsTable({
               {showGrnSide && <td className="table__num">{formatAmount(row.totalAmount)}</td>}
               {showGrnSide && <td className="table__num">{formatAmountOrDash(row.addAmount)}</td>}
               {showGrnSide && <td className="table__num">{formatAmountOrDash(row.dedAmount)}</td>}
+              {showBpad && (
+                <td>{row.pendingWithDept || <span className="table__miss">&mdash;</span>}</td>
+              )}
+              {showBpad && (
+                <td>{formatDate(row.bpadReceivedDate) || <span className="table__miss">&mdash;</span>}</td>
+              )}
+              {showBpad && (
+                <td>
+                  {formatDate(row.accountsReceivedDate) || <span className="table__miss">&mdash;</span>}
+                </td>
+              )}
+              {showBpad && (
+                <td className="table__num">
+                  <BpadAgeDays row={asBpadAgeRow(row)} asOf={ageingAsOf} />
+                </td>
+              )}
+              {showBpad && (
+                <td>
+                  {row.bpadNotIntegrated ? (
+                    <span className="pill pill--gap" title={NOT_INTEGRATED_TITLE}>
+                      {NOT_INTEGRATED_REMARK}
+                    </span>
+                  ) : (
+                    <span className="table__miss">&mdash;</span>
+                  )}
+                </td>
+              )}
+              {showGrnStoreAge && (
+                <td className="table__num">
+                  <GrnStoreAgeDays row={row} asOf={ageingAsOf} />
+                </td>
+              )}
               {showAgeing && showGrnDetail && (
                 <td className="table__mono">
                   {row.ageingGrnNo || <span className="table__miss">&mdash;</span>}

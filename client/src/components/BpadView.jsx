@@ -1,26 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client.js';
-import { bpadAgeDays, bpadDesk, todayIso } from '../services/ageing.js';
-import { formatAmountOrDash, formatDate } from './ResultsTable.jsx';
+import { todayIso } from '../services/ageing.js';
+import { BpadAgeDays, bpadAgeHeaderTitle, formatAmountOrDash, formatDate } from './ResultsTable.jsx';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
 
 /**
- * Where every GRN in this upload stands in the BPAD register.
+ * The BPAD register's entries for the GRNs in this upload.
  *
- * One row per GRN, not one row per register entry. The uploaded workbook is
- * the whole group's -- several hundred thousand rows of it -- and the upload
- * keeps the rows whose vendor code AND GRN number both match a GRN in scope
- * (see readBpadReport on the server), then adds a row for every GRN the
- * register turned out to have no entry for at all.
+ * The uploaded workbook is the whole group's -- several hundred thousand rows
+ * of it -- and the upload keeps the rows whose vendor code AND GRN number both
+ * match a GRN in scope (see readBpadReport on the server). One row per register
+ * entry, so a GRN the register repeats across a split invoice is on more than
+ * one row.
  *
- * Those last are the point of the column below. A GRN with no register entry
- * is an answer, not an omission: in practice it is a delivery received with no
- * vendor invoice raised against it yet -- the GRN report writes "-" in Bill No
- * -- and BPAD is a register of BILLS pending, so there is nothing yet for it
- * to be pending on. Showing only the entries the register had would leave a
- * reader counting 3,392 rows against 3,402 GRNs with no way to tell which ten
- * were missing or why.
+ * Only the register's own entries. The upload also stores a row for every GRN
+ * the register had no entry for -- in practice a delivery received with no
+ * vendor invoice raised against it yet, and BPAD is a register of BILLS
+ * pending -- but those GRNs are not in BPAD. They are still at the GRN store,
+ * and the Pending GRNs at GRN Store card on the Total GRNS row is where they
+ * are counted and listed; the server leaves them out of this tab (see
+ * BPAD_IN_REGISTER in routes/results.js). So the pager here counts the same
+ * entries the BPAD card does.
  *
  * It fetches its own rows and owns its own pager, the same way TurnaroundView
  * does and for the same reason: it reads a different table from the other
@@ -33,31 +34,15 @@ function Text({ value }) {
   return value ? value : <span className="table__miss">&mdash;</span>;
 }
 
-/**
- * Whether the register had an entry for this GRN.
 /** A date the register carries, or a dash where the bill has not reached it. */
 function DateText({ value }) {
   return value ? formatDate(value) : <span className="table__miss">&mdash;</span>;
 }
 
-/**
- * The Age from GRN Date cell -- see bpadAgeDays in services/ageing.js. At
- * Stores it counts to `asOf`, the "Age as of" date in the toolbar; at any
- * other desk to the date the bill reached it. The dates it counts between are
- * in the tooltip, so it can be checked.
+/*
+ * The Age from GRN Date cell is BpadAgeDays in ResultsTable.jsx, shared with
+ * the Pending GRNs at BPAD view, which shows the same column by the same rule.
  */
-function AgeDays({ row, asOf }) {
-  const days = bpadAgeDays(row, asOf);
-  if (days === null) return <span className="table__miss">&mdash;</span>;
-  const desk = bpadDesk(row);
-  const to =
-    desk === 'STORES'
-      ? `still at Stores — days to ${asOf === todayIso() ? 'today' : formatDate(asOf)}`
-      : desk === 'ACCOUNTS'
-        ? `reached Accounts ${formatDate(row.accountsReceivedDate)}`
-        : `reached BPAD ${formatDate(row.bpadReceivedDate)}`;
-  return <span title={`GRN dated ${formatDate(row.grnDate)}, ${to}`}>{days.toLocaleString('en-IN')}</span>;
-}
 
 export default function BpadView({
   batchId,
@@ -65,12 +50,12 @@ export default function BpadView({
   location,
   msme,
   dept,
-  register,
   notIntegrated = false,
   accountsFrom = '',
   onDepartments,
   onNotIntegrated,
   ageingAsOf = todayIso(),
+  registerOnFile = false,
 }) {
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
@@ -86,7 +71,7 @@ export default function BpadView({
   // the upload, the search or the department starts again from the first page.
   useEffect(() => {
     setPage(1);
-  }, [batchId, q, location, msme, dept, register, notIntegrated, rowsFrom]);
+  }, [batchId, q, location, msme, dept, notIntegrated, rowsFrom]);
 
   // Which request is the latest. Typing a year into the date picker sends one
   // request per digit -- 0002, 0020, 0202, 2026 are each a whole date -- and
@@ -99,7 +84,7 @@ export default function BpadView({
     const latest = () => request === latestRequest.current;
     setLoading(true);
     api
-      .bpad(batchId, { page, pageSize, q, location, msme, dept, register, notIntegrated, accountsFrom })
+      .bpad(batchId, { page, pageSize, q, location, msme, dept, notIntegrated, accountsFrom })
       .then((next) => {
         if (!latest()) return;
         setData(next);
@@ -127,7 +112,6 @@ export default function BpadView({
     location,
     msme,
     dept,
-    register,
     notIntegrated,
     accountsFrom,
     onDepartments,
@@ -150,9 +134,19 @@ export default function BpadView({
    * no department, no card: with any of them set, an empty table is the
    * ordinary answer and the pager below already says so. Not Integrated in
    * the Accounts above all, where no rows is the answer everybody hopes for.
+   *
+   * `registerOnFile` is the other way to get here: a register has been
+   * uploaded, but it has no entry for any of these GRNs. Telling somebody to
+   * upload a file they already have would be wrong, so that case says where
+   * the GRNs are instead.
    */
-  if (total === 0 && !q && !location && !msme && !dept && !register && !notIntegrated) {
-    return (
+  if (total === 0 && !q && !location && !msme && !dept && !notIntegrated) {
+    return registerOnFile ? (
+      <div className="alert alert--info">
+        <strong>The BPAD register on file has no entry for any of these GRNs.</strong> They are
+        still at the GRN store — see Pending GRNs at GRN Store on the Total GRNS view.
+      </div>
+    ) : (
       <div className="alert alert--info">
         <strong>No BPAD register has been matched to this upload yet.</strong> Upload BPAD.xlsx on
         the upload screen — its rows are matched to your GRNs by vendor code and GRN number, and
@@ -163,18 +157,18 @@ export default function BpadView({
 
   return (
     <>
-      {/* The gap between the GRNs in scope and the ones the register knows used
-          to be stated in a banner here. It is on the Not in BPAD card above the
-          table now -- counting the same rows, and able to show them when
-          pressed, which the banner never was. */}
+      {/* The GRNs the register has no entry for are not listed here: they are
+          not in BPAD. The Pending GRNs at GRN Store card on the Total GRNS row
+          counts them and shows them when pressed. */}
       <div className="table-wrap table-wrap--sticky">
         <table className="table">
           <thead>
             <tr>
               {/* The branch, resolved through the GRN row this record matched
                   -- the register's own Location beside it is a short site code
-                  ("HTC"), which is not the vocabulary the configuration screen
-                  holds branches under. First column, as on every other tab. */}
+                  ("HTC"), which the configuration screen scopes nothing by (its
+                  Location (BPAD) is read by the upload only). First column, as
+                  on every other tab. */}
               <th>Division</th>
               {/* From here on, the register's own columns in the register's own
                   order. It is a report somebody else produces and reads, and
@@ -225,7 +219,9 @@ export default function BpadView({
                   Date, Stores to the "Age as of" date in the toolbar (today
                   until changed), every other desk to BPAD Received Date. See
                   bpadAgeDays in services/ageing.js. */}
-              <th className="table__num">Age from GRN Date</th>
+              <th className="table__num" title={bpadAgeHeaderTitle(ageingAsOf)}>
+                Age from GRN Date
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -289,7 +285,7 @@ export default function BpadView({
                   <Text value={row.pendReason} />
                 </td>
                 <td className="table__num">
-                  <AgeDays row={row} asOf={ageingAsOf} />
+                  <BpadAgeDays row={row} asOf={ageingAsOf} />
                 </td>
               </tr>
             ))}

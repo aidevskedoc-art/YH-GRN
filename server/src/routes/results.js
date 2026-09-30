@@ -645,8 +645,14 @@ const resultJoins = (scope) => `
 // Cheque view also builds on: that one reads every row before it folds them
 // into cheques, so it asks both afterwards, once per cheque listed -- see
 // chequeRows.
-const rowSelect = (scope) =>
-  `${ROW_COLUMNS}, ${VENDOR_COLUMNS}, ${CHEQUE_EXEMPT} AS cheque_exempt
+//
+// `bpad` adds the BPAD register's desk and its two received dates, read off
+// PENDING_DEPT_JOIN -- so only where the caller appends that join, which it
+// does whenever a `dept` is asked for. That is the Pending GRNs at BPAD view
+// and its sheets, whose rows carry those three columns and the Age from GRN
+// Date worked out from them.
+const rowSelect = (scope, { bpad = false } = {}) =>
+  `${ROW_COLUMNS}, ${VENDOR_COLUMNS}, ${CHEQUE_EXEMPT} AS cheque_exempt${bpad ? `, ${PENDING_BPAD_COLUMNS}` : ''}
    ${resultJoins(scope)} ${PRIOR_REJECTION_JOIN}`;
 
 function mapRow(r) {
@@ -759,6 +765,19 @@ function mapRow(r) {
     recordsSent: r.records_sent ?? false,
     recordsId: r.records_id ?? null,
     recordsSentAt: r.records_sent_at ?? null,
+    // The BPAD register's answer for the GRN -- whose desk it is on, and the
+    // two dates the register reports -- under the names the BPAD tab's own rows
+    // use, so the Age from GRN Date rule (bpadAgeDays in the client's
+    // services/ageing.js) reads either. Only on rows asked for with a `dept`
+    // (see rowSelect); null everywhere else, and on a GRN the register has no
+    // entry for.
+    pendingWithDept: r.bpad_pending_with_dept ?? null,
+    bpadReceivedDate: r.bpad_received_date ?? null,
+    accountsReceivedDate: r.bpad_accounts_received_date ?? null,
+    // At Accounts in the register, with no GRN in the Vendor Ageing report --
+    // what the Pending GRNs at BPAD view's Remarks reads as Not Integrated.
+    // See PENDING_BPAD_COLUMNS.
+    bpadNotIntegrated: r.bpad_not_integrated ?? false,
   };
 }
 
@@ -901,12 +920,33 @@ const deskKey = (column) => `upper(btrim(${column}))`;
  */
 const PENDING_DEPT_JOIN = `
   LEFT JOIN LATERAL (
-    SELECT pbb.pending_with_dept
+    SELECT pbb.pending_with_dept, pbb.bpad_received_date, pbb.accounts_received_date
     FROM bpad_records pbb
     WHERE pbb.grn_no_key = g.dpr_no_key
     ORDER BY pbb.batch_id DESC, pbb.id DESC
     LIMIT 1
   ) pb ON TRUE`;
+
+/**
+ * The register row above as columns of the row itself: the desk, and the two
+ * dates the BPAD tab reports. The Pending GRNs at BPAD view shows all three
+ * and counts its Age from GRN Date from them, the way the BPAD tab does --
+ * Accounts to Accounts Received Date, Stores to the "Age as of" date, any
+ * other desk to BPAD Received Date (bpadAgeDays in the client).
+ *
+ * Only in a select that also carries PENDING_DEPT_JOIN -- see rowSelect.
+ *
+ * `bpad_not_integrated` is that view's Remarks: the register has the bill at
+ * Accounts, and the Vendor Ageing report has no GRN for it -- the Not
+ * Integrated in Accounts card's own two tests (atAccountsSql, notInAgeingSql),
+ * asked of this row's register entry. FALSE with no desk at all.
+ */
+const PENDING_BPAD_COLUMNS = `
+         pb.pending_with_dept      AS bpad_pending_with_dept,
+         pb.bpad_received_date     AS bpad_received_date,
+         pb.accounts_received_date AS bpad_accounts_received_date,
+         COALESCE(${atAccountsSql('pb.pending_with_dept')} AND ${notInAgeingSql('g.dpr_no_key')}, FALSE)
+                                   AS bpad_not_integrated`;
 
 /**
  * That desk as one expression, with both ways of not having one folded
@@ -1453,10 +1493,11 @@ resultsRouter.get(
     // everything else on the page.
     summary.bpad = bpad;
     // Lifted to the top level because that is where the card reads its figure
-    // from, by name (see countKey in the results screen's TABS). `bpad` above
-    // keeps the whole tab's count, which is what the pager under its table
-    // shows; this is the register's own entries, which is what the card
-    // labelled BPAD is asking about.
+    // from, by name (see countKey in the results screen's TABS). This is the
+    // register's own entries -- what the card labelled BPAD is asking about,
+    // and exactly the rows the BPAD tab lists. `bpad.count` above also counts
+    // the rows written for the GRNs the register had no entry for; the page
+    // tells whether a register is on file at all from `bpad.onFile`.
     summary.bpadRegister = summary.bpad.inRegister;
     // The Pending GRNs at GRN Store card: the pending GRNs the register has no
     // desk for -- the NOT_IN_BPAD bucket of the breakdown below, which is the
@@ -1575,7 +1616,7 @@ resultsRouter.get(
     const [{ rows: countRows }, { rows }, counted] = await Promise.all([
       query(`SELECT COUNT(*)::int AS total ${resultJoins(scope)} ${deptJoin} ${where}`, params),
       query(
-        `${rowSelect(scope)} ${deptJoin} ${where} ${rowOrder(scope)}
+        `${rowSelect(scope, { bpad: Boolean(deptJoin) })} ${deptJoin} ${where} ${rowOrder(scope)}
          LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
         [...params, pageSize, (page - 1) * pageSize],
       ),
@@ -1607,17 +1648,17 @@ resultsRouter.get(
 );
 
 /**
- * GET /api/batches/:id/export?status=&q=&progress=&location=&dept=&register=&supplyType=&notIntegrated=&accountsFrom=
+ * GET /api/batches/:id/export?status=&q=&progress=&location=&dept=&supplyType=&notIntegrated=&accountsFrom=
  *
  * Every row for a status, unpaginated, as JSON. The Excel and CSV files are
  * assembled in the browser (client/src/services/exporter.js), so this endpoint
  * only has to answer with data -- no workbook is ever built or buffered here.
  *
  * It takes the narrowing filters the cards on each view set -- `progress` for
- * the CSD stages and the cheque cards, `dept` for the Pending breakdown,
- * `register` for Not in BPAD, `supplyType` for the Cheque Not Prepared
- * section's Stents / Regular, `notIntegrated` and `accountsFrom` for the BPAD
- * view's Not Integrated in Accounts -- because a section's workbook carries a sheet
+ * the CSD stages and the cheque cards, `dept` for the Pending breakdown and
+ * the BPAD desks, `supplyType` for the Cheque Not Prepared section's Stents /
+ * Regular, `notIntegrated` and `accountsFrom` for the BPAD view's Not
+ * Integrated in Accounts -- because a section's workbook carries a sheet
  * per card and each sheet is that card's own rows. Filters left out narrow
  * nothing, which is the whole of a section's own sheet.
  */
@@ -1651,7 +1692,8 @@ resultsRouter.get(
     }
 
     // Nor is BPAD: it is the register's own table, so it exports the whole of
-    // what the tab shows rather than a filtered slice of the results.
+    // what the tab shows rather than a filtered slice of the results -- the
+    // register's own entries, as there (see BPAD_IN_REGISTER).
     if (status === BPAD) {
       const { rows: bpad } = await bpadRows(req, scope, { all: true });
       return res.json({ batchId: scope.id, name: scope.name, status, rows: bpad });
@@ -1708,7 +1750,7 @@ resultsRouter.get(
     ]);
 
     const { rows } = await query(
-      `${rowSelect(scope)} ${deptJoin} ${where} ${rowOrder(scope)}`,
+      `${rowSelect(scope, { bpad: Boolean(deptJoin) })} ${deptJoin} ${where} ${rowOrder(scope)}`,
       params,
     );
 
@@ -1724,11 +1766,16 @@ resultsRouter.get(
 /* ==========================================================================
    BPAD: the register of bills pending at the accounts department.
 
-   One row per GRN the upload is about. The register's own row where it had
-   one -- matched on the vendor code and the GRN number together, while the
-   workbook is read (see readBpadReport and grnMatchKeys) -- and a row carrying
-   only what the GRN report knows where it did not, flagged in_register false
-   (see bpadRowsForGrns).
+   The register's own rows for the GRNs the upload is about -- matched on the
+   vendor code and the GRN number together, while the workbook is read (see
+   readBpadReport and grnMatchKeys).
+
+   The table also holds a row for every GRN the register had no entry for,
+   carrying only what the GRN report knows and flagged in_register false (see
+   bpadRowsForGrns). Those are not in BPAD: they are the GRNs still at the GRN
+   store, which the Pending GRNs at GRN Store card on the Total GRNS row counts
+   and lists. So nothing on this tab shows them -- not its rows, its pager, its
+   desk cards or its sheet in the export. See BPAD_IN_REGISTER.
 
    So by the time anything here runs the several hundred thousand register rows
    are already the few thousand worth showing, and this tab is a plain read of
@@ -1738,12 +1785,15 @@ resultsRouter.get(
 /**
  * The GRN row a BPAD record was matched to, for its Location.
  *
- * The register writes its own Location as a short site code ("HTC", "MLK"),
- * which is not the vocabulary the configuration screen holds branches under --
- * that is the GRN report's longer Location string. So the branch a BPAD row
- * belongs to is resolved through the GRN row it matched, which is the same
- * column every other screen resolves a branch from, and a person confined to
- * one branch sees the same set of GRNs on this tab as on the others.
+ * The register writes its own Location as a short site code ("HTC", "MLK").
+ * The configuration screen can record that code (branch_configs.bpad_location),
+ * but it is optional and only the upload reads it -- to keep another branch's
+ * row out of the register rows stored for a GRN (grnMatchKeys in
+ * routes/batches.js). Branch scope is still held under the GRN report's longer
+ * Location string, so the branch a BPAD row belongs to is resolved through the
+ * GRN row it matched, which is the same column every other screen resolves a
+ * branch from, and a person confined to one branch sees the same set of GRNs
+ * on this tab as on the others.
  *
  * Matched on the GRN number alone. The vendor code was already required for
  * the row to be stored at all, so adding it here would narrow nothing.
@@ -1833,26 +1883,20 @@ function bpadDeptFilter(value, params) {
 }
 
 /**
- * The In BPAD Register column, as SQL: the tab narrowed to one side of it.
+ * The register's own entries: every row the BPAD tab shows, as SQL.
  *
- * `missing` is the GRNs the register had no entry for -- the ones the tab
- * lists first and its banner counts. They are the exception the tab exists to
- * surface, so they are worth being able to ask for on their own rather than
- * only worth being told about.
+ * The rows a BPAD upload writes for the GRNs the register had no entry for
+ * (in_register false, see bpadRowsForGrns in routes/batches.js) are left out.
+ * Those GRNs are not in BPAD -- they are still at the GRN store, and the
+ * Pending GRNs at GRN Store card on the Total GRNS row is where they are
+ * counted and listed. Shown here as well, they were rows of a register they
+ * are not in, and the tab's pager counted more than the BPAD card beside it.
  *
- * Anything else is no filter at all, so an unknown value shows every row
- * rather than none.
- *
- * No `params` beside it, unlike every other filter here: the values are a
- * closed set this function decides between, so nothing off the request reaches
- * the SQL and there is nothing to bind.
+ * Always applied, not a filter the request can switch: the tab used to take a
+ * `register` parameter to narrow to one side or the other, and neither side
+ * is a question this tab asks any more.
  */
-function bpadRegisterFilter(value) {
-  const wanted = String(value ?? '').trim().toLowerCase();
-  if (wanted === 'missing') return 'NOT b.in_register';
-  if (wanted === 'in') return 'b.in_register';
-  return null;
-}
+const BPAD_IN_REGISTER = 'b.in_register';
 
 /*
  * Not Integrated in Accounts: the bills the register says Accounts has
@@ -1868,11 +1912,23 @@ function bpadRegisterFilter(value) {
  * (grn_number_key) against the register's GRN No folded through the same
  * normKey. Any upload's ageing rows count, because the question is whether
  * the GRN reached the Accounts system at all, not which month it arrived in.
+ *
+ * The two tests take their columns, because the Pending GRNs at BPAD rows ask
+ * the same question of their own register row (see PENDING_BPAD_COLUMNS) --
+ * their Remarks column says Not Integrated for exactly the bills this card
+ * counts. Function declarations, so that constant can call them from further
+ * up the file.
  */
-const BPAD_AT_ACCOUNTS = `b.pending_with_dept ~* '^\\s*accounts(?![a-z])'`;
-const BPAD_NOT_IN_AGEING = `NOT EXISTS (
-    SELECT 1 FROM vendor_ageing na WHERE na.grn_number_key = b.grn_no_key
+function atAccountsSql(deptColumn) {
+  return `${deptColumn} ~* '^\\s*accounts(?![a-z])'`;
+}
+function notInAgeingSql(grnKeyColumn) {
+  return `NOT EXISTS (
+    SELECT 1 FROM vendor_ageing na WHERE na.grn_number_key = ${grnKeyColumn}
   )`;
+}
+const BPAD_AT_ACCOUNTS = atAccountsSql('b.pending_with_dept');
+const BPAD_NOT_IN_AGEING = notInAgeingSql('b.grn_no_key');
 
 /** Whether the request asks for the Not Integrated rows only (`notIntegrated=1`). */
 function notIntegratedParam(req) {
@@ -1988,7 +2044,7 @@ const BPAD_AGEING_SQL = `
 `;
 
 const BPAD_COLUMNS_SQL = `
-  SELECT b.id, b.in_register,
+  SELECT b.id,
          b.sl_no, b.location, b.warehouse,
          b.vendor_code, b.vendor_name,
          b.inv_no, b.inv_date,
@@ -2044,23 +2100,19 @@ function bpadBatchFilter(scope, params) {
 }
 
 /**
- * The GRNs the register had no entry for lead, then the register's own rows in
- * its own Sl.No order.
+ * The register's rows in its own Sl.No order.
  *
- * Those rows carry no Sl.No -- there is no register row to have one -- so
- * ordering on Sl.No alone would drop every one of them onto the last page,
- * which is where nobody looks. They are ten rows in three thousand and they
- * are the exceptions worth seeing, so they go first: anyone opening this tab
- * to check coverage finds them without paging, and anyone reading the register
- * scrolls past ten rows to reach it.
+ * The GRNs the register had no entry for used to lead, ahead of it -- they
+ * carry no Sl.No to sort by. They are no longer on this tab at all (see
+ * BPAD_IN_REGISTER), so the register's order is the whole of it.
  *
  * Sl.No is the register's own and restarts per upload, so more than one batch
  * in scope groups by batch first -- same as rowOrder.
  */
 function bpadOrder(scope) {
   return scope.all
-    ? 'ORDER BY b.in_register, b.batch_id, b.sl_no NULLS LAST, b.id'
-    : 'ORDER BY b.in_register, b.sl_no NULLS LAST, b.id';
+    ? 'ORDER BY b.batch_id, b.sl_no NULLS LAST, b.id'
+    : 'ORDER BY b.sl_no NULLS LAST, b.id';
 }
 
 function mapBpadRow(r) {
@@ -2068,10 +2120,6 @@ function mapBpadRow(r) {
     // The register repeats a GRN across a split invoice, so the GRN number is
     // not a key on this tab the way it is on the others -- the row's own id is.
     id: r.id,
-    // False on a GRN the register had no entry for. Every register column on
-    // such a row is null; what it does carry came from the GRN report. See
-    // bpadRowsForGrns in routes/batches.js.
-    inRegister: r.in_register ?? true,
     slNo: r.sl_no,
     // The register's own site code ("HTC"), as it wrote it -- not the branch.
     // The GRN report's longer Location string is what the configuration screen
@@ -2115,62 +2163,74 @@ function mapBpadRow(r) {
  * into a GROUP BY over reconciliation_results would have it counted against
  * statuses it has none of.
  *
- * `dept` is optional and only the tab passes it. The card on the results page
- * reports the register's whole coverage of the upload, the same way the other
- * cards ignore the Status dropdown standing beside them; the tab's own count
- * and its "no entry in the register" line have to follow the rows on screen.
+ * Only the summary asks. The BPAD tab counts its own rows (see bpadRows), and
+ * this reports the register's whole coverage of the upload, the same way the
+ * other cards ignore the Status dropdown standing beside them.
  */
-async function bpadSummary(req, scope, search, dept) {
+async function bpadSummary(req, scope, search) {
   const params = [];
+  // The search box narrows the figures below but not `onFile`, so it is a
+  // FILTER on each of them rather than a clause of the WHERE.
   const where = whereFrom([
     bpadBatchFilter(scope, params),
-    bpadSearchFilter(search, params),
-    bpadDeptFilter(dept, params),
     BPAD_BRANCH_SCOPE,
     ...bpadBranchClauses(req, params),
   ]);
+  const matches = bpadSearchFilter(search, params) ?? 'TRUE';
   const { rows } = await query(
-    `SELECT COUNT(*)::int AS count,
-            COALESCE(SUM(b.grn_amount), 0) AS amount,
-            (COUNT(*) FILTER (WHERE NOT b.in_register))::int AS missing,
-            (COUNT(*) FILTER (WHERE b.in_register))::int AS in_register_count,
-            COALESCE(SUM(b.grn_amount) FILTER (WHERE b.in_register), 0) AS in_register_amount
+    `SELECT (COUNT(*) FILTER (WHERE ${matches}))::int AS count,
+            COALESCE(SUM(b.grn_amount) FILTER (WHERE ${matches}), 0) AS amount,
+            (COUNT(*) FILTER (WHERE ${matches} AND NOT b.in_register))::int AS missing,
+            (COUNT(*) FILTER (WHERE ${matches} AND b.in_register))::int AS in_register_count,
+            COALESCE(SUM(b.grn_amount) FILTER (WHERE ${matches} AND b.in_register), 0) AS in_register_amount,
+            COUNT(*)::int AS on_file
      ${BPAD_JOINS}
      ${where}`,
     params,
   );
   return {
-    // Every row the tab shows: the register's own entries and the GRNs it had
-    // no entry for, together. It is what the pager under the table counts.
+    /*
+     * Every row stored for the GRNs in scope that the search matches: the
+     * register's own entries and the rows written for the GRNs it had no entry
+     * for, together. Not what the BPAD tab shows -- that is `inRegister` below
+     * (see BPAD_IN_REGISTER).
+     */
     count: rows[0]?.count ?? 0,
     amount: Number(rows[0]?.amount ?? 0),
-    // How many of those the register had no entry for. The tab reports it, so
-    // a gap between the GRN count and the register's coverage is stated rather
-    // than left to be worked out from two numbers on different screens.
-    missing: rows[0]?.missing ?? 0,
     /*
-     * The register's own entries alone -- `count` less `missing`, with the
-     * value to match.
+     * The same, whatever the search box says: what the results page reads to
+     * tell whether a register has been uploaded for these GRNs at all. An
+     * upload writes a row for every GRN in scope, so it is above zero once one
+     * has, even a register that turned out to know none of them.
      *
-     * This is what the BPAD card reports, and it is the figure that answers
-     * the label on it: "how many records are in the BPAD register" is a
-     * question about the register, not about how many GRNs the tab lines up
-     * against it. The amount is filtered the same way for the same reason -- a
-     * card counting 3,392 records while summing 3,402 rows' worth of value
-     * would be two different populations in one card.
+     * Not `count`, which follows the search. The register and the GRN report
+     * are searched by their own columns (BPAD_SEARCH_COLUMNS, SEARCH_COLUMNS),
+     * so a search can match pending GRNs and no register row -- and read off
+     * `count`, typing it would turn Pending GRNs at BPAD back into plain
+     * Pending GRNs mid-word, its BPAD columns and GRN Store split with it.
+     */
+    onFile: rows[0]?.on_file ?? 0,
+    /*
+     * The register's own entries alone -- `count` less the GRNs it had no entry
+     * for, with the value to match.
+     *
+     * This is what the BPAD card reports and exactly the rows the BPAD tab
+     * lists, and it is the figure that answers the label on the card: "how
+     * many records are in the BPAD register" is a question about the register,
+     * not about how many GRNs were lined up against it. The amount is filtered
+     * the same way for the same reason -- a card counting 3,392 records while
+     * summing 3,402 rows' worth of value would be two different populations in
+     * one card.
      */
     inRegister: {
       count: rows[0]?.in_register_count ?? 0,
       amount: Number(rows[0]?.in_register_amount ?? 0),
     },
     /*
-     * The other side of it: the GRNs the register had no entry for, as a
-     * bucket rather than as the bare `missing` count above, so the card can
-     * carry a value like every other card in the row.
-     *
-     * Same figure as `missing`, kept beside it rather than replacing it
-     * because `missing` is what the tab's own banner reads and its shape is a
-     * number, not a bucket.
+     * The other side of it: the GRNs the register had no entry for. Nothing on
+     * screen reads it -- the Pending GRNs at GRN Store card counts from the
+     * Pending breakdown instead (see bpadMissing in the summary route), and the
+     * BPAD tab does not show these rows at all.
      */
     notInRegister: {
       count: rows[0]?.missing ?? 0,
@@ -2192,15 +2252,16 @@ async function bpadSummary(req, scope, search, dept) {
  * already picked could never be used to pick a second, and one that reshuffled
  * itself as a search was typed would move the option under the pointer.
  *
- * Blank is left out. The rows carrying no department are the GRNs the register
- * had no entry for at all, which the tab already marks in its own column and
- * explains in its own banner; an option reading "(none)" would be a second and
- * worse way of asking the same question.
+ * Blank is left out: an option reading "(none)" names no desk to narrow to.
+ * The GRNs the register had no entry for carry no department either, and are
+ * left out on their own account as well -- they are not on this tab at all
+ * (see BPAD_IN_REGISTER).
  */
 async function bpadDepartments(req, scope) {
   const params = [];
   const where = whereFrom([
     bpadBatchFilter(scope, params),
+    BPAD_IN_REGISTER,
     BPAD_BRANCH_SCOPE,
     ...bpadBranchClauses(req, params),
     `COALESCE(${deskKey('b.pending_with_dept')}, '') <> ''`,
@@ -2233,8 +2294,8 @@ async function bpadDepartments(req, scope) {
  * Follows the search box as well as the branch and MSME scope, unlike the desk
  * list above: that list is a dropdown's options, which must not reshuffle as a
  * search is typed, where this is a card whose number has to be the rows that
- * pressing it shows. Never narrowed by the desk, register or Not Integrated
- * filters themselves, so the card keeps its count whichever card is pressed.
+ * pressing it shows. Never narrowed by the desk or Not Integrated filters
+ * themselves, so the card keeps its count whichever card is pressed.
  *
  * `grns` beside `count` because the register repeats a GRN across a split
  * invoice: the table lists rows, and the question asked of this card is how
@@ -2246,6 +2307,7 @@ async function bpadNotIntegratedSummary(req, scope, from) {
     bpadBatchFilter(scope, params),
     bpadSearchFilter(req.query.q, params),
     bpadNotIntegratedFilter(true, from, params),
+    BPAD_IN_REGISTER,
     BPAD_BRANCH_SCOPE,
     ...bpadBranchClauses(req, params),
   ]);
@@ -2267,7 +2329,8 @@ async function bpadNotIntegratedSummary(req, scope, from) {
 }
 
 /**
- * Every BPAD row in scope, for the tab and for its sheet in the export.
+ * Every BPAD row in scope, for the tab and for its sheet in the export -- the
+ * register's own entries only (see BPAD_IN_REGISTER).
  *
  * `all` drops the pagination, which is what the export asks for.
  *
@@ -2289,8 +2352,8 @@ async function bpadRows(req, scope, { page, pageSize, all = false } = {}) {
     bpadBatchFilter(scope, params),
     bpadSearchFilter(req.query.q, params),
     bpadDeptFilter(req.query.dept, params),
-    bpadRegisterFilter(req.query.register),
     bpadNotIntegratedFilter(notIntegrated, accountsFrom, params),
+    BPAD_IN_REGISTER,
     BPAD_BRANCH_SCOPE,
     ...bpadBranchClauses(req, params),
   ]);
@@ -2319,12 +2382,13 @@ async function bpadRows(req, scope, { page, pageSize, all = false } = {}) {
 }
 
 /**
- * GET /api/batches/:id/bpad?page=&pageSize=&q=&location=&dept=&register=&notIntegrated=&accountsFrom=
+ * GET /api/batches/:id/bpad?page=&pageSize=&q=&location=&dept=&notIntegrated=&accountsFrom=
  *
  * The BPAD register's rows for the GRNs in scope. No status filter: every row
  * here is in the register because it matched a GRN, and the register's own
  * verdict on a bill is `pendingWithDept` rather than anything this system
- * decided -- which is what `dept` narrows the tab by.
+ * decided -- which is what `dept` narrows the tab by. The GRNs the register
+ * had no entry for are not rows here at all -- see BPAD_IN_REGISTER.
  *
  * `notIntegrated=1` narrows it to the Not Integrated in Accounts card's
  * rows, and `accountsFrom` is the date that card counts from. The date is read
@@ -2348,11 +2412,10 @@ resultsRouter.get(
     // had been sent, the way they were before the card existed.
     const accountsFrom = accountsFromValue(req);
 
-    // The rows, the tab's own count, the desks and the card: four independent
+    // The rows with their count, the desks and the card: three independent
     // reads of the register, sent together rather than one after another.
-    const [{ total, rows }, { missing }, departments, notIntegrated] = await Promise.all([
+    const [{ total, rows }, departments, notIntegrated] = await Promise.all([
       bpadRows(req, scope, { page, pageSize }),
-      bpadSummary(req, scope, req.query.q, req.query.dept),
       // Every department in scope, not only the ones on this page -- the
       // dropdown is built from it, and one rebuilt per page of rows would
       // offer a different set of choices as the reader paged through.
@@ -2365,10 +2428,6 @@ resultsRouter.get(
       pageSize,
       total,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
-      // How many of `total` the register had no entry for -- counted over
-      // everything in scope, not over this page, because it is a fact about
-      // the upload rather than about the fifty rows on screen.
-      missing,
       departments,
       notIntegrated,
       rows,

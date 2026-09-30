@@ -652,18 +652,20 @@ ALTER TABLE bpad_records DROP COLUMN IF EXISTS vendor_category;
 
 -- Whether the register actually had an entry for this GRN.
 --
--- The tab shows every GRN the upload is about, not only the ones the register
--- knew -- so a GRN with no entry is stored here too, carrying the identity the
--- GRN report has for it (vendor, GRN number and date, PO, invoice, amount --
--- the facts both files spell the same way) and nothing else. The register's own
--- columns stay null on it, which is the truth: BPAD has not been told about
--- this bill.
+-- A BPAD upload stores a row for every GRN it is about, not only the ones the
+-- register knew -- so a GRN with no entry is stored here too, carrying the
+-- identity the GRN report has for it (vendor, GRN number and date, PO, invoice,
+-- amount -- the facts both files spell the same way) and nothing else. The
+-- register's own columns stay null on it, which is the truth: BPAD has not been
+-- told about this bill.
 --
 -- In practice those are the GRNs received on a delivery challan with no vendor
 -- invoice raised yet -- the GRN report writes "-" in Bill No for them -- and
 -- BPAD is a register of BILLS pending, so a GRN with no bill has nothing to be
--- pending. Worth showing rather than silently dropping: goods received with no
--- invoice against them is exactly what an accounts department wants to see.
+-- pending. They are not in BPAD, so the BPAD tab and its export leave these
+-- rows out (BPAD_IN_REGISTER in routes/results.js); they are the GRNs still at
+-- the GRN store, which the Pending GRNs at GRN Store card counts and lists.
+-- See bpadRowsForGrns in routes/batches.js for why they are stored at all.
 --
 -- DEFAULT TRUE so rows stored before this column existed read as what they
 -- were: register rows, every one of them.
@@ -863,12 +865,13 @@ CREATE INDEX IF NOT EXISTS idx_record_sent_at ON record_dispatches (sent_at DESC
 -- --------------------------------------------------------------------------
 -- Branches, as configured.
 --
--- One row per branch, naming the three things that identify it in the three
--- files this system reads:
+-- One row per branch, naming the things that identify it in the files this
+-- system reads:
 --
---   branch_code  the ageing report's DivisionCode           ("SE1")
---   location     a fragment of the GRN report's Location    ("SECUNDERABAD")
---   account_no   the account its bank statement is for      ("59219911199911")
+--   branch_code    the ageing report's DivisionCode           ("SE1")
+--   location       a fragment of the GRN report's Location    ("SECUNDERABAD")
+--   account_no     the account its bank statement is for      ("59219911199911")
+--   bpad_location  the BPAD register's Location               ("SBD")
 --
 -- `is_selected` is the tick box on the configuration screen, and it scopes what
 -- the results and CSD screens show. It is installation-wide, not per user: a
@@ -877,9 +880,10 @@ CREATE INDEX IF NOT EXISTS idx_record_sent_at ON record_dispatches (sent_at DESC
 -- ticked, nothing is narrowed -- every row is shown, which is what the screens
 -- did before any of this existed.
 --
--- Nothing here filters an upload. Every row of every file is still stored and
--- reconciled; this only decides what is displayed, so a branch can be ticked
--- and unticked without re-uploading anything.
+-- The tick box filters no upload. Every row of every file is still stored and
+-- reconciled; it only decides what is displayed, so a branch can be ticked and
+-- unticked without re-uploading anything. bpad_location is the one field that
+-- does act on an upload -- see below.
 --
 -- The unique index is on the branch code folded to upper case, because that is
 -- how DivisionCode is matched -- "se1" and "SE1" are one branch, and letting
@@ -897,6 +901,20 @@ CREATE TABLE IF NOT EXISTS branch_configs (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_branch_code ON branch_configs (upper(branch_code));
 CREATE INDEX IF NOT EXISTS idx_branch_selected ON branch_configs (is_selected);
+
+-- What the BPAD register writes in its Location column for this branch ("SBD").
+--
+-- The register is the whole group's, and the branches number some GRN series
+-- independently -- Malakpet has a GFEVT0000013 as well as Secunderabad, raised
+-- against the same vendor. Vendor code and GRN number alone therefore let the
+-- other branch's bill in beside this one's. Filled in, a register row is kept
+-- only when its Location is this, for a GRN whose GRN-report Location names
+-- this branch -- see grnMatchKeys in routes/batches.js.
+--
+-- Optional, and read at upload time only: left blank, the branch's GRNs are
+-- matched on vendor code and GRN number as before, and filling it in changes
+-- nothing already stored until the register is uploaded again.
+ALTER TABLE branch_configs ADD COLUMN IF NOT EXISTS bpad_location TEXT;
 
 -- --------------------------------------------------------------------------
 -- activity_logs: who did what, and when -- the Activity logs screen.

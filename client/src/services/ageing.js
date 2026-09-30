@@ -6,9 +6,13 @@
  *  - ageingDays: the Accounts table's Ageing, from the bill being handed to
  *    Accounts (BillHandOverToAcc) to the cheque being cut (ChqDate), or to the
  *    "as of" date while there is no cheque.
- *  - bpadAgeDays: the BPAD tab's Age from GRN Date, from the GRN date to the
- *    date the bill reached the desk it is pending with -- or, at Stores, where
- *    it has reached no desk, to the "as of" date.
+ *  - bpadAgeDays: the Age from GRN Date on the BPAD tab and the Pending GRNs
+ *    at BPAD view, from the GRN date to the date the bill reached the desk it
+ *    is pending with -- or, at Stores, where it has reached no desk, to the
+ *    "as of" date.
+ *  - grnStoreAgeDays: the Pending GRNs at GRN Store view's Age from GRN Date,
+ *    from the GRN date to the "as of" date -- those GRNs have reached no desk
+ *    at all.
  *
  * Worked out here, in the browser, rather than on the server, because that date
  * is the reader's: changing it redraws the column at once, and the table and
@@ -51,8 +55,7 @@ export function bpadDesk(row) {
 
 /**
  * The BPAD row's Age from GRN Date in days, or null where a date on either end
- * is missing -- a GRN the register has no entry for among them. Counted from
- * GRN Date to:
+ * is missing. Counted from GRN Date to:
  *
  *  - ACCOUNTS: Accounts Received Date
  *  - STORES:   `asOf` -- the bill has not left the stores, so it has no
@@ -67,4 +70,30 @@ export function bpadAgeDays(row, asOf) {
   const to =
     desk === 'ACCOUNTS' ? row?.accountsReceivedDate : desk === 'STORES' ? asOf : row?.bpadReceivedDate;
   return daysBetween(row?.grnDate, to);
+}
+
+/**
+ * A Pending GRNs at BPAD row as bpadAgeDays reads it.
+ *
+ * The register's desk and its two received dates already ride on the row
+ * under a BPAD row's own names (mapRow on the server). Its GRN Date is the GRN
+ * report's -- the GRN Date column on that same row, so the Age can be checked
+ * against it -- where a BPAD row's is the register's own. The two are the same
+ * date for every such GRN on file; this counts from the one the row shows.
+ */
+export function asBpadAgeRow(row) {
+  return { ...row, grnDate: row?.dprDate ?? null };
+}
+
+/**
+ * A Pending GRNs at GRN Store row's Age from GRN Date in days: from its GRN
+ * Date to `asOf`, the "Age as of" date -- or null with no GRN Date.
+ *
+ * The BPAD register has no entry for these GRNs, so they have reached no desk
+ * and there is no received date to stop at: like a bill still at Stores on the
+ * BPAD tab, they are still ageing, and count to the date picked. From the GRN
+ * report's GRN Date -- the GRN Date column on the same row.
+ */
+export function grnStoreAgeDays(row, asOf) {
+  return daysBetween(row?.dprDate, asOf);
 }
