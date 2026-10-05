@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
-import { todayIso } from '../services/ageing.js';
+import { nextAgeSort, todayIso } from '../services/ageing.js';
 import { singlePress } from '../services/press.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
@@ -11,6 +11,7 @@ import {
   ACCOUNTS_QUEUE_CARD,
   ACCOUNTS_RECEIVED_CARD,
   ACCOUNTS_ROW,
+  ACCOUNTS_ROW_GROUPS,
   ACCOUNTS_TAB,
   CHEQUE_CARDS,
   CHEQUE_NOT_PREPARED_ROW,
@@ -24,6 +25,7 @@ import {
   VALID,
   bulkCategory as bulkCategoryOf,
   cardShown,
+  isAccountsFromDay,
   isAccountsSection,
   supplyCardFigure,
   tabFigure,
@@ -37,6 +39,7 @@ import {
   progressFilterOptions,
   sectionSheets,
   tabTitle,
+  titledCards,
 } from '../services/resultsViews.js';
 import ResultsTable, { formatAmount, ForwardDetailsDialog } from '../components/ResultsTable.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
@@ -99,9 +102,10 @@ const TABS = [ACCOUNTS_TAB, CHEQUE_NOT_PREPARED_TAB, TURNAROUND_TAB];
  * figures that view does have to give are in its own header, per span.
  */
 const CARDS_FOR = {
-  // Its own count, then the cheque pair that divides it, then the four CSD
-  // stages -- imported, because the results screen shows this same row and the
-  // two must not drift into different orders. See ACCOUNTS_ROW.
+  // Two titled groups: Accounts -- its own count, the cheque cards that
+  // divide it, the Accounts Queue and Received -- then the four CSD stages.
+  // Imported, because the results screen shows this same row and the two must
+  // not drift into different orders. See ACCOUNTS_ROW_GROUPS.
   [VALID]: ACCOUNTS_ROW,
   // Its own count, then the Supply Type cards that divide it.
   [CHEQUE_NOT_PREPARED_VIEW]: CHEQUE_NOT_PREPARED_ROW,
@@ -185,6 +189,15 @@ export default function AccountsDepartment() {
   // of" input, today until changed. The table and the export both read it;
   // see services/ageing.js.
   const [ageingAsOf, setAgeingAsOf] = useState(todayIso);
+  // The table's sort by its Ageing column, `{ key, dir }` -- pressing the
+  // header sets it (see nextAgeSort) -- or null for the usual order. Sent with
+  // the "as of" date, so the server orders every page by the figures shown;
+  // cleared on the way to another view. The ageing view has no such column.
+  const [ageSort, setAgeSort] = useState(null);
+  const activeAgeSort = ageSort?.key === 'ageing' && isAccountsSection(status) ? ageSort : null;
+  const ageSortKey = activeAgeSort?.key ?? '';
+  const ageSortDir = activeAgeSort?.dir ?? '';
+  const ageSortAsOf = activeAgeSort ? ageingAsOf : '';
   // One branch, by the name the configuration screen gives it, or '' for every
   // branch in scope. It narrows the whole page together -- rows, cards, option
   // counts and the export -- because it is a scope rather than a question
@@ -286,6 +299,9 @@ export default function AccountsDepartment() {
         msme,
         supplyType: inChequeNotPrepared ? supplyType : undefined,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
+        sort: ageSortKey,
+        sortDir: ageSortDir,
+        asOf: ageSortAsOf,
       })
       .then((result) => {
         if (latest()) setData(result);
@@ -296,7 +312,23 @@ export default function AccountsDepartment() {
       .finally(() => {
         if (latest()) setLoading(false);
       });
-  }, [batchId, status, inChequeNotPrepared, page, pageSize, q, progress, action, location, msme, supplyType, byCheque]);
+  }, [
+    batchId,
+    status,
+    inChequeNotPrepared,
+    page,
+    pageSize,
+    q,
+    progress,
+    action,
+    location,
+    msme,
+    supplyType,
+    byCheque,
+    ageSortKey,
+    ageSortDir,
+    ageSortAsOf,
+  ]);
 
   useEffect(loadRows, [loadRows]);
 
@@ -306,7 +338,22 @@ export default function AccountsDepartment() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [batchId, status, page, pageSize, q, progress, action, location, msme, supplyType, accountsView]);
+  }, [
+    batchId,
+    status,
+    page,
+    pageSize,
+    q,
+    progress,
+    action,
+    location,
+    msme,
+    supplyType,
+    accountsView,
+    ageSortKey,
+    ageSortDir,
+    ageSortAsOf,
+  ]);
 
   /*
    * The three things "Select multiple" can batch, mirroring the row's own
@@ -489,6 +536,31 @@ export default function AccountsDepartment() {
     }
     // The Supply Type cards belong to the Cheque Not Prepared section.
     if (next !== CHEQUE_NOT_PREPARED_VIEW) setSupplyType('');
+    // A view opens in its usual order, as it opens unnarrowed.
+    if (next !== status) setAgeSort(null);
+  }
+
+  /**
+   * The Ageing header, pressed: oldest first, then newest first, then the
+   * usual order -- see nextAgeSort. Page 1, since the first page of a new
+   * order is the one that answers it.
+   */
+  function selectAgeSort(key) {
+    setAgeSort((current) => nextAgeSort(current, key));
+    setPage(1);
+  }
+
+  /**
+   * The "Ageing as of" picker's value, or '' for today. A value the server
+   * could not sort to -- a mistyped five-digit year -- is not kept (see
+   * isAccountsFromDay): a sorted Ageing column sends this date. And while it
+   * is sorted, moving the date reorders the rows, so the first page of the
+   * new order shows, as it does when the sort itself changes.
+   */
+  function selectAgeingAsOf(next) {
+    if (next && !isAccountsFromDay(next)) return;
+    setAgeingAsOf(next || todayIso());
+    if (activeAgeSort) setPage(1);
   }
 
   /** Narrow the Cheque Not Prepared section to one Supply Type, or '' for all of it. */
@@ -598,6 +670,10 @@ export default function AccountsDepartment() {
     .map((id) => CARD_BY_ID[id])
     .filter(Boolean)
     .filter((card) => cardShown(card, summary, supplyType));
+  // The row as drawn: on Accounts each group's title ahead of its cards --
+  // Accounts, then CSD. The Cheque Not Prepared row as it is. Drawing only:
+  // the export reads `cards`. See titledCards.
+  const cardRow = titledCards(cards, status === VALID ? ACCOUNTS_ROW_GROUPS : null);
 
   /** The view showing, as its own TABS entry -- the export's first sheet. */
   const section = TABS.find((tab) => tab.status === status) ?? TABS[0];
@@ -723,7 +799,16 @@ export default function AccountsDepartment() {
       {summary && cards.length > 0 && (
         /* The same outlined chips as the results screen. See .cards--tabs. */
         <div className="cards cards--tabs">
-          {cards.map((card) => {
+          {cardRow.map((card) => {
+            if (card.kind === 'groupTitle') {
+              /* A group's title, on a line of its own ahead of its cards --
+                 Accounts, then CSD. See titledCards. */
+              return (
+                <h3 key={`title:${card.title}`} className="card-group__title">
+                  {card.title}
+                </h3>
+              );
+            }
             if (card.kind === 'bucket') {
               /* The count at the head of the row, and the "All" of it: every
                  GRN in accounts on Accounts, every GRN with no cheque prepared
@@ -1001,8 +1086,9 @@ export default function AccountsDepartment() {
               <input
                 className="field__input stage-filter"
                 type="date"
+                max="9999-12-31"
                 value={ageingAsOf}
-                onChange={(e) => setAgeingAsOf(e.target.value || todayIso())}
+                onChange={(e) => selectAgeingAsOf(e.target.value)}
                 aria-label="Count the Ageing of bills with no cheque yet to this date"
               />
             </label>
@@ -1111,6 +1197,8 @@ export default function AccountsDepartment() {
               onToggleRow={toggleSelectRow}
               accountsView={inChequeNotPrepared ? ACCOUNTS_GRN_VIEW : accountsView}
               ageingAsOf={ageingAsOf}
+              ageSort={activeAgeSort}
+              onAgeSort={selectAgeSort}
             />
             <div className="pager">
               <span className="pager__info">

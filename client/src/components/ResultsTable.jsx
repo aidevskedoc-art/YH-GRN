@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { api } from '../api/client.js';
-import { IconCheck, IconSend, IconUndo } from './icons.jsx';
+import { IconCheck, IconSend, IconSortBoth, IconSortDown, IconSortUp, IconUndo } from './icons.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import Sheet from './Sheet.jsx';
 import { chequePrepared } from '../services/cheque.js';
@@ -313,6 +313,56 @@ export function BpadAgeDays({ row, asOf }) {
         ? `reached Accounts ${formatDate(row.accountsReceivedDate)}`
         : `reached BPAD ${formatDate(row.bpadReceivedDate)}`;
   return <span title={`GRN dated ${formatDate(row.grnDate)}, ${to}`}>{days.toLocaleString('en-IN')}</span>;
+}
+
+/**
+ * An ageing column's header that sorts the table by it: a button inside the
+ * header cell, pressing which hands `sortKey` to `onSort` -- oldest first,
+ * then newest first, then the table's usual order (nextAgeSort in
+ * services/ageing.js). The arrows say which way the column runs while it is
+ * the sort, and `aria-sort` says so to a screen reader.
+ *
+ * A plain header without `onSort`, so a table that cannot sort a column draws
+ * it as before. `title` is the column's own tooltip, with how to sort added.
+ *
+ * Exported for the BPAD tab, whose Age from GRN Date sorts the same way.
+ */
+export function SortableTh({ label, sortKey, sort, onSort, title, className = '' }) {
+  // The button's hint, by id -- see below. Before the plain-header return, so
+  // the hook runs on every render.
+  const hintId = useId();
+  if (!onSort) {
+    return (
+      <th className={className || undefined} title={title}>
+        {label}
+      </th>
+    );
+  }
+  const dir = sort?.key === sortKey ? sort.dir : '';
+  const next = dir === '' ? 'oldest first' : dir === 'desc' ? 'newest first' : 'in the usual order';
+  const Arrows = dir === 'desc' ? IconSortDown : dir === 'asc' ? IconSortUp : IconSortBoth;
+  return (
+    <th
+      className={`${className} table__sortable`.trim()}
+      aria-sort={dir === 'desc' ? 'descending' : dir === 'asc' ? 'ascending' : undefined}
+      title={`${title ? `${title}\n\n` : ''}Click to sort: oldest first, newest first, then the usual order`}
+    >
+      {/* Named by its words alone, which are also the column's name -- a
+          screen reader reads that name with every cell, so what pressing it
+          does is a description (a hidden node, left out of the name) rather
+          than part of it. The current order is aria-sort, on the cell. */}
+      <button
+        type="button"
+        className={`th-sort${dir ? ' is-sorted' : ''}`}
+        onClick={() => onSort(sortKey)}
+        aria-describedby={hintId}
+      >
+        <span>{label}</span>
+        <Arrows size={13} />
+        <span id={hintId} hidden>{`Press to show ${next}`}</span>
+      </button>
+    </th>
+  );
 }
 
 /**
@@ -969,6 +1019,13 @@ export default function ResultsTable({
   // narrowed by that card. Adds Age from GRN Date, counted to the "Age as of"
   // date: the register has no entry for these, so no desk date to stop at.
   showGrnStoreAge = false,
+  // The table's sort by an ageing column -- `{ key, dir }`, or null for its
+  // usual order -- and what pressing an ageing header calls with that
+  // column's key ('ageing', 'bpadAge', 'storeAge'). The page owns both: it
+  // asks the server for the rows in that order, every page of them. Without
+  // `onAgeSort` the headers are plain. See SortableTh.
+  ageSort = null,
+  onAgeSort,
 }) {
   const { can } = useAuth();
 
@@ -1428,9 +1485,14 @@ export default function ResultsTable({
             {showBpad && <th>BPAD Received Date</th>}
             {showBpad && <th>Accounts Received Date</th>}
             {showBpad && (
-              <th className="table__num" title={bpadAgeHeaderTitle(ageingAsOf)}>
-                Age from GRN Date
-              </th>
+              <SortableTh
+                label="Age from GRN Date"
+                sortKey="bpadAge"
+                sort={ageSort}
+                onSort={onAgeSort}
+                className="table__num"
+                title={bpadAgeHeaderTitle(ageingAsOf)}
+              />
             )}
             {/* Not Integrated on the Accounts bills the Vendor Ageing report
                 has no GRN for -- the Not Integrated in Accounts card's bills,
@@ -1440,9 +1502,14 @@ export default function ResultsTable({
                 one rule is GRN Date to the "Age as of" date. See
                 GrnStoreAgeDays. */}
             {showGrnStoreAge && (
-              <th className="table__num" title={grnStoreAgeHeaderTitle(ageingAsOf)}>
-                Age from GRN Date
-              </th>
+              <SortableTh
+                label="Age from GRN Date"
+                sortKey="storeAge"
+                sort={ageSort}
+                onSort={onAgeSort}
+                className="table__num"
+                title={grnStoreAgeHeaderTitle(ageingAsOf)}
+              />
             )}
             {showAgeing && showGrnDetail && <th>Focus doc_no</th>}
             {showAgeing &&
@@ -1480,12 +1547,14 @@ export default function ResultsTable({
                 cut -- or to the "Ageing as of" date, marked so, while no cheque
                 has been. See AgeingDays above. */}
             {showAccountsAgeing && (
-              <th
+              <SortableTh
+                label="Ageing"
+                sortKey="ageing"
+                sort={ageSort}
+                onSort={onAgeSort}
                 className="table__num"
                 title={`Days from BillHandOverToAcc to ChqDate — to ${formatDate(ageingAsOf)} (the Ageing as of date) while there is no ChqDate`}
-              >
-                Ageing
-              </th>
+              />
             )}
             {showAgeing && <th>Status</th>}
             {/* Last, and pinned to the right edge -- see .table__pin--action in

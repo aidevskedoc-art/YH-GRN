@@ -178,13 +178,15 @@ export function notIntegratedSince(accountsFrom) {
 }
 
 /**
- * Whether a value off the "Accounts received from" picker is a day the server
- * will count from: `yyyy-MM-dd` with a four-digit year, year 0001 or later,
- * and a real calendar day. The same rule as isIsoDay in routes/results.js.
+ * Whether a value off a date picker the server reads is a day it will take:
+ * `yyyy-MM-dd` with a four-digit year, year 0001 or later, and a real
+ * calendar day. The same rule as isIsoDay in routes/results.js. The "Accounts
+ * received from" picker, and the "as of" pickers, whose date travels with a
+ * sorted ageing column (see selectAgeingAsOf on both pages).
  *
  * A date input reports whatever its year field holds, and with no `max`
  * Chrome's takes six digits -- one stray keystroke is "20266-09-01" -- so the
- * picker keeps only values that pass this, and nothing else ever reaches the
+ * pickers keep only values that pass this, and nothing else ever reaches the
  * server.
  */
 export function isAccountsFromDay(value) {
@@ -434,9 +436,9 @@ export const NOT_REQUIRED_PAIR = {
 
 /**
  * The Accounts Queue: GRNs CSD has handed back that Accounts has not received
- * yet -- the rows whose Action column still reads Queued. It comes after the
- * CSD four, being where a GRN lands once CSD are done with it (see
- * ACCOUNTS_ROW).
+ * yet -- the rows whose Action column still reads Queued. Where a GRN lands
+ * once CSD are done with it, so it is the Accounts group's, after the cheque
+ * cards (see ACCOUNTS_ROW_GROUPS).
  *
  * A `progress` card like the cheque pair, reading RETURNED_BY_CSD (see PROGRESS
  * in routes/results.js) -- the same clause as the Action dropdown's "Accounts
@@ -456,8 +458,8 @@ export const ACCOUNTS_QUEUE_CARD = {
 /**
  * Accounts Received: the queue's next step. GRNs Accounts has acknowledged
  * from CSD and not yet forwarded on to Bank, Vendor or Courier -- the rows
- * whose Status reads "Accounts received". Last on the row, after the queue it
- * is taken from.
+ * whose Status reads "Accounts received". Last of the Accounts group, after
+ * the queue it is taken from.
  *
  * Same shape as the Accounts Queue, reading ACCOUNTS_RECEIVED (see PROGRESS in
  * routes/results.js). The green of its own "Accounts received" pill in the
@@ -499,12 +501,14 @@ export function csdCardFigures(card, summary, byCheque) {
  * The Accounts row, in the order it is shown -- on both screens, which is why
  * it is settled here rather than composed twice.
  *
- * It reads as the work goes, from the outside in. The count leads: how many
- * GRNs are in accounts at all. Then where each stands on its cheque -- drawn
- * up, still to come, or not needed -- which is the first thing that has to
- * happen and is exhaustive over the row: the three sum back to the count
- * standing over them. Then how far through the CSD handover the ones with a
- * cheque have got, which is the part of the row that moves day to day.
+ * Two groups, each under its own title (see ACCOUNTS_ROW_GROUPS and
+ * titledCards): Accounts' own cards, then CSD's. Within Accounts the count
+ * leads: how many GRNs are in accounts at all. Then where each stands on its
+ * cheque -- drawn up, still to come, or not needed -- which is the first thing
+ * that has to happen and is exhaustive over the row: the three sum back to the
+ * count standing over them. Then the two Accounts cards for what CSD have
+ * handed back. The CSD group is how far through the CSD handover the ones with
+ * a cheque have got, which is the part of the row that moves day to day.
  *
  * The count used to be left off, on the reasoning that a figure standing over
  * cards that do not sum to it invites the arithmetic anyway -- and the CSD four
@@ -519,21 +523,76 @@ export function csdCardFigures(card, summary, byCheque) {
  * reconciliation status for the count, a `progress` key for the cheque cards
  * and the two Accounts cards, a CSD stage for the four.
  *
- * The two Accounts cards close the row, Queue then Received: they are where a
- * GRN goes once CSD hand it back, so they follow the CSD four in the order the
- * work does.
+ * The two Accounts cards, Queue then Received, close the Accounts group: they
+ * are where a GRN goes once CSD hand it back. They used to follow the CSD four,
+ * in the order the work does; they are Accounts' own steps, so they now stand
+ * with Accounts' other cards, under its title.
  *
  * Cheque Not Required and Payment Not Required stand as one card, the Not
  * Required pair, where the two used to be -- last of the cheque cards.
  */
-export const ACCOUNTS_ROW = [
-  VALID,
-  ...CHEQUE_CARDS.filter((card) => !NOT_REQUIRED_PARTS.includes(card.progress)).map((card) => card.progress),
-  NOT_REQUIRED_PAIR.id,
-  ...CSD_CARDS.map((card) => card.stage),
-  ACCOUNTS_QUEUE_CARD.progress,
-  ACCOUNTS_RECEIVED_CARD.progress,
+export const ACCOUNTS_ROW_GROUPS = [
+  {
+    title: 'Accounts',
+    ids: [
+      VALID,
+      ...CHEQUE_CARDS.filter((card) => !NOT_REQUIRED_PARTS.includes(card.progress)).map((card) => card.progress),
+      NOT_REQUIRED_PAIR.id,
+      ACCOUNTS_QUEUE_CARD.progress,
+      ACCOUNTS_RECEIVED_CARD.progress,
+    ],
+  },
+  { title: 'CSD', ids: CSD_CARDS.map((card) => card.stage) },
 ];
+
+/**
+ * The same row as one list -- the groups in order -- which is what CARDS_FOR
+ * files it under and what the export's sheet per card follows, so the
+ * workbook's sheets run in the order the cards are shown.
+ */
+export const ACCOUNTS_ROW = ACCOUNTS_ROW_GROUPS.flatMap((group) => group.ids);
+
+/**
+ * The id a card is filed under on the pages' CARD_BY_ID -- its view's status
+ * for a count, its `progress` key, its CSD stage, or its own `id` (the Not
+ * Required pair, and the others that carry one).
+ */
+function cardId(card) {
+  if (card.kind === 'bucket') return card.status;
+  if (card.kind === 'csd') return card.stage;
+  if (card.kind === 'progress') return card.progress;
+  return card.id ?? null;
+}
+
+/**
+ * A row's cards with each group's title in front of its own cards, for the
+ * pages to draw in their one strip of chips: `{ kind: 'groupTitle', title }`
+ * items, which take a line of their own there (.card-group__title), so each
+ * group's cards start on a line under their title.
+ *
+ * For drawing only. The export reads the cards themselves (sectionSheets), so
+ * a title is never a sheet.
+ *
+ * `groups` is the row's own (ACCOUNTS_ROW_GROUPS), or null for a row with no
+ * titles, which comes back as it is. A group with no card showing is left out,
+ * title and all; a card no group names stays on the row, after the rest,
+ * rather than going missing.
+ */
+export function titledCards(cards, groups) {
+  if (!groups) return cards;
+  const grouped = groups.map(() => []);
+  const rest = [];
+  for (const card of cards) {
+    const at = groups.findIndex((group) => group.ids.includes(cardId(card)));
+    (at >= 0 ? grouped[at] : rest).push(card);
+  }
+  return [
+    ...groups.flatMap((group, i) =>
+      grouped[i].length > 0 ? [{ kind: 'groupTitle', title: group.title }, ...grouped[i]] : [],
+    ),
+    ...rest,
+  ];
+}
 
 /**
  * The Status column's own values, as the Action filter beside the search box

@@ -17,6 +17,13 @@
  * Worked out here, in the browser, rather than on the server, because that date
  * is the reader's: changing it redraws the column at once, and the table and
  * the Excel export read the same rule from the one place (exporter.js).
+ *
+ * Every figure shown comes from here. But when a column's header is pressed to
+ * sort by it, the server repeats its rule in SQL, to the same date, so the
+ * order covers every page rather than the one on screen (RESULT_AGE_SQL,
+ * accountsAgeingSql and bpadAgeingSql in server/src/routes/results.js). A
+ * change to a rule below has to be made there too, or the sorted column runs
+ * out of order with nothing failing.
  */
 
 /** Today as the yyyy-MM-dd a date input holds -- the browser's own day. */
@@ -43,6 +50,9 @@ function daysBetween(from, to) {
  * before the handover. Shown as it is; the table says which underneath.
  *
  * `asOf` is the date a bill with no ChqDate counts to.
+ *
+ * Repeated in SQL for the Ageing sort as accountsAgeingSql in
+ * routes/results.js; keep the two in step.
  */
 export function ageingDays(row, asOf) {
   return daysBetween(row?.billHandoverToAcc, row?.chqDate || asOf);
@@ -62,8 +72,9 @@ export function bpadDesk(row) {
  *              received date anywhere and is still ageing
  *  - any other desk (AUDIT, PURCHASE DEPARTMENT, ...): BPAD Received Date
  *
- * The same desks as BPAD_AGEING_SQL in routes/results.js, which still answers
- * the API's `ageing` as of today; keep the two in step.
+ * The same desks as bpadAgeingSql in routes/results.js -- which answers the
+ * API's `ageing` as of today (BPAD_AGEING_SQL) and orders the BPAD tab and
+ * Pending GRNs at BPAD when their Age column is sorted; keep the two in step.
  */
 export function bpadAgeDays(row, asOf) {
   const desk = bpadDesk(row);
@@ -93,7 +104,26 @@ export function asBpadAgeRow(row) {
  * and there is no received date to stop at: like a bill still at Stores on the
  * BPAD tab, they are still ageing, and count to the date picked. From the GRN
  * report's GRN Date -- the GRN Date column on the same row.
+ *
+ * Repeated in SQL for the sort as RESULT_AGE_SQL.storeAge in
+ * routes/results.js; keep the two in step.
  */
 export function grnStoreAgeDays(row, asOf) {
   return daysBetween(row?.dprDate, asOf);
+}
+
+/**
+ * What pressing an ageing column's header does to the table's sort --
+ * `{ key, dir }`, or null for the table's usual order. `key` names the column
+ * the way the server takes it ('ageing', 'bpadAge', 'storeAge'; see
+ * ageSortParam in routes/results.js), so the server orders every page by it,
+ * to the "as of" date the column counts to.
+ *
+ * Oldest first on the first press -- the bills that have waited longest are
+ * what an ageing column is read for -- then newest first, then back to the
+ * table's usual order. A press on another column starts that one afresh.
+ */
+export function nextAgeSort(current, key) {
+  if (current?.key !== key) return { key, dir: 'desc' };
+  return current.dir === 'desc' ? { key, dir: 'asc' } : null;
 }

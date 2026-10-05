@@ -876,10 +876,109 @@ function resultsFrom(scope) {
  * into an interleaved mess. Group by batch first when more than one is in
  * scope, which keeps each upload's rows together and in its own order.
  */
-function rowOrder(scope) {
-  return scope.all
-    ? 'ORDER BY r.batch_id, g.sl_no NULLS LAST, g.id'
-    : 'ORDER BY g.sl_no NULLS LAST, g.id';
+function rowOrder(scope, lead = '') {
+  const keys = scope.all ? 'r.batch_id, g.sl_no NULLS LAST, g.id' : 'g.sl_no NULLS LAST, g.id';
+  return `ORDER BY ${lead ? `${lead}, ` : ''}${keys}`;
+}
+
+/* --------------------------------------------------------------------------
+   Sorting by an ageing column.
+
+   The tables' ageing columns are worked out in the browser (services/ageing.js
+   in the client), to the "as of" date the reader picks. Pressing a column's
+   header asks for the rows in that column's order, and the order has to cover
+   every page rather than the fifty rows on screen -- so it is done here, by the
+   same arithmetic, to the date the page sends (`asOf`). Each figure is a whole
+   number of days from one DATE to another; a row with no figure (a date
+   missing) goes last either way. The table's usual order breaks ties, so rows
+   with the same age keep the order they had.
+   -------------------------------------------------------------------------- */
+
+/**
+ * The BPAD register's Age from GRN Date as SQL, given where its columns are:
+ * days from the GRN date to Accounts Received Date at Accounts, to `asOf` at
+ * Stores (where the bill has reached no desk), to BPAD Received Date at any
+ * other desk -- bpadAgeDays in the client. `asOf` is SQL too: CURRENT_DATE for
+ * the API's own figure, a bound date when sorting.
+ */
+function bpadAgeingSql({ dept, accountsReceived, bpadReceived, grnDate }, asOf) {
+  return `((CASE upper(btrim(${dept}))
+      WHEN 'ACCOUNTS' THEN ${accountsReceived}
+      WHEN 'STORES' THEN ${asOf}
+      ELSE ${bpadReceived}
+    END) - ${grnDate})`;
+}
+
+/**
+ * Each sortable ageing column, by the name the client asks for it under, as
+ * the SQL for its figure on a results row -- `asOf` the bound date:
+ *
+ *  - ageing:   the Accounts views' Ageing, BillHandOverToAcc to ChqDate, or to
+ *              `asOf` while there is no cheque date (ageingDays);
+ *  - bpadAge:  Pending GRNs at BPAD's Age from GRN Date, read off the register
+ *              row PENDING_DEPT_JOIN brings, so only with that join; from the
+ *              row's own GRN Date (asBpadAgeRow);
+ *  - storeAge: Pending GRNs at GRN Store's, GRN Date to `asOf`
+ *              (grnStoreAgeDays).
+ */
+/**
+ * The Accounts Ageing as SQL, off the ageing columns under `alias` -- `a` on
+ * a results row, `z` on the Cheque view's folded one (see chequeRows). One
+ * place for the rule, kept in step with ageingDays in the client.
+ */
+function accountsAgeingSql(alias, asOf) {
+  return `(COALESCE(${alias}.chq_date, ${asOf}) - ${alias}.bill_handover_to_acc)`;
+}
+
+const RESULT_AGE_SQL = {
+  ageing: (asOf) => accountsAgeingSql('a', asOf),
+  bpadAge: (asOf) =>
+    bpadAgeingSql(
+      {
+        dept: 'pb.pending_with_dept',
+        accountsReceived: 'pb.accounts_received_date',
+        bpadReceived: 'pb.bpad_received_date',
+        grnDate: 'g.dpr_date',
+      },
+      asOf,
+    ),
+  storeAge: (asOf) => `(${asOf} - g.dpr_date)`,
+};
+
+/**
+ * The `sort`, `dir` and `asOf` parameters, read and checked: null when no
+ * ageing sort was asked for, `{ key, dir, asOf }` when one was. `keys` is
+ * which columns the asking query can sort by.
+ *
+ * Refused rather than ignored when wrong, the way an unknown supply type is:
+ * ignoring a bad value would hand back the rows in another order than the
+ * header says, and passing a bad date on would have Postgres reject it.
+ */
+function ageSortParam(req, keys) {
+  const key = String(req.query.sort ?? '').trim();
+  if (!key) return null;
+  const fail = (message) => {
+    const err = new Error(message);
+    err.status = 400;
+    throw err;
+  };
+  if (!keys.includes(key)) fail(`Cannot sort by "${key}" here.`);
+  const dir = String(req.query.dir ?? '').trim().toLowerCase();
+  if (dir !== 'asc' && dir !== 'desc') fail(`Unknown sort direction "${req.query.dir ?? ''}".`);
+  const asOf = String(req.query.asOf ?? '').trim();
+  if (!isIsoDay(asOf)) fail(`Unknown "as of" date "${asOf}".`);
+  return { key, dir, asOf };
+}
+
+/**
+ * The ORDER BY lead for an ageing sort, or '' with none. Binds the date into
+ * `params` -- the array of the one query that uses it, since every parameter
+ * bound must be one that query reads.
+ */
+function ageSortLead(sort, params, sqlFor) {
+  if (!sort) return '';
+  params.push(sort.asOf);
+  return `${sqlFor(`$${params.length}::date`)} ${sort.dir.toUpperCase()} NULLS LAST`;
 }
 
 /**
@@ -1149,6 +1248,10 @@ async function chequeRows(
     pageSize = 50,
     all = false,
     withActionCounts = false,
+    // The Ageing header, pressed (ageSortParam): the cheques in the order of
+    // the Ageing each row shows -- its representative bill's, which is the
+    // one the table reads -- rather than by the GRN report's serial number.
+    sort = null,
   },
 ) {
   const params = [];
@@ -1187,6 +1290,10 @@ async function chequeRows(
     params,
   );
 
+  // The sort's date, bound for this query alone -- see the rows endpoint.
+  const rowParams = [...params];
+  const lead = ageSortLead(sort, rowParams, (asOf) => accountsAgeingSql('z', asOf));
+
   // The vendor's Vendor Master details on the outer select, after the fold: it
   // is the representative bill's vendor, and asked here it is looked up once
   // per cheque listed rather than once per bill read.
@@ -1210,10 +1317,10 @@ async function chequeRows(
        ) q
      ) z
      WHERE z.cv_rn = 1 AND z.cv_hit
-     ORDER BY ${batchOrder('z')}z.sl_no NULLS LAST, z.cv_grn_id
-     ${all ? '' : `LIMIT $${params.length + 1} OFFSET $${params.length + 2}`}`,
+     ORDER BY ${lead ? `${lead}, ` : ''}${batchOrder('z')}z.sl_no NULLS LAST, z.cv_grn_id
+     ${all ? '' : `LIMIT $${rowParams.length + 1} OFFSET $${rowParams.length + 2}`}`,
     // `all` is the export: every cheque, unpaginated.
-    all ? params : [...params, pageSize, (page - 1) * pageSize],
+    all ? rowParams : [...rowParams, pageSize, (page - 1) * pageSize],
   );
 
   // How many cheques each Action value would list, with every other filter
@@ -1523,7 +1630,13 @@ resultsRouter.get(
   }),
 );
 
-/** GET /api/batches/:id/results?status=&page=&pageSize= */
+/**
+ * GET /api/batches/:id/results?status=&page=&pageSize=&sort=&dir=&asOf=
+ *
+ * `sort` (ageing, bpadAge, storeAge) with `dir=asc|desc` and `asOf` orders
+ * the page of rows by that ageing column, to that date -- see ageSortParam and
+ * RESULT_AGE_SQL. Nothing else about the answer changes.
+ */
 resultsRouter.get(
   '/:id/results',
   asyncHandler(async (req, res) => {
@@ -1576,8 +1689,17 @@ resultsRouter.get(
     // (`chequeNo`), which only wants the rows.
     const withActionCounts = String(req.query.actionCounts || '') === '1' && !chequeNo;
 
+    const chequeView = String(req.query.view || '').toLowerCase() === CHEQUE_VIEW;
+    // An ageing column's header, pressed -- see ageSortParam. Accounts' Ageing
+    // on either view; on GRN rows also the GRN Store's Age, and Pending GRNs
+    // at BPAD's, which reads the register row only a `dept` brings.
+    const sort = ageSortParam(
+      req,
+      chequeView ? ['ageing'] : ['ageing', 'storeAge', ...(deptJoin ? ['bpadAge'] : [])],
+    );
+
     // The Accounts Department's Cheque view: one row per cheque rather than per GRN.
-    if (String(req.query.view || '').toLowerCase() === CHEQUE_VIEW) {
+    if (chequeView) {
       return res.json(
         await chequeRows(req, scope, {
           status,
@@ -1590,6 +1712,7 @@ resultsRouter.get(
           page,
           pageSize,
           withActionCounts,
+          sort,
         }),
       );
     }
@@ -1609,6 +1732,10 @@ resultsRouter.get(
       ...branchClauses(req, params),
     ];
     const where = whereFrom([...scopeClauses, actionFilter(action, ACTIONS_WHERE)]);
+    // The sort's date is bound for the page of rows alone -- the counts do not
+    // read it, and a query handed a parameter it does not use is refused.
+    const rowParams = [...params];
+    const lead = ageSortLead(sort, rowParams, sort ? RESULT_AGE_SQL[sort.key] : null);
 
     // The count, the page of rows and the Action counts below read the same
     // parameters and none reads another's answer, so they are sent together
@@ -1616,9 +1743,9 @@ resultsRouter.get(
     const [{ rows: countRows }, { rows }, counted] = await Promise.all([
       query(`SELECT COUNT(*)::int AS total ${resultJoins(scope)} ${deptJoin} ${where}`, params),
       query(
-        `${rowSelect(scope, { bpad: Boolean(deptJoin) })} ${deptJoin} ${where} ${rowOrder(scope)}
-         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-        [...params, pageSize, (page - 1) * pageSize],
+        `${rowSelect(scope, { bpad: Boolean(deptJoin) })} ${deptJoin} ${where} ${rowOrder(scope, lead)}
+         LIMIT $${rowParams.length + 1} OFFSET $${rowParams.length + 2}`,
+        [...rowParams, pageSize, (page - 1) * pageSize],
       ),
       // How many rows each Action value would leave, with every other filter as
       // it stands -- so the number beside an option is what picking it shows,
@@ -2033,15 +2160,13 @@ const BPAD_JOINS = `
  * client/src/services/ageing.js), so STORES can count to the "Age as of" date
  * the reader picks; keep the desks in step.
  */
-const BPAD_AGEING_SQL = `
-  CASE
-    WHEN upper(btrim(b.pending_with_dept)) = 'ACCOUNTS'
-      THEN b.accounts_received_date - b.grn_date
-    WHEN upper(btrim(b.pending_with_dept)) = 'STORES'
-      THEN CURRENT_DATE - b.grn_date
-    ELSE b.bpad_received_date - b.grn_date
-  END
-`;
+const BPAD_REGISTER_AGE_COLUMNS = {
+  dept: 'b.pending_with_dept',
+  accountsReceived: 'b.accounts_received_date',
+  bpadReceived: 'b.bpad_received_date',
+  grnDate: 'b.grn_date',
+};
+const BPAD_AGEING_SQL = bpadAgeingSql(BPAD_REGISTER_AGE_COLUMNS, 'CURRENT_DATE');
 
 const BPAD_COLUMNS_SQL = `
   SELECT b.id,
@@ -2109,10 +2234,9 @@ function bpadBatchFilter(scope, params) {
  * Sl.No is the register's own and restarts per upload, so more than one batch
  * in scope groups by batch first -- same as rowOrder.
  */
-function bpadOrder(scope) {
-  return scope.all
-    ? 'ORDER BY b.batch_id, b.sl_no NULLS LAST, b.id'
-    : 'ORDER BY b.sl_no NULLS LAST, b.id';
+function bpadOrder(scope, lead = '') {
+  const keys = scope.all ? 'b.batch_id, b.sl_no NULLS LAST, b.id' : 'b.sl_no NULLS LAST, b.id';
+  return `ORDER BY ${lead ? `${lead}, ` : ''}${keys}`;
 }
 
 function mapBpadRow(r) {
@@ -2366,14 +2490,21 @@ async function bpadRows(req, scope, { page, pageSize, all = false } = {}) {
     return { total: rows.length, rows: rows.map(mapBpadRow) };
   }
 
+  // The tab's Age from GRN Date header, pressed: the rows in that column's
+  // order, to the "Age as of" date the page counts it to. The table only --
+  // the export keeps the register's order.
+  const sort = ageSortParam(req, ['bpadAge']);
+  const rowParams = [...params];
+  const lead = ageSortLead(sort, rowParams, (asOf) => bpadAgeingSql(BPAD_REGISTER_AGE_COLUMNS, asOf));
+
   // The count and the page of rows, sent together rather than one after the
   // other -- neither reads the other's answer.
   const [{ rows: countRows }, { rows }] = await Promise.all([
     query(`SELECT COUNT(*)::int AS total ${BPAD_JOINS} ${where}`, params),
     query(
-      `${BPAD_COLUMNS_SQL} ${BPAD_JOINS} ${where} ${bpadOrder(scope)}
-       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-      [...params, pageSize, (page - 1) * pageSize],
+      `${BPAD_COLUMNS_SQL} ${BPAD_JOINS} ${where} ${bpadOrder(scope, lead)}
+       LIMIT $${rowParams.length + 1} OFFSET $${rowParams.length + 2}`,
+      [...rowParams, pageSize, (page - 1) * pageSize],
     ),
   ]);
   const total = countRows[0].total;
@@ -2382,7 +2513,10 @@ async function bpadRows(req, scope, { page, pageSize, all = false } = {}) {
 }
 
 /**
- * GET /api/batches/:id/bpad?page=&pageSize=&q=&location=&dept=&notIntegrated=&accountsFrom=
+ * GET /api/batches/:id/bpad?page=&pageSize=&q=&location=&dept=&notIntegrated=&accountsFrom=&sort=&dir=&asOf=
+ *
+ * `sort=bpadAge` with `dir=asc|desc` and `asOf` orders the rows by Age from
+ * GRN Date to that date -- see ageSortParam.
  *
  * The BPAD register's rows for the GRNs in scope. No status filter: every row
  * here is in the register because it matched a GRN, and the register's own

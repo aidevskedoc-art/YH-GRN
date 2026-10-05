@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client.js';
-import { todayIso } from '../services/ageing.js';
-import { BpadAgeDays, bpadAgeHeaderTitle, formatAmountOrDash, formatDate } from './ResultsTable.jsx';
+import { nextAgeSort, todayIso } from '../services/ageing.js';
+import { BpadAgeDays, bpadAgeHeaderTitle, formatAmountOrDash, formatDate, SortableTh } from './ResultsTable.jsx';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
 
@@ -62,16 +62,25 @@ export default function BpadView({
   const [pageSize, setPageSize] = usePageSize();
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  // The table's sort by Age from GRN Date, `{ key: 'bpadAge', dir }`, or null
+  // for the register's own order -- pressing the column's header sets it (see
+  // nextAgeSort). Asked of the server with the "Age as of" date, so every page
+  // is in that order, and asked again when the date moves. This view's own,
+  // like its pager: leaving the tab drops it.
+  const [ageSort, setAgeSort] = useState(null);
+  const sortAsOf = ageSort ? ageingAsOf : '';
 
   // The date only narrows the rows while the Not Integrated card is pressed;
   // otherwise moving it re-counts that card and leaves the table as it is.
   const rowsFrom = notIntegrated ? accountsFrom : '';
 
   // Page 7 of the old result set is rarely a page of the new one, so changing
-  // the upload, the search or the department starts again from the first page.
+  // the upload, the search or the department starts again from the first page
+  // -- and so does moving the "Age as of" date while the Age column is the
+  // sort, which reorders every page.
   useEffect(() => {
     setPage(1);
-  }, [batchId, q, location, msme, dept, notIntegrated, rowsFrom]);
+  }, [batchId, q, location, msme, dept, notIntegrated, rowsFrom, sortAsOf]);
 
   // Which request is the latest. Typing a year into the date picker sends one
   // request per digit -- 0002, 0020, 0202, 2026 are each a whole date -- and
@@ -84,9 +93,24 @@ export default function BpadView({
     const latest = () => request === latestRequest.current;
     setLoading(true);
     api
-      .bpad(batchId, { page, pageSize, q, location, msme, dept, notIntegrated, accountsFrom })
+      .bpad(batchId, {
+        page,
+        pageSize,
+        q,
+        location,
+        msme,
+        dept,
+        notIntegrated,
+        accountsFrom,
+        sort: ageSort?.key,
+        sortDir: ageSort?.dir,
+        asOf: sortAsOf,
+      })
       .then((next) => {
         if (!latest()) return;
+        // An answer clears an earlier failure: the error replaces the whole
+        // table below, so left standing it would hide every load after it.
+        setError('');
         setData(next);
         // The departments the register knows about, handed up to the page that
         // owns the dropdown. It sits in the toolbar with Search and Location
@@ -114,11 +138,23 @@ export default function BpadView({
     dept,
     notIntegrated,
     accountsFrom,
+    ageSort,
+    sortAsOf,
     onDepartments,
     onNotIntegrated,
   ]);
 
   useEffect(load, [load]);
+
+  /**
+   * The Age from GRN Date header, pressed: oldest first, then newest first,
+   * then the register's own order. Page 1, since the first page of a new order
+   * is the one that answers it.
+   */
+  function selectAgeSort(key) {
+    setAgeSort((current) => nextAgeSort(current, key));
+    setPage(1);
+  }
 
   if (error) return <div className="alert alert--error">{error}</div>;
   if (loading && !data) return <div className="loading">Loading…</div>;
@@ -219,9 +255,14 @@ export default function BpadView({
                   Date, Stores to the "Age as of" date in the toolbar (today
                   until changed), every other desk to BPAD Received Date. See
                   bpadAgeDays in services/ageing.js. */}
-              <th className="table__num" title={bpadAgeHeaderTitle(ageingAsOf)}>
-                Age from GRN Date
-              </th>
+              <SortableTh
+                label="Age from GRN Date"
+                sortKey="bpadAge"
+                sort={ageSort}
+                onSort={selectAgeSort}
+                className="table__num"
+                title={bpadAgeHeaderTitle(ageingAsOf)}
+              />
             </tr>
           </thead>
           <tbody>

@@ -82,6 +82,31 @@ export const IconChevronDown = (p) => (
   </Icon>
 );
 
+/**
+ * A sortable column's header: both arrows while it is not the sort, the one
+ * pointing the way the column runs when it is -- down for the largest first.
+ */
+export const IconSortBoth = (p) => (
+  <Icon {...p}>
+    <path d="M8 9l4-4 4 4" />
+    <path d="M8 15l4 4 4-4" />
+  </Icon>
+);
+
+export const IconSortDown = (p) => (
+  <Icon {...p}>
+    <path d="M12 5v14" />
+    <path d="M6 13l6 6 6-6" />
+  </Icon>
+);
+
+export const IconSortUp = (p) => (
+  <Icon {...p}>
+    <path d="M12 19V5" />
+    <path d="M6 11l6-6 6 6" />
+  </Icon>
+);
+
 export const IconSun = (p) => (
   <Icon {...p}>
     <circle cx="12" cy="12" r="4" />

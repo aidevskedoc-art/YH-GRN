@@ -186,6 +186,9 @@ export const api = {
       supplyType,
       chequeNo,
       view,
+      sort,
+      sortDir,
+      asOf,
     } = {},
   ) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
@@ -212,6 +215,14 @@ export const api = {
     // 'cheque' for the Accounts Department's Cheque view: one row per cheque, with
     // its bills' PayableAmount summed into `chequeAmount`.
     if (view) params.set('view', view);
+    // An ageing column's header, pressed: 'ageing', 'bpadAge' or 'storeAge',
+    // 'asc' or 'desc', and the "as of" date the column counts to -- so the
+    // server orders every page by the figures the table shows.
+    if (sort) {
+      params.set('sort', sort);
+      params.set('dir', sortDir);
+      params.set('asOf', asOf);
+    }
     return request(`/batches/${id}/results?${params}`);
   },
 
@@ -236,7 +247,19 @@ export const api = {
    */
   bpad: (
     id,
-    { page = 1, pageSize = 50, q, location, msme, dept, notIntegrated, accountsFrom } = {},
+    {
+      page = 1,
+      pageSize = 50,
+      q,
+      location,
+      msme,
+      dept,
+      notIntegrated,
+      accountsFrom,
+      sort,
+      sortDir,
+      asOf,
+    } = {},
   ) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
@@ -245,6 +268,12 @@ export const api = {
     if (dept) params.set('dept', dept);
     if (notIntegrated) params.set('notIntegrated', '1');
     if (accountsFrom) params.set('accountsFrom', accountsFrom);
+    // The Age from GRN Date header, pressed -- 'bpadAge', as `results` above.
+    if (sort) {
+      params.set('sort', sort);
+      params.set('dir', sortDir);
+      params.set('asOf', asOf);
+    }
     return request(`/batches/${id}/bpad?${params}`);
   },
 

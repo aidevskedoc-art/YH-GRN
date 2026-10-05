@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
-import { todayIso } from '../services/ageing.js';
+import { nextAgeSort, todayIso } from '../services/ageing.js';
 import { singlePress } from '../services/press.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
@@ -11,6 +11,7 @@ import {
   ACCOUNTS_QUEUE_CARD,
   ACCOUNTS_RECEIVED_CARD,
   ACCOUNTS_ROW,
+  ACCOUNTS_ROW_GROUPS,
   ACCOUNTS_TAB,
   ALL_GRNS,
   BPAD,
@@ -48,6 +49,7 @@ import {
   progressFilterOptions,
   sectionSheets,
   tabTitle,
+  titledCards,
 } from '../services/resultsViews.js';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import { expandCheques, resultsChequeBills } from '../services/chequeGroups.js';
@@ -249,9 +251,10 @@ const CARDS_FOR = {
   // Its own count only -- the desk breakdown appended at render time is the
   // rest of this row. See the note above.
   PENDING: ['PENDING'],
-  // Its own count, then the cheque pair that divides it, then the four CSD
-  // stages -- imported, because the Accounts Department shows this same row and the
-  // two must not drift into different orders. See ACCOUNTS_ROW.
+  // Two titled groups: Accounts -- its own count, the cheque cards that
+  // divide it, the Accounts Queue and Received -- then the four CSD stages.
+  // Imported, because the Accounts Department shows this same row and the two
+  // must not drift into different orders. See ACCOUNTS_ROW_GROUPS.
   [VALID]: ACCOUNTS_ROW,
   // Its own count, then the Supply Type cards that divide it.
   [CHEQUE_NOT_PREPARED_VIEW]: CHEQUE_NOT_PREPARED_ROW,
@@ -382,6 +385,11 @@ export default function Results() {
   // are never on screen together, and sharing one would carry a filter from
   // one view into the other the moment the view changed.
   const [pendingDept, setPendingDept] = useState('');
+  // The table's sort by an ageing column, `{ key, dir }` -- pressing the
+  // column's header sets it (see nextAgeSort) -- or null for the table's usual
+  // order. Applied only while its column is on screen (activeAgeSort below),
+  // and cleared on the way to another view, as the view's filters are.
+  const [ageSort, setAgeSort] = useState(null);
   // Whether the BPAD tab is narrowed to the Not Integrated in Accounts
   // card's bills: at Accounts in the register, with no GRN in the Vendor
   // Ageing report. Its own state rather than a value of `dept`, and never on
@@ -501,6 +509,23 @@ export default function Results() {
   // GRN Date's on BPAD, Pending GRNs at BPAD and the GRN Store, the Ageing's
   // on the Accounts views.
   const ageAsOf = status === BPAD || showPendingBpad ? 'bpad' : showGrnStoreAge ? 'store' : 'accounts';
+  // Which ageing column the table shows, by the key the server sorts it under
+  // -- Ageing on the Accounts views, Age from GRN Date on Pending GRNs at BPAD
+  // and the GRN Store -- or '' for none. (BPAD's own sorts in BpadView.)
+  const ageColumn = isAccountsSection(status)
+    ? 'ageing'
+    : showPendingBpad
+      ? 'bpadAge'
+      : showGrnStoreAge
+        ? 'storeAge'
+        : '';
+  // The sort in force: the one pressed, while its column is on screen. Sent
+  // with the "as of" date the column counts to, so the server orders every
+  // page by the figures shown -- and asks again when that date moves.
+  const activeAgeSort = ageSort && ageSort.key === ageColumn ? ageSort : null;
+  const ageSortKey = activeAgeSort?.key ?? '';
+  const ageSortDir = activeAgeSort?.dir ?? '';
+  const ageSortAsOf = activeAgeSort ? ageingAsOf : '';
   // Which rows request is the latest -- see loadRows.
   const rowsRequest = useRef(0);
 
@@ -536,6 +561,9 @@ export default function Results() {
         dept: apiDept,
         supplyType: inChequeNotPrepared ? supplyType : undefined,
         view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
+        sort: ageSortKey,
+        sortDir: ageSortDir,
+        asOf: ageSortAsOf,
       })
       .then((result) => {
         if (latest()) setData(result);
@@ -561,6 +589,9 @@ export default function Results() {
     inChequeNotPrepared,
     supplyType,
     byCheque,
+    ageSortKey,
+    ageSortDir,
+    ageSortAsOf,
   ]);
 
   useEffect(loadRows, [loadRows]);
@@ -571,7 +602,23 @@ export default function Results() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [batchId, rowStatus, page, pageSize, q, progress, action, location, msme, pendingDept, supplyType, byCheque]);
+  }, [
+    batchId,
+    rowStatus,
+    page,
+    pageSize,
+    q,
+    progress,
+    action,
+    location,
+    msme,
+    pendingDept,
+    supplyType,
+    byCheque,
+    ageSortKey,
+    ageSortDir,
+    ageSortAsOf,
+  ]);
 
   /*
    * The three things "Select multiple" can batch, mirroring the row's own
@@ -765,6 +812,8 @@ export default function Results() {
     }
     // The Supply Type cards belong to the Cheque Not Prepared section.
     if (next !== CHEQUE_NOT_PREPARED_VIEW) setSupplyType('');
+    // A view opens in its usual order, as it opens unnarrowed.
+    if (next !== status) setAgeSort(null);
     // The match filter belongs to Total GRNS and its dropdown is only rendered
     // there, so leaving it set would go on narrowing the next view invisibly.
     if (next !== ALL_GRNS) setMatchFilter('');
@@ -795,6 +844,29 @@ export default function Results() {
   function selectPendingDept(next) {
     setPendingDept(next);
     setPage(1);
+  }
+
+  /**
+   * An ageing column's header, pressed: oldest first, then newest first, then
+   * the usual order -- see nextAgeSort. Page 1, since the first page of a new
+   * order is the one that answers it.
+   */
+  function selectAgeSort(key) {
+    setAgeSort((current) => nextAgeSort(current, key));
+    setPage(1);
+  }
+
+  /**
+   * The "as of" picker's value, or '' for today. A value the server could not
+   * sort to -- a mistyped five-digit year -- is not kept (see
+   * isAccountsFromDay): a sorted ageing column sends this date. And while one
+   * is sorted, moving the date reorders the rows, so the first page of the
+   * new order shows, as it does when the sort itself changes.
+   */
+  function selectAgeingAsOf(next) {
+    if (next && !isAccountsFromDay(next)) return;
+    setAgeingAsOf(next || todayIso());
+    if (activeAgeSort) setPage(1);
   }
 
   /** Narrow the Cheque Not Prepared section to one Supply Type, or '' for all of it. */
@@ -1039,6 +1111,11 @@ export default function Results() {
           .map((d) => ({ kind: 'pendingDept', ...d }))
       : []),
   ];
+  // The row as drawn: on Accounts (and Total GRNS narrowed to its Moved to
+  // accounts half, the same row) each group's title ahead of its cards --
+  // Accounts, then CSD. Every other row as it is. Drawing only: the export
+  // reads `cards`. See titledCards.
+  const cardRow = titledCards(cards, rowStatus === VALID ? ACCOUNTS_ROW_GROUPS : null);
   /**
    * What a count card prints. Everything reads its own bucket off the summary,
    * except Pending once a BPAD register has been uploaded.
@@ -1367,8 +1444,14 @@ export default function Results() {
         /* Outlined chips, each as wide as its own name and figures, rather
            than tiles sharing out the row's width. See .cards--tabs. */
         <div className="cards cards--tabs">
-          {cards.map((card) =>
-            card.kind === 'missing' ? (
+          {cardRow.map((card) =>
+            card.kind === 'groupTitle' ? (
+              /* A group's title, on a line of its own ahead of its cards --
+                 Accounts, then CSD, on the Accounts row. See titledCards. */
+              <h3 key={`title:${card.title}`} className="card-group__title">
+                {card.title}
+              </h3>
+            ) : card.kind === 'missing' ? (
               /* The pending GRNs the register has no desk for -- in practice
                  goods received on a delivery challan with no vendor invoice
                  raised yet, and BPAD is a register of bills. Counted by the
@@ -1898,8 +1981,9 @@ export default function Results() {
               <input
                 className="field__input stage-filter"
                 type="date"
+                max="9999-12-31"
                 value={ageingAsOf}
-                onChange={(e) => setAgeingAsOf(e.target.value || todayIso())}
+                onChange={(e) => selectAgeingAsOf(e.target.value)}
                 aria-label={
                   ageAsOf === 'bpad'
                     ? 'Count the Age from GRN Date of bills still at Stores to this date'
@@ -2040,6 +2124,8 @@ export default function Results() {
               ageingAsOf={ageingAsOf}
               showBpad={showPendingBpad}
               showGrnStoreAge={showGrnStoreAge}
+              ageSort={activeAgeSort}
+              onAgeSort={selectAgeSort}
             />
             <div className="pager">
               <span className="pager__info">

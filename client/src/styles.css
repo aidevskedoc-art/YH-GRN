@@ -2547,6 +2547,34 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
   .cards--tabs.cards--roomy .stat { min-width: 230px; }
 }
 
+/* --- a group's title inside a row of chips: "Accounts", then "CSD", on the
+   Accounts row of the Results and Accounts Department screens (see
+   titledCards in services/resultsViews.js). The upload screen's section break
+   (.upload__rule): a tracked capital label with a hairline trailing off to
+   the right. A whole line of the wrapping row to itself, so the chips after it
+   start on the line below; a little air above every title but the first
+   parts one group from the last. */
+.cards--tabs .card-group__title {
+  flex: 0 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1.4;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.cards--tabs .card-group__title:not(:first-child) { margin-top: 10px; }
+.cards--tabs .card-group__title::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--brand-200), var(--border-strong) 25%, transparent);
+}
+
 /* --- phones: two chips to a line, each half the row, so the row reads as a
    tidy block rather than a ragged cloud. The chip becomes a wrapping flex
    box: a long name may take two lines, balanced so no word is left alone,
@@ -2799,6 +2827,36 @@ select.stage-filter { width: auto; min-width: 150px; }
   --face: linear-gradient(180deg, rgba(255, 255, 255, 0.80) 0%, rgba(226, 232, 242, 0.40) 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.90);
 }
+
+/* An ageing column's header that sorts the table (SortableTh in
+   components/ResultsTable.jsx): the header's own words as a button, with the
+   arrows after them. Nothing of a button's look -- no pill, no fill, no lip --
+   so it reads as the header it is; the arrows are what say it can be pressed,
+   faint at rest and full once the column is the sort, when the words take the
+   brand colour too. Inline, so a right-aligned figure column keeps its header
+   to the right. */
+button.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  white-space: nowrap;
+}
+button.th-sort:hover:not(:disabled) { background: none; border-color: transparent; color: var(--text); }
+button.th-sort svg { flex: none; opacity: 0.4; transition: opacity 0.15s ease; }
+button.th-sort:hover svg,
+button.th-sort.is-sorted svg { opacity: 1; }
+button.th-sort.is-sorted { color: var(--brand-700); }
+button.th-sort:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; }
 
 /* --- the header stays, the rows move under it -----------------------------
 
