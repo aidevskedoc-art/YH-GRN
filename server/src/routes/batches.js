@@ -18,14 +18,20 @@ import { logActivity } from '../services/activityLog.js';
 
 export const batchesRouter = express.Router();
 
+/* The caps, the multer instance and the helpers marked `export` below are
+   shared with OP Pharmacy's upload (routes/phBatches.js), which takes the same
+   four slots under the same limits and settles two files naming one GRN the
+   same way. Only what reads or writes a table is not shared: that is the
+   pharmacies' own, against their own tables. */
+
 // Per slot. Several months' reports, or several banks' statements, can go up
 // in one upload -- a year's worth is the most anyone has reason to pick at once.
-const MAX_FILES_PER_SLOT = 12;
+export const MAX_FILES_PER_SLOT = 12;
 // Except the BPAD register: it is the whole group's, near 50 MB and half a
 // minute to read, and there is seldom more than one to send.
-const MAX_BPAD_FILES = 3;
+export const MAX_BPAD_FILES = 3;
 
-const upload = multer({
+export const upload = multer({
   storage: multer.memoryStorage(),
   // Four slots: the two reports the reconciliation runs on, plus the optional
   // bank statement and the optional BPAD register. Kept as a hard cap rather
@@ -46,7 +52,7 @@ function megabytes(bytes) {
   return `${Math.round(bytes / 1024 / 1024)} MB`;
 }
 
-function tooLargeMessage(bytes) {
+export function tooLargeMessage(bytes) {
   return (
     `These files come to ${megabytes(bytes)}, and one upload can carry at most ` +
     `${megabytes(config.maxUploadTotalBytes)}. Upload them in more than one go.`
@@ -63,7 +69,7 @@ function tooLargeMessage(bytes) {
  * than the files, which does not matter at this scale. A request that declares
  * no length is caught by the backstop in the handler instead.
  */
-function refuseOversizedUpload(req, res, next) {
+export function refuseOversizedUpload(req, res, next) {
   const declared = Number(req.headers['content-length']);
   if (declared > config.maxUploadTotalBytes) {
     return res.status(413).json({ error: tooLargeMessage(declared) });
@@ -95,7 +101,7 @@ batchesRouter.get('/limits', requireScreen('upload'), (req, res) => {
  * results screen reports on every upload at once and never shows it -- this
  * only keeps the row readable to anyone reading the table directly.
  */
-function defaultBatchName(files) {
+export function defaultBatchName(files) {
   const first = files.find(Boolean);
   const stamp = new Date().toLocaleDateString('en-GB', {
     day: '2-digit',
@@ -111,7 +117,7 @@ function defaultBatchName(files) {
  * With one file in the slot the label alone says which it was, as it always
  * has; with several the label no longer does, so the file's own name is added.
  */
-function readEach(files, label, read) {
+export function readEach(files, label, read) {
   return files.map((file) => {
     try {
       return read(file.buffer);
@@ -141,7 +147,7 @@ function readEach(files, label, read) {
  * picked. Rows with no key are never matched and never replaced, so all of
  * them are kept.
  */
-function lastFilePerKey(rowsPerFile, keyOf) {
+export function lastFilePerKey(rowsPerFile, keyOf) {
   const owner = new Map();
   rowsPerFile.forEach((rows, i) => {
     for (const row of rows) {
@@ -158,7 +164,7 @@ function lastFilePerKey(rowsPerFile, keyOf) {
 }
 
 /** Several files' names as the one column upload_batches keeps for the slot. */
-function fileNames(files) {
+export function fileNames(files) {
   return files.length > 0 ? files.map((f) => f.originalname).join(', ') : null;
 }
 
@@ -304,8 +310,20 @@ async function branchBpadLocations() {
  * @param {Map<string, Map<string, number>>} turnedAway configured code ->
  *   register Location -> rows turned away for GRNs requiring that code
  * @param {Set<string>} registerLocations every Location the registers carry
+ * @param {string} [screen] the screen the setting is corrected on, as the
+ *   message names it -- the pharmacies' is Ph-Configuration
+ * @param {boolean} [canClear] whether clearing the setting is a way out. It
+ *   is here, where a branch without one is matched on vendor code and GRN
+ *   number alone; it is not for the pharmacies, where a branch without one is
+ *   not matched at all, so their message does not offer it
  */
-function bpadLocationMismatch(turnedAway, registerLocations, branches) {
+export function bpadLocationMismatch(
+  turnedAway,
+  registerLocations,
+  branches,
+  screen = 'Configuration',
+  canClear = true,
+) {
   const problems = [];
   for (const [key, locations] of turnedAway) {
     if (registerLocations.has(key)) continue;
@@ -323,7 +341,7 @@ function bpadLocationMismatch(turnedAway, registerLocations, branches) {
   }
   if (problems.length === 0) return null;
   return (
-    `${problems.join(' ')} Correct Location (BPAD) on the Configuration screen, or clear it, ` +
+    `${problems.join(' ')} Correct Location (BPAD) on the ${screen} screen${canClear ? ', or clear it,' : ''} ` +
     'and upload again. Nothing from this upload was stored.'
   );
 }
@@ -343,7 +361,7 @@ function bpadLocationMismatch(turnedAway, registerLocations, branches) {
  * every register row turned away for failing a test nobody set. Where the
  * Location names more than one branch, a row naming any of theirs is kept.
  */
-function bpadLocationsFor(grnLocation, branches) {
+export function bpadLocationsFor(grnLocation, branches) {
   const text = String(grnLocation ?? '').toUpperCase();
   if (text === '') return null;
   const named = branches.filter((b) => text.includes(b.locationKey));
@@ -384,7 +402,7 @@ function bpadLocationsFor(grnLocation, branches) {
  * The register can carry a GRN more than once -- it repeats one across a split
  * invoice -- so this is keyed off which GRNs were SEEN, not off a count.
  */
-function bpadRowsForGrns(registerRows, identities) {
+export function bpadRowsForGrns(registerRows, identities) {
   const seen = new Set(registerRows.map((r) => `${r.vendorCodeKey}|${r.grnNoKey}`));
 
   const missing = [];

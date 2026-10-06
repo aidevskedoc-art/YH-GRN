@@ -53,6 +53,13 @@ export const ACTIONS = {
   BRANCH_CREATE: { label: 'Added branch', category: 'CONFIG' },
   BRANCH_UPDATE: { label: 'Updated branch', category: 'CONFIG' },
   BRANCH_DELETE: { label: 'Deleted branch', category: 'CONFIG' },
+  // OP Pharmacy's own upload and branches -- routes/phBatches.js and
+  // routes/phConfig.js. Filed under the same two categories as the hospitals',
+  // and told apart by their wording.
+  PH_UPLOAD: { label: 'Uploaded pharmacy reports', category: 'UPLOAD' },
+  PH_BRANCH_CREATE: { label: 'Added pharmacy branch', category: 'CONFIG' },
+  PH_BRANCH_UPDATE: { label: 'Updated pharmacy branch', category: 'CONFIG' },
+  PH_BRANCH_DELETE: { label: 'Deleted pharmacy branch', category: 'CONFIG' },
   MSME_RECO_RUN: { label: 'Ran HIS vs FOCUS reco', category: 'MSME' },
   // One file uploaded with nothing on file for the other side to reconcile it
   // against: kept for when it comes, and an HIS file applied to the Vendor Master.
@@ -79,6 +86,7 @@ export const DELETE_ACTIONS = [
   'MSME_RECO_DELETE',
   'USER_DELETE',
   'BRANCH_DELETE',
+  'PH_BRANCH_DELETE',
 ];
 
 /**

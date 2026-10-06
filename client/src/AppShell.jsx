@@ -10,9 +10,11 @@ import {
   IconChevronRight,
   IconCompare,
   IconDepartment,
+  IconHospital,
   IconLogout,
   IconMenu,
   IconMoon,
+  IconPharmacy,
   IconPlus,
   IconReport,
   IconSliders,
@@ -21,6 +23,7 @@ import {
   IconUsers,
   IconVendorCard,
 } from './components/icons.jsx';
+import { OP_PHARMACY_BASE, OP_PHARMACY_LABELS, OP_PHARMACY_SCREENS, opPharmacyPath } from './services/screens.js';
 import { useTheme, initials } from './theme.js';
 
 const COLLAPSE_KEY = 'yh.grn.nav.collapsed';
@@ -32,23 +35,64 @@ const COLLAPSE_KEY = 'yh.grn.nav.collapsed';
  * Each remembers whether it was left open under its own key. The GRN group
  * keeps the key it has always had, so nobody's choice is reset by the second
  * group arriving.
+ *
+ * A group may split its links into `subs`: sub-menus that open and shut on
+ * their own inside it, each remembered the same way, which a link names as its
+ * `sub`. GRN Reco is run for the hospitals and for OP Pharmacy over the same
+ * screens, so it holds one for each. `startsShut` is the first-visit state
+ * only -- the hospitals' is the one in daily use, and both open would double
+ * the length of the rail. A link of the group that names no `sub` stands in
+ * the dropdown itself, below the sub-menus: CS Department does.
  */
 const NAV_GROUPS = [
-  { key: 'grn', label: 'GRN Reco', storageKey: 'yh.grn.nav.group' },
+  {
+    key: 'grn',
+    label: 'GRN Reco',
+    storageKey: 'yh.grn.nav.group',
+    subs: [
+      { key: 'hospitals', label: 'Hospitals', icon: IconHospital, storageKey: 'yh.grn.nav.sub.hospitals' },
+      {
+        key: 'op-pharmacy',
+        label: 'OP Pharmacy',
+        icon: IconPharmacy,
+        storageKey: 'yh.grn.nav.sub.op-pharmacy',
+        startsShut: true,
+      },
+    ],
+  },
   { key: 'msme', label: 'Vendor Reco', storageKey: 'yh.grn.nav.group.msme' },
 ];
 
+/** Everything in the rail that opens and shuts: the dropdowns, and the sub-menus inside them. */
+const NAV_PANELS = NAV_GROUPS.flatMap((g) => [g, ...(g.subs || [])]);
+
 /** Open on a first visit -- a rail that starts empty gives a new account nothing to aim at. */
-function readGroupOpen(storageKey) {
+function readPanelOpen({ storageKey, startsShut = false }) {
   try {
-    return localStorage.getItem(storageKey) !== '0';
+    const stored = localStorage.getItem(storageKey);
+    return stored === null ? !startsShut : stored !== '0';
   } catch {
-    return true;
+    return !startsShut;
   }
 }
 
 /** Matches the drawer breakpoint in styles.css - keep the two in step. */
 const NARROW = '(max-width: 940px)';
+
+/**
+ * The GRN screens, as the Hospitals sub-menu lists them. A list of its own
+ * because the OP Pharmacy sub-menu is these same entries over again -- see NAV.
+ */
+const HOSPITAL_NAV = [
+  { to: '/upload', label: 'New uploads', icon: IconUpload, end: true, screen: 'upload' },
+  // end:false so /results/:batchId keeps the entry highlighted.
+  { to: '/results', label: 'Results', icon: IconReport, end: false, badge: true, screen: 'results' },
+  // The results screen's Accounts and PR-to-Bank views on their own. After
+  // Results rather than beside it: an admin sees both, and the fuller screen
+  // should come first for anyone who holds it.
+  { to: '/accounts-department', label: 'Accounts', icon: IconBank, end: true, screen: 'accounts-department' },
+  { to: '/config', label: 'Configuration', icon: IconSliders, end: true, screen: 'config' },
+].map((item) => ({ ...item, group: 'grn', sub: 'hospitals' }));
 
 /**
  * Every entry the sidebar can show, and what an account must hold to see it.
@@ -59,30 +103,23 @@ const NARROW = '(max-width: 940px)';
  * link to a screen you cannot open is not information, it is a dead end.
  */
 const NAV = [
-  { to: '/upload', label: 'New uploads', icon: IconUpload, end: true, screen: 'upload', group: 'grn' },
-  // end:false so /results/:batchId keeps the entry highlighted.
-  {
-    to: '/results',
-    label: 'Results',
-    icon: IconReport,
-    end: false,
-    badge: true,
-    screen: 'results',
-    group: 'grn',
-  },
-  // The results screen's Accounts and PR-to-Bank views on their own. After
-  // Results rather than beside it: an admin sees both, and the fuller screen
-  // should come first for anyone who holds it.
-  {
-    to: '/accounts-department',
-    label: 'Accounts',
-    icon: IconBank,
+  ...HOSPITAL_NAV,
+  // OP Pharmacy: the hospital entries one for one, each at its address under
+  // /op-pharmacy and behind the same grant, so an account sees the same
+  // screens in both sub-menus. Derived rather than written out, so the two
+  // cannot drift apart -- all but the label, which is OP Pharmacy's own (see
+  // OP_PHARMACY_LABELS in services/screens.js).
+  ...HOSPITAL_NAV.filter((item) => OP_PHARMACY_SCREENS.includes(item.screen)).map((item) => ({
+    ...item,
+    label: OP_PHARMACY_LABELS[item.screen],
+    to: opPharmacyPath(item.screen),
     end: true,
-    screen: 'accounts-department',
-    group: 'grn',
-  },
+    sub: 'op-pharmacy',
+  })),
+  // In GRN Reco itself, not in either sub-menu: no `sub`, so it stands in the
+  // dropdown beside the two headings rather than under one of them, and there
+  // is one of it rather than a copy in each.
   { to: '/csd', label: 'CS Department', icon: IconDepartment, end: true, screen: 'csd', group: 'grn' },
-  { to: '/config', label: 'Configuration', icon: IconSliders, end: true, screen: 'config', group: 'grn' },
   // No Uploaded files entry: every GRN is shown once, from its latest upload,
   // so there are no uploads to manage one by one. Every entry below is its own
   // tick box on User management -- changing an administrator account stays
@@ -124,14 +161,16 @@ const NAV = [
  * One link in the rail. The same in the dropdown and out of it -- an entry
  * should not look like a different kind of thing for having been moved.
  */
-function RailLink({ item, collapsed }) {
+function RailLink({ item, collapsed, within }) {
   const { to, label, icon: Glyph, end } = item;
   return (
     <NavLink
       to={to}
       end={end}
       className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-      title={collapsed ? label : undefined}
+      // The icons-only rail shows two sub-menus' worth of the same glyphs, so
+      // the tooltip says which sub-menu this one is in.
+      title={collapsed ? (within ? `${within} / ${label}` : label) : undefined}
     >
       <Glyph size={18} />
       <span className="nav-label">{label}</span>
@@ -139,8 +178,22 @@ function RailLink({ item, collapsed }) {
   );
 }
 
+/** Is `pathname` this entry's screen? The test NavLink applies to light it. */
+function isCurrent({ to, end }, pathname) {
+  return pathname === to || (!end && pathname.startsWith(`${to}/`));
+}
+
 /** Title and breadcrumb for the top bar, derived from the active route. */
 function pageTitle(pathname) {
+  // First: nothing below would claim these addresses, but it should not be
+  // left to the order of the tests to say so.
+  if (pathname.startsWith(OP_PHARMACY_BASE)) {
+    const screen = OP_PHARMACY_SCREENS.find((key) => pathname === opPharmacyPath(key));
+    return {
+      title: 'OP Pharmacy',
+      crumb: screen ? `GRN Reco / OP Pharmacy / ${OP_PHARMACY_LABELS[screen]}` : 'GRN Reco / OP Pharmacy',
+    };
+  }
   if (pathname.startsWith('/upload')) return { title: 'New reconciliation', crumb: 'Uploads / New' };
   if (pathname.startsWith('/results')) {
     return { title: 'Reconciliation results', crumb: 'Results / Pending vs accounts' };
@@ -174,10 +227,10 @@ export default function AppShell() {
     }
   });
   const [drawer, setDrawer] = useState(false);
-  // Each dropdown's open state, by group key -- remembered per group, so
-  // shutting one leaves the other as it was.
-  const [groupOpen, setGroupOpen] = useState(() =>
-    Object.fromEntries(NAV_GROUPS.map((g) => [g.key, readGroupOpen(g.storageKey)])),
+  // Each dropdown's and sub-menu's open state, by its key -- remembered one by
+  // one, so shutting one leaves the others as they were.
+  const [panelOpen, setPanelOpen] = useState(() =>
+    Object.fromEntries(NAV_PANELS.map((p) => [p.key, readPanelOpen(p)])),
   );
   const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
 
@@ -200,11 +253,20 @@ export default function AppShell() {
 
   useEffect(() => {
     try {
-      for (const g of NAV_GROUPS) localStorage.setItem(g.storageKey, groupOpen[g.key] ? '1' : '0');
+      for (const p of NAV_PANELS) localStorage.setItem(p.storageKey, panelOpen[p.key] ? '1' : '0');
     } catch {
       /* see theme.js - not worth failing over */
     }
-  }, [groupOpen]);
+  }, [panelOpen]);
+
+  // Arriving on a screen whose sub-menu is shut -- by the top bar's New
+  // reconciliation button, a bookmark, a redirect -- opens it, so the rail
+  // shows where you are. On arrival only: shutting it again while still on one
+  // of its screens is left alone.
+  useEffect(() => {
+    const here = NAV.find((item) => item.sub && isCurrent(item, location.pathname));
+    if (here) setPanelOpen((all) => (all[here.sub] ? all : { ...all, [here.sub]: true }));
+  }, [location.pathname]);
 
   // Tapping a link on a phone should leave the drawer behind.
   useEffect(() => setDrawer(false), [location.pathname]);
@@ -233,6 +295,9 @@ export default function AppShell() {
    * styles.css) -- the remembered state is left untouched, and comes back the
    * moment the rail is expanded again. Scoped to the docked layout because
    * below the breakpoint the rail is a drawer and shows its labels regardless.
+   *
+   * The sub-menus are not forced: their headings carry an icon, which the
+   * icons-only rail keeps, so each can still be opened and shut from there.
    */
   const railOnly = collapsed && !narrow;
 
@@ -247,12 +312,22 @@ export default function AppShell() {
     return true;
   });
   // A group this account holds nothing in is left out entirely, rather than
-  // drawn as a control that opens onto nothing.
-  const groups = NAV_GROUPS.map((g) => ({
-    ...g,
-    items: nav.filter((item) => !item.outside && item.group === g.key),
-    open: railOnly || Boolean(groupOpen[g.key]),
-  })).filter((g) => g.items.length > 0);
+  // drawn as a control that opens onto nothing -- and a sub-menu likewise.
+  const groups = NAV_GROUPS.map((g) => {
+    const held = nav.filter((item) => !item.outside && item.group === g.key);
+    return {
+      ...g,
+      items: held.filter((item) => !item.sub),
+      subs: (g.subs || [])
+        .map((s) => ({
+          ...s,
+          items: held.filter((item) => item.sub === s.key),
+          open: Boolean(panelOpen[s.key]),
+        }))
+        .filter((s) => s.items.length > 0),
+      open: railOnly || Boolean(panelOpen[g.key]),
+    };
+  }).filter((g) => g.items.length + g.subs.length > 0);
   const loose = nav.filter((item) => item.outside);
 
   return (
@@ -271,7 +346,7 @@ export default function AppShell() {
               <button
                 type="button"
                 className={`nav-group${g.open ? ' is-open' : ''}`}
-                onClick={() => setGroupOpen((all) => ({ ...all, [g.key]: !all[g.key] }))}
+                onClick={() => setPanelOpen((all) => ({ ...all, [g.key]: !all[g.key] }))}
                 aria-expanded={g.open}
                 aria-controls={`sidenav-links-${g.key}`}
                 title={g.open ? `Hide ${g.label} links` : `Show ${g.label} links`}
@@ -287,6 +362,42 @@ export default function AppShell() {
                   focusable. */}
               <div className="nav-group__items" id={`sidenav-links-${g.key}`} inert={!g.open || undefined}>
                 <div className="nav-group__list">
+                  {/* The group's sub-menus: the same heading-over-a-clipped-list
+                      as the group itself, one level down. */}
+                  {g.subs.map((s) => {
+                    const Glyph = s.icon;
+                    // Lit while one of its screens is open, so the rail still
+                    // says which sub-menu you are in when it has been shut.
+                    const holdsCurrent = s.items.some((item) => isCurrent(item, location.pathname));
+                    return (
+                      <Fragment key={s.key}>
+                        <button
+                          type="button"
+                          className={`nav-sub${s.open ? ' is-open' : ''}${holdsCurrent ? ' is-current' : ''}`}
+                          onClick={() => setPanelOpen((all) => ({ ...all, [s.key]: !all[s.key] }))}
+                          aria-expanded={s.open}
+                          aria-controls={`sidenav-links-${s.key}`}
+                          title={s.open ? `Hide ${s.label} links` : `Show ${s.label} links`}
+                        >
+                          <Glyph size={18} />
+                          <span className="nav-sub__label">{s.label}</span>
+                          <IconChevronDown size={14} className="nav-sub__caret" />
+                        </button>
+
+                        <div className="nav-sub__items" id={`sidenav-links-${s.key}`} inert={!s.open || undefined}>
+                          <div className="nav-sub__list">
+                            {s.items.map((item) => (
+                              <RailLink key={item.to} item={item} collapsed={collapsed} within={s.label} />
+                            ))}
+                          </div>
+                        </div>
+                      </Fragment>
+                    );
+                  })}
+
+                  {/* The links that are the group's own, in no sub-menu. After
+                      the sub-menus, so they read as the rows that follow the two
+                      headings rather than as a first item above them. */}
                   {g.items.map((item) => (
                     <RailLink key={item.to} item={item} collapsed={collapsed} />
                   ))}
@@ -386,9 +497,11 @@ export default function AppShell() {
                 account without Uploads the button would land on a screen the
                 router immediately redirects away from. Not on the Vendor Reco
                 screens either: it is a GRN reconciliation this starts, and
-                the vendor files go in through HIS vs FOCUS Reco's New reco. */}
+                the vendor files go in through HIS vs FOCUS Reco's New reco.
+                Nor on OP Pharmacy's: the upload it opens is the hospitals'. */}
             {can('upload') &&
               !location.pathname.startsWith('/upload') &&
+              !location.pathname.startsWith(OP_PHARMACY_BASE) &&
               !location.pathname.startsWith('/vendor-master') &&
               !location.pathname.startsWith('/msme-reco') && (
               <button

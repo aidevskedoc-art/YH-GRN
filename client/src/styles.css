@@ -3968,6 +3968,96 @@ select.spans__select { width: auto; min-width: 150px; }
    headings. */
 .sidenav .nav-group__items + .nav-group { margin-top: 10px; }
 
+/* --- sub-menus inside a dropdown ------------------------------------------- */
+
+/* GRN Reco's links are split in two -- Hospitals and OP Pharmacy -- and each
+   half opens and shuts on its own. The heading is set like a link, with an
+   icon, rather than like the group's caption: it is a row of the list one
+   level down, and a second line of small capitals would read as a third
+   dropdown. Scoped to .sidenav for the same reason .nav-group is -- to outweigh
+   the global button hover. */
+.sidenav .nav-sub {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--r);
+  background: transparent;
+  box-shadow: none;
+  color: var(--rail-text);
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.2s ease, color 0.2s ease;
+  animation: slide-in 0.5s var(--ease-out) backwards;
+}
+.sidenav .nav-sub:hover { background: var(--rail-hover); border-color: transparent; color: var(--rail-strong); }
+.sidenav .nav-sub:focus-visible { outline: none; color: var(--rail-strong); box-shadow: var(--ring); }
+.nav-sub svg { flex: none; opacity: 0.9; transition: color 0.2s ease; }
+.nav-sub__label { overflow: hidden; text-overflow: ellipsis; }
+.sidenav .nav-sub .nav-sub__caret {
+  margin-left: auto;
+  opacity: 0.7;
+  transition: transform 0.32s var(--ease-spring);
+}
+.sidenav .nav-sub.is-open .nav-sub__caret { transform: rotate(180deg); }
+/* The sub-menu the open screen is in, shut or not. */
+.sidenav .nav-sub.is-current { color: var(--rail-strong); }
+.sidenav .nav-sub.is-current > svg:first-child { color: var(--brand); opacity: 1; }
+
+/* The same 0fr-to-1fr reveal as the group's own panel, nested inside it. */
+.nav-sub__items {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.34s var(--ease-out), opacity 0.24s ease;
+  opacity: 0;
+}
+.nav-sub.is-open + .nav-sub__items { grid-template-rows: 1fr; opacity: 1; }
+.nav-sub__list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-height: 0;
+  /* Opened on both sides for the active marker, as .nav-group__list is. */
+  overflow: hidden;
+  margin: 0 -12px;
+  padding: 0 12px;
+}
+/* A sub-menu's links stand in from its heading, under a rule dropped from the
+   centre of the heading's icon. The inset is the link's own padding, not the
+   list's, so a row still spans the rail and its active marker still sits on
+   the rail's edge. */
+.nav-sub__list::before {
+  content: "";
+  position: absolute;
+  left: 32px;
+  top: 2px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--rail-line);
+}
+.nav-sub__list .nav-item { padding-left: 34px; }
+
+@media (min-width: 941px) {
+  /* The icons-only rail keeps a sub-menu's heading, as its icon: it is all
+     that tells one half's glyphs from the other's -- they are the same four --
+     and it is still the control that opens and shuts them. Tinted so it reads
+     as the heading of the icons under it rather than as one more of them. The
+     links lose their inset through .app-shell.collapsed .nav-item, above. */
+  .app-shell.collapsed .nav-sub {
+    justify-content: center;
+    padding: 11px 0;
+    background: var(--rail-hover);
+    color: var(--rail-strong);
+  }
+  .app-shell.collapsed .nav-sub__label,
+  .app-shell.collapsed .nav-sub__caret,
+  .app-shell.collapsed .nav-sub__list::before { display: none; }
+}
+
 /* ==========================================================================
    HIS vs FOCUS Reco (pages/MsmeReco.jsx)
    ========================================================================== */

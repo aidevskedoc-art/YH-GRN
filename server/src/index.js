@@ -13,6 +13,8 @@ import { configRouter } from './routes/config.js';
 import { logsRouter } from './routes/logs.js';
 import { msmeRecoRouter } from './routes/msmeReco.js';
 import { vendorMasterRouter } from './routes/vendorMaster.js';
+import { phBatchesRouter } from './routes/phBatches.js';
+import { phConfigRouter } from './routes/phConfig.js';
 import { purgeOldLogs } from './services/activityLog.js';
 import { applyPendingVendorMasters } from './services/vendorMaster.js';
 import { errorHandler } from './middleware/error.js';
@@ -63,6 +65,10 @@ app.use('/api/msme-reco', msmeRecoRouter);
 // Every HIS vendor with its latest details. Read-only: each reco run above
 // adds its new vendors and updates the rest.
 app.use('/api/vendor-master', vendorMasterRouter);
+// OP Pharmacy: the hospitals' upload and branch configuration over again, for
+// the pharmacies' own four files and in their own tables.
+app.use('/api/op-pharmacy/batches', phBatchesRouter);
+app.use('/api/op-pharmacy/config', phConfigRouter);
 
 // Serve the built client if it exists, so `npm start` alone runs the whole app.
 const clientDist = path.join(config.rootDir, 'client', 'dist');

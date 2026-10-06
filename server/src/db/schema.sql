@@ -1261,3 +1261,285 @@ BEGIN
       DROP COLUMN IF EXISTS vendor_master_full;
   END IF;
 END $$;
+
+-- ==========================================================================
+-- OP PHARMACY
+--
+-- The pharmacies run the same reconciliation as the hospitals -- a GRN report
+-- held against a vendor ageing report, with a BPAD register and a bank
+-- statement beside them -- from their own four files, uploaded on their own
+-- screen (Pharmacy Uploads) and kept in their own seven tables, the ones above
+-- over again under a ph_ prefix:
+--
+--   ph_upload_batches                upload_batches
+--   ph_grn_transactions              grn_transactions
+--   ph_vendor_ageing                 vendor_ageing
+--   ph_reconciliation_results        reconciliation_results
+--   ph_bank_statement_transactions   bank_statement_transactions
+--   ph_bpad_records                  bpad_records
+--   ph_branch_configs                branch_configs
+--
+-- Their own tables rather than a column on the hospitals' saying which of the
+-- two a row is. An upload replaces what is stored by GRN number (see saveBatch
+-- in services/ingest.js), and the two number their GRNs independently: in one
+-- table, a pharmacy GRN that shared a number with a hospital one would replace
+-- it. Apart, neither upload can reach the other's rows, and no hospital query
+-- had to change to keep the pharmacies' rows out of the hospitals' figures.
+--
+-- Each table has every column its hospital twin has, under the same name, so
+-- what is written about one reads true of the other and a query written for
+-- one can be pointed at the other. Where the pharmacy reports have nothing for
+-- a column it stays NULL; where they have something the hospitals' do not, it
+-- is a further column at the end. The comments here say only what differs --
+-- the reasoning for each table is beside its twin above.
+--
+-- Written by services/phIngest.js; the readers are services/phExcelParser.js.
+-- ==========================================================================
+
+CREATE TABLE IF NOT EXISTS ph_upload_batches (
+  id                 SERIAL PRIMARY KEY,
+  name               TEXT NOT NULL,
+  grn_file_name      TEXT,
+  ageing_file_name   TEXT,
+  grn_row_count      INTEGER NOT NULL DEFAULT 0,
+  ageing_row_count   INTEGER NOT NULL DEFAULT 0,
+  uploaded_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  uploaded_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  status             TEXT NOT NULL DEFAULT 'COMPLETED',
+  bank_file_name     TEXT,
+  bank_row_count     INTEGER NOT NULL DEFAULT 0,
+  bank_account_no    TEXT,
+  bpad_file_name     TEXT,
+  bpad_row_count     INTEGER NOT NULL DEFAULT 0,
+  bpad_matched_count INTEGER NOT NULL DEFAULT 0,
+  CONSTRAINT ph_upload_batches_has_a_file
+    CHECK (grn_file_name IS NOT NULL
+        OR ageing_file_name IS NOT NULL
+        OR bank_file_name IS NOT NULL
+        OR bpad_file_name IS NOT NULL)
+);
+
+-- Rows from the GRN Purchase report (the pharmacy system's purchase register).
+--
+--   dpr_no / dpr_date     FeedNo / FeedDate -- the GRN, as the pharmacies number it
+--   bill_no / bill_date   InvNo / InvDate
+--   vendor_code           PM Code, the pharmacy system's own code for the vendor:
+--                         the one the BPAD status files a bill under
+--   vendor_name           Name
+--   total_amount          NetAmt
+--   location              Unit Name ("Secunderabad") -- the stores side's name
+--                         for the branch, as the hospitals' Location is
+--
+-- The register has no serial number, warehouse, PO, DC or transport and
+-- add/deduct amounts, so those stay NULL.
+CREATE TABLE IF NOT EXISTS ph_grn_transactions (
+  id               SERIAL PRIMARY KEY,
+  batch_id         INTEGER NOT NULL REFERENCES ph_upload_batches(id) ON DELETE CASCADE,
+  source_row_no    INTEGER,
+  sl_no            INTEGER,
+  warehouse        TEXT,
+  dpr_no           TEXT NOT NULL,
+  dpr_no_key       TEXT NOT NULL,
+  po_no            TEXT,
+  dpr_date         DATE,
+  bill_date        DATE,
+  bill_no          TEXT,
+  bill_no_key      TEXT,
+  dc_no            TEXT,
+  vendor_code      TEXT,
+  vendor_name      TEXT,
+  vendor_name_key  TEXT,
+  bill_amount      NUMERIC(18, 4),
+  transport_amount NUMERIC(18, 4),
+  total_amount     NUMERIC(18, 4),
+  location         TEXT,
+  add_amount       NUMERIC(18, 4),
+  ded_amount       NUMERIC(18, 4),
+  -- The purchase register's own. purchase_type is its Type column, Cash or
+  -- Credit, which the screens show as Purchase Type. FocusCode is the vendor's
+  -- code in the accounts system -- the ageing report's VendorCode -- where
+  -- vendor_code above is its code in the pharmacy system.
+  purchase_type    TEXT,
+  focus_code       TEXT,
+  gstin            TEXT,
+  tot_taxable      NUMERIC(18, 4),
+  cgst             NUMERIC(18, 4),
+  sgst             NUMERIC(18, 4),
+  igst             NUMERIC(18, 4),
+  tcs_amt          NUMERIC(18, 4)
+);
+
+-- For a day this column was called payment_type. CREATE TABLE above is a no-op
+-- on a table that already exists, so a database migrated during that day has
+-- it renamed back here, in place, keeping whatever it holds. Idempotent: where
+-- the column is already purchase_type, nothing matches.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'ph_grn_transactions' AND column_name = 'payment_type'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = current_schema()
+      AND table_name = 'ph_grn_transactions' AND column_name = 'purchase_type'
+  ) THEN
+    ALTER TABLE ph_grn_transactions RENAME COLUMN payment_type TO purchase_type;
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_ph_grn_batch_key ON ph_grn_transactions (batch_id, dpr_no_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ph_grn_one_per_key
+  ON ph_grn_transactions (dpr_no_key) WHERE dpr_no_key <> '';
+
+-- Rows from the pharmacies' Vendor Age report.
+--
+-- The report leaves GRN_NO empty: the GRN number is the third part of GRNDoc
+-- ("PSE/26-27/HE00184" -> "HE00184"), with the document's first part as
+-- branch_code. grn_no holds that number -- the GRN number itself, the purchase
+-- register's FeedNo, which is what the screens show as GRN No -- and
+-- grn_number the same; grn_doc keeps the whole reference.
+--
+-- division_code is the report's DivisionCode, and it is what ties a row to a
+-- branch: a row is matched to a GRN only when it is the Branch code (Focus) of
+-- the configured branch whose Unit name (HIS) is the GRN's Unit Name -- see
+-- SAME_BRANCH in services/phIngest.js.
+--
+-- It has no StoreName and none of the six dates before the cheque, so those
+-- stay NULL.
+CREATE TABLE IF NOT EXISTS ph_vendor_ageing (
+  id                   SERIAL PRIMARY KEY,
+  batch_id             INTEGER NOT NULL REFERENCES ph_upload_batches(id) ON DELETE CASCADE,
+  source_row_no        INTEGER,
+  division             TEXT,
+  division_code        TEXT,
+  store_name           TEXT,
+  vendor_name          TEXT,
+  vendor_name_key      TEXT,
+  vendor_code          TEXT,
+  grn_doc              TEXT,
+  grn_no               TEXT,
+  branch_code          TEXT,
+  grn_number           TEXT,
+  grn_number_key       TEXT,
+  bill_no              TEXT,
+  bill_no_key          TEXT,
+  bill_date            DATE,
+  net_amt              NUMERIC(18, 4),
+  adj_pur_return       NUMERIC(18, 4),
+  adjusted_jv          NUMERIC(18, 4),
+  tds_jv               NUMERIC(18, 4),
+  payable_amount       NUMERIC(18, 4),
+  indent_date          DATE,
+  po_date              DATE,
+  security_date        DATE,
+  grn_date             DATE,
+  bill_to_audit        DATE,
+  bill_handover_to_acc DATE,
+  chq_date             DATE,
+  cheque_clearance_date DATE,
+  payment_doc_no       TEXT,
+  cheque_no            TEXT,
+  balance              NUMERIC(18, 4),
+  cheque_clearance_override DATE,
+  -- The report's own: what has been paid against the bill so far, and what was
+  -- paid ahead of it.
+  payment_amt          NUMERIC(18, 4),
+  advance_payment_amt  NUMERIC(18, 4)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ph_ageing_batch_key ON ph_vendor_ageing (batch_id, grn_number_key);
+CREATE INDEX IF NOT EXISTS idx_ph_ageing_grn_number_key ON ph_vendor_ageing (grn_number_key, batch_id DESC);
+
+CREATE TABLE IF NOT EXISTS ph_reconciliation_results (
+  id                 SERIAL PRIMARY KEY,
+  batch_id           INTEGER NOT NULL REFERENCES ph_upload_batches(id) ON DELETE CASCADE,
+  grn_transaction_id INTEGER NOT NULL REFERENCES ph_grn_transactions(id) ON DELETE CASCADE,
+  matched_ageing_id  INTEGER REFERENCES ph_vendor_ageing(id) ON DELETE SET NULL,
+  status             TEXT NOT NULL CHECK (status IN ('MATCHED', 'MATCHED_WITH_DIFF', 'PENDING')),
+  bill_no_match      BOOLEAN,
+  vendor_name_match  BOOLEAN,
+  discrepancy_notes  TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ph_results_batch_status ON ph_reconciliation_results (batch_id, status);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ph_results_one_per_grn
+  ON ph_reconciliation_results (grn_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_ph_results_ageing ON ph_reconciliation_results (matched_ageing_id);
+
+-- The pharmacies' bank statement is HDFC's own layout, as the hospitals' is.
+CREATE TABLE IF NOT EXISTS ph_bank_statement_transactions (
+  id                  SERIAL PRIMARY KEY,
+  batch_id            INTEGER NOT NULL REFERENCES ph_upload_batches(id) ON DELETE CASCADE,
+  source_row_no       INTEGER,
+  txn_date            DATE,
+  narration           TEXT,
+  chq_ref_no          TEXT,
+  extracted_cheque_no TEXT,
+  value_date          DATE,
+  withdrawal_amt      NUMERIC(18, 4),
+  deposit_amt         NUMERIC(18, 4),
+  closing_balance     NUMERIC(18, 4)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ph_bank_batch ON ph_bank_statement_transactions (batch_id);
+CREATE INDEX IF NOT EXISTS idx_ph_bank_cheque ON ph_bank_statement_transactions (extracted_cheque_no);
+
+-- Rows from the pharmacies' BPAD current bill status, matched to a GRN on the
+-- vendor code -- the purchase register's PM Code -- and the GRN number
+-- together. The status has PO Number and PO Date in one column; whatever it
+-- holds is kept as po_number, and po_date stays NULL.
+CREATE TABLE IF NOT EXISTS ph_bpad_records (
+  id                     SERIAL PRIMARY KEY,
+  batch_id               INTEGER NOT NULL REFERENCES ph_upload_batches(id) ON DELETE CASCADE,
+  source_row_no          INTEGER,
+  sl_no                  INTEGER,
+  location               TEXT,
+  warehouse              TEXT,
+  vendor_code            TEXT,
+  vendor_code_key        TEXT,
+  vendor_name            TEXT,
+  inv_no                 TEXT,
+  inv_date               DATE,
+  grn_no                 TEXT,
+  grn_no_key             TEXT,
+  grn_date               DATE,
+  grn_amount             NUMERIC(18, 4),
+  po_number              TEXT,
+  po_date                DATE,
+  pending_with_dept      TEXT,
+  bpad_received_date     DATE,
+  accounts_received_date DATE,
+  pending_with_user      TEXT,
+  pend_reason            TEXT,
+  in_register            BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+CREATE INDEX IF NOT EXISTS idx_ph_bpad_batch ON ph_bpad_records (batch_id);
+CREATE INDEX IF NOT EXISTS idx_ph_bpad_grn_no_key ON ph_bpad_records (grn_no_key, batch_id DESC);
+
+-- Pharmacy branches, as configured on the Ph-Configuration screen. What each
+-- column is matched against:
+--
+--   branch_code    the Vendor Age report's DivisionCode        ("PSE")
+--   location       the GRN Purchase report's Unit Name          ("Secunderabad")
+--   account_no     the account its bank statement is for        ("99995542441111")
+--   bpad_location  the BPAD current bill status's Location      ("SBD1")
+--
+-- `location` keeps the hospital table's name for the column although the
+-- screen calls it Unit name (HIS): it is the stores side's name for the
+-- branch in both, and is matched the same way.
+CREATE TABLE IF NOT EXISTS ph_branch_configs (
+  id            SERIAL PRIMARY KEY,
+  branch_code   TEXT NOT NULL,
+  location      TEXT NOT NULL,
+  account_no    TEXT,
+  is_selected   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  bpad_location TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ph_branch_code ON ph_branch_configs (upper(branch_code));
+CREATE INDEX IF NOT EXISTS idx_ph_branch_selected ON ph_branch_configs (is_selected);

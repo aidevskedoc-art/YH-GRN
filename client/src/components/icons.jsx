@@ -306,6 +306,28 @@ export const IconBank = (p) => (
   </Icon>
 );
 
+/* A hospital block: one building with the cross on its face and a door under
+   it. The Hospitals sub-menu's heading. A single block with a mark on it, so it
+   does not read as IconDepartment's pair of offices a few rows below. */
+export const IconHospital = (p) => (
+  <Icon {...p}>
+    <path d="M4 21V6a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v15" />
+    <path d="M2 21h20" />
+    <path d="M12 8v5" />
+    <path d="M9.5 10.5h5" />
+    <path d="M10 21v-4h4v4" />
+  </Icon>
+);
+
+/* A capsule, lying on the diagonal with the seam between its two halves. The
+   OP Pharmacy sub-menu's heading. */
+export const IconPharmacy = (p) => (
+  <Icon {...p}>
+    <rect x="2.5" y="8" width="19" height="8" rx="4" transform="rotate(-45 12 12)" />
+    <path d="m9.2 9.2 5.6 5.6" />
+  </Icon>
+);
+
 /* An open eye: the password is being shown. */
 export const IconEye = (p) => (
   <Icon {...p}>

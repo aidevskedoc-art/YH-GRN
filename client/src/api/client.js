@@ -414,6 +414,39 @@ export const api = {
 
   deleteBranch: (id) => request(`/config/branches/${id}`, { method: 'DELETE' }),
 
+  /* --- OP Pharmacy ---------------------------------------------------------
+     The pharmacies' own upload and branches: the calls above over again,
+     against the pharmacies' own four files and their own tables on the server
+     (routes/phBatches.js and routes/phConfig.js). Same shapes in and out, so
+     the two screens that use them are the hospital screens' twins. */
+
+  /** The caps POST /op-pharmacy/batches enforces, for checking files as they are picked. */
+  phUploadLimits: () => request('/op-pharmacy/batches/limits'),
+
+  /**
+   * Upload any of the four pharmacy files -- `grnFile`, `ageingFile`,
+   * `bankFile`, `bpadFile`, several of each -- and store and reconcile them.
+   * Answers with what was stored: the row counts per file, and `linked`, how
+   * the GRNs the upload touched came out.
+   */
+  phUploadBatch: (formData) =>
+    request('/op-pharmacy/batches', { method: 'POST', body: formData, isForm: true }),
+
+  /** Every configured pharmacy branch, ticked ones first. */
+  phListBranches: () => request('/op-pharmacy/config/branches'),
+
+  /**
+   * Body: branchCode, location, bpadLocation, accountNo, isSelected.
+   * `location` is what the screen calls Unit name (HIS).
+   */
+  phCreateBranch: (body) => request('/op-pharmacy/config/branches', { method: 'POST', body }),
+
+  /** Any subset of the same fields. The tick box sends only isSelected. */
+  phUpdateBranch: (id, body) =>
+    request(`/op-pharmacy/config/branches/${id}`, { method: 'PATCH', body }),
+
+  phDeleteBranch: (id) => request(`/op-pharmacy/config/branches/${id}`, { method: 'DELETE' }),
+
   /* --- MSME reco -----------------------------------------------------------
      The HIS vendor master against the Accounts vendor list. A run is the two
      reconciled and stored -- both uploaded, or one uploaded and the other the

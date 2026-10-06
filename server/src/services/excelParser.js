@@ -36,7 +36,11 @@ export class ExcelFormatError extends Error {
   }
 }
 
-function readGrid(buffer) {
+/* readGrid, findHeaderRow, indexHeaders and makeGetter are exported for OP
+   Pharmacy's readers (services/phExcelParser.js): its reports are laid out the
+   same way -- a title block, then a header row found by its column names --
+   under different names. */
+export function readGrid(buffer) {
   const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false, cellNF: false });
   const sheetName = workbook.SheetNames[0];
   if (!sheetName) throw new ExcelFormatError('The workbook contains no sheets.');
@@ -67,7 +71,7 @@ function tightToken(value) {
  * Find the header row by locating a row that contains every signature column.
  * Returns the 0-based grid index.
  */
-function findHeaderRow(grid, signature, tight) {
+export function findHeaderRow(grid, signature, tight) {
   const tokenize = tight ? tightToken : headerToken;
   const limit = Math.min(grid.length, HEADER_SEARCH_LIMIT);
 
@@ -103,7 +107,7 @@ function findHeaderRow(grid, signature, tight) {
  * statement, the April GRN report -- labels every column, so for those this
  * behaves exactly as counting the literal position did.
  */
-function indexHeaders(headerRow, tight) {
+export function indexHeaders(headerRow, tight) {
   const tokenize = tight ? tightToken : headerToken;
   const index = new Map();
   let col = -1;
@@ -118,7 +122,7 @@ function indexHeaders(headerRow, tight) {
   return index;
 }
 
-function makeGetter(row, index) {
+export function makeGetter(row, index) {
   return (...names) => {
     for (const name of names) {
       const col = index.get(name);

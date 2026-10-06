@@ -6,6 +6,29 @@ export function asyncHandler(fn) {
   return (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 }
 
+/**
+ * For a router whose tables a migration adds or changes: a query that finds
+ * the database behind the code answers with what to do about it.
+ *
+ * Postgres reports a table that does not exist as 42P01 and a column that does
+ * not as 42703, and the handler below would turn either into "Something went
+ * wrong on the server" -- true, and no help to the one person who can fix it,
+ * which is whoever updated the code and has not yet run the migration. `what`
+ * names the tables in the message.
+ *
+ * Mounted at the end of the router it guards, after its routes.
+ */
+export function tablesNotMigrated(what) {
+  // eslint-disable-next-line no-unused-vars -- Express identifies error handlers by arity.
+  return (err, req, res, next) => {
+    if (err?.code !== '42P01' && err?.code !== '42703') return next(err);
+    console.error(err.message);
+    return res.status(503).json({
+      error: `${what} in the database are missing or out of date. Stop the server, run "npm run migrate" in the server folder, and start it again.`,
+    });
+  };
+}
+
 // eslint-disable-next-line no-unused-vars -- Express identifies error handlers by arity.
 export function errorHandler(err, req, res, next) {
   if (err instanceof multer.MulterError) {

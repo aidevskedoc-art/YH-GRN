@@ -12,6 +12,20 @@ import Config from './pages/Config.jsx';
 import Logs from './pages/Logs.jsx';
 import MsmeReco from './pages/MsmeReco.jsx';
 import VendorMaster from './pages/VendorMaster.jsx';
+import OpPharmacy from './pages/OpPharmacy.jsx';
+import PharmacyUpload from './pages/PharmacyUpload.jsx';
+import PharmacyConfig from './pages/PharmacyConfig.jsx';
+import { OP_PHARMACY_BASE, OP_PHARMACY_SCREENS, opPharmacyPath } from './services/screens.js';
+
+/**
+ * The OP Pharmacy screens that are built, by the hospital screen each is the
+ * twin of. One that is not here yet is shown as OpPharmacy's "not set up"
+ * page, so its place in the menu still leads somewhere.
+ */
+const OP_PHARMACY_PAGES = {
+  upload: PharmacyUpload,
+  config: PharmacyConfig,
+};
 
 export default function App() {
   return (
@@ -103,6 +117,25 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+        {/* The OP Pharmacy sub-menu: the GRN screens above over again, each at
+            its hospital address under /op-pharmacy and behind the same grant.
+            Pharmacy Uploads and Ph-Configuration are their own pages, against
+            the pharmacies' own files and tables; the rest are not built yet --
+            see OP_PHARMACY_PAGES above. The bare address lands on its Results,
+            as the bare site does. */}
+        <Route path={OP_PHARMACY_BASE} element={<Navigate to={opPharmacyPath('results')} replace />} />
+        {OP_PHARMACY_SCREENS.map((screen) => {
+          const Page = OP_PHARMACY_PAGES[screen];
+          return (
+            <Route
+              key={screen}
+              path={opPharmacyPath(screen)}
+              element={
+                <ProtectedRoute screen={screen}>{Page ? <Page /> : <OpPharmacy screen={screen} />}</ProtectedRoute>
+              }
+            />
+          );
+        })}
         {/* Every vendor the HIS vendor master has ever listed, once each, with
             its latest details -- filled by each HIS vs FOCUS Reco. The Vendor
             Reco dropdown's first screen, read-only, with its own grant (see

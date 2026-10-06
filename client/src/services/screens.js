@@ -40,6 +40,46 @@ export const SCREEN_LABELS = {
 };
 
 /**
+ * OP Pharmacy's copy of the GRN screens.
+ *
+ * The GRN Reco dropdown is split into two sub-menus, Hospitals and OP
+ * Pharmacy, and the second repeats the first screen for screen: each one at
+ * the hospital screen's address under /op-pharmacy, behind the same grant.
+ * One list, read by the router and the sidebar both, so a link cannot be drawn
+ * for an address the router does not know.
+ *
+ * CS Department is in neither: it is a link of the GRN Reco dropdown itself,
+ * so there is one of it and no OP Pharmacy twin.
+ *
+ * Deliberately not in SCREEN_ROUTES: that is the list an account is forwarded
+ * through when it lands somewhere it may not go, and it should arrive on a
+ * hospital screen, not on its OP Pharmacy twin.
+ */
+export const OP_PHARMACY_BASE = '/op-pharmacy';
+
+/**
+ * What each OP Pharmacy screen is called -- in the sidebar, in the top bar's
+ * breadcrumb and on the screen itself. Its own names rather than the hospital
+ * screens': two links both reading "Results" are told apart only by the
+ * heading above them, which the icons-only rail does not show.
+ *
+ * Keyed on the hospital screen each is the twin of, and the list of OP
+ * Pharmacy screens is read off these keys -- so adding a name here is what
+ * adds the screen, and a screen cannot be left without one.
+ */
+export const OP_PHARMACY_LABELS = {
+  upload: 'Pharmacy Uploads',
+  results: 'Pharmacy Results',
+  'accounts-department': 'Ph-Accounts',
+  config: 'Ph-Configuration',
+};
+export const OP_PHARMACY_SCREENS = Object.keys(OP_PHARMACY_LABELS);
+
+export function opPharmacyPath(screen) {
+  return `${OP_PHARMACY_BASE}${SCREEN_ROUTES[screen]}`;
+}
+
+/**
  * Where to send an account that has landed somewhere it may not go.
  *
  * The first screen it does have, in the order above; `/login` when it has none,
