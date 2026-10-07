@@ -26,7 +26,7 @@
  * What a pharmacy report has and a hospital one does not rides along under a
  * name of its own.
  */
-import { toText, toNumber, normKey, normVendorName, stripBranchCode, toIsoDateString } from './normalize.js';
+import { toText, toNumber, normKey, normVendorName, toIsoDateString } from './normalize.js';
 import { ExcelFormatError, readGrid, findHeaderRow, indexHeaders, makeGetter } from './excelParser.js';
 
 /* Column names that identify each report's header row. Every heading in all
@@ -173,6 +173,10 @@ export function readPhGrnReport(buffer) {
       tcsAmt: toNumber(get('TCSAMT')),
       totalAmount: toNumber(get('NETAMT')),
       location: toText(get('UNITNAME')),
+      // The unit folded for comparison. With the GRN number it is what a
+      // pharmacy GRN is known by: the units number their FeedNos separately,
+      // so one number under two units is two GRNs.
+      unitKey: normKey(get('UNITNAME')),
     });
   }
 
@@ -210,11 +214,11 @@ function splitGrnDoc(grnDoc) {
  * row is found by, and DivisionCode (see PH_AGEING_REQUIRED).
  *
  * GRN_NO is there and empty, so the GRN number comes out of GRNDoc -- see
- * splitGrnDoc. A report that does fill GRN_NO in is read the way the
- * hospitals' is, division code off the front, so this goes on working if the
- * export is ever corrected. Either way `grnNo` is the GRN number itself --
- * "HE00184", the purchase register's FeedNo -- which is what the GRN No column
- * stores and the screens show.
+ * splitGrnDoc -- and GRNDoc is where it is taken from even on a report that
+ * does fill GRN_NO in. GRN_NO is read only for a row whose GRNDoc is empty,
+ * less the division code where that really is its prefix. Either way `grnNo`
+ * is the GRN number itself -- "HE00184", the purchase register's FeedNo --
+ * which is what the GRN No column stores and Pharmacy Results shows.
  *
  * The report has none of the hospitals' stage dates (IndentDate through
  * BillHandOverToAcc) and no StoreName. They are looked for anyway and come out
@@ -255,23 +259,31 @@ export function readPhAgeingReport(buffer) {
 
     const divisionCode = toText(get('DIVISIONCODE'));
     const doc = splitGrnDoc(grnDoc);
-    const fromCell = grnNoCell ? stripBranchCode(grnNoCell, divisionCode) : null;
-    const grnNumber = fromCell ? fromCell.grnNumber : doc.grnNumber;
+    // Not stripBranchCode, the hospitals' rule for GRN_NO: where the division
+    // code is not the prefix it falls back to taking any leading letters for
+    // one, and a pharmacy number's own letters ("HE" in HE00184) would go.
+    const cellNumber =
+      divisionCode && grnNoCell.toUpperCase().startsWith(divisionCode.toUpperCase())
+        ? grnNoCell.slice(divisionCode.length)
+        : grnNoCell;
+    const grnNumber = doc.grnNumber || cellNumber;
 
     rows.push({
       sourceRowNo: i + 1,
       division: toText(get('DIVISION')),
       divisionCode,
+      // Folded for comparison, as the GRN row's unitKey is. With the GRN number
+      // it is what an ageing row is known and replaced by.
+      divisionKey: normKey(divisionCode),
       storeName: toText(get('STORENAME')),
       vendorName: toText(get('VENDORNAME')),
       vendorNameKey: normVendorName(get('VENDORNAME')),
       vendorCode: toText(get('VENDORCODE')),
       grnDoc,
-      // The GRN number itself, taken out of GRNDoc (or out of GRN_NO, less its
-      // division code, where a report fills that in). The whole document
+      // The GRN number itself, taken out of GRNDoc. The whole document
       // reference is kept beside it in grnDoc.
       grnNo: grnNumber,
-      branchCode: fromCell ? fromCell.branchCode : doc.docPrefix || divisionCode || null,
+      branchCode: doc.docPrefix || divisionCode || null,
       grnNumber,
       grnNumberKey: normKey(grnNumber),
       billNo: toText(get('BILLNO')),

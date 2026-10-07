@@ -1207,8 +1207,8 @@ export async function exportLogs(filters, describe) {
  * turn round, so it is flattened to a display string here; the same goes for
  * the status label, which the queue stores raw.
  */
-export async function exportCsd(q, stage, location, view, msme) {
-  const { rows: raw } = await api.listCsd({
+export async function exportCsd(q, stage, location, view, msme, { list = api.listCsd, pharmacy = false } = {}) {
+  const { rows: raw } = await list({
     all: true,
     q,
     stage,
@@ -1235,7 +1235,10 @@ export async function exportCsd(q, stage, location, view, msme) {
     movedToAccountsDate: day(r.movedToAccountsAt),
   }));
 
-  const report = titleForStatus('CSD');
+  // The CS Department screen's other view, the pharmacies' queue (`pharmacy`):
+  // named for what it is, so the two queues' files cannot be mistaken for one
+  // another in a Downloads folder.
+  const report = pharmacy ? 'OP Pharmacy CSD GRN Report' : titleForStatus('CSD');
 
   // The stage joins the name when one is chosen, so two exports taken minutes
   // apart are not the same file with different contents.
@@ -1250,10 +1253,62 @@ export async function exportCsd(q, stage, location, view, msme) {
 
   const blob = await buildXlsx(rows, {
     sheetName: report,
-    columns: columnsForStatus('CSD', [], view),
+    columns: pharmacy ? pharmacyCsdColumns(view) : columnsForStatus('CSD', [], view),
     title: report,
   });
   save(blob, fileName);
+}
+
+/**
+ * One Pharmacy Results view as a file: the rows `load` answers with, laid out
+ * in `columns` under `title`.
+ *
+ * One sheet, and it is the view as it stands on screen -- the cards and
+ * dropdowns narrowing it included -- where the hospital export hands back a
+ * sheet per card (exportSection). The page says which rows and which columns,
+ * since both are its table's own; this only writes them, through the same
+ * toCell every other sheet goes through, so a status, a division or a CSD
+ * stage is spelled here as it is in those.
+ */
+export async function exportPharmacyResults({ title, columns, load }) {
+  const { rows } = await load();
+  const blob = await buildXlsx(rows, { sheetName: title, columns, title });
+  save(blob, `${slug(title)}.xlsx`);
+}
+
+/**
+ * The pharmacy queue's sheet, column for column with its table: the hospital
+ * queue's own columns, with the Unit a pharmacy GRN is known by after the
+ * Division.
+ */
+function pharmacyCsdColumns(view) {
+  return columnsForStatus('CSD', [], view).flatMap((c) =>
+    c.key === 'divisionCode' ? [c, { key: 'location', label: 'Unit' }] : [c],
+  );
+}
+
+/**
+ * A Pharmacy Results section as one workbook: a sheet per card, as the
+ * hospital export hands back (exportSection) -- `sheets` being the list
+ * sectionSheets builds off the cards on screen.
+ *
+ * The page says how each sheet's rows are fetched and which columns it has,
+ * since both are its tables' own; this fetches them together, writes the
+ * workbook and names the file after the section. Every sheet goes through the
+ * same toCell as every other export, so a status or a CSD stage is spelled
+ * here as it is in those.
+ */
+export async function exportPharmacySection(sheets, { fileName, loadSheet, columnsFor }) {
+  const built = await Promise.all(
+    sheets.map(async (sheet) => ({
+      sheetName: sheet.sheetName,
+      title: sheet.title,
+      columns: columnsFor(sheet),
+      rows: await loadSheet(sheet),
+    })),
+  );
+  const blob = await buildWorkbook(built);
+  save(blob, `${slug(fileName)}.xlsx`);
 }
 
 /* -------------------------------------------------------------------------

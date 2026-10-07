@@ -29,8 +29,13 @@ import { useAuth } from '../context/AuthContext.jsx';
  * this is not the guard; it is the control telling the truth about what the
  * screen can show, rather than offering choices that would all return the same
  * rows.
+ *
+ * `load` is which configuration the branches are read from, and `screen` what
+ * that screen is called: the hospitals' by default. The CS Department screen
+ * passes the pharmacies' while it is showing their queue, whose branches are
+ * Ph-Configuration's and are chosen by their Unit name.
  */
-export default function LocationFilter({ value, onChange }) {
+export default function LocationFilter({ value, onChange, load = api.listBranches, screen = 'Configuration' }) {
   const { user } = useAuth();
   const confinedTo = user?.branchLocation ?? null;
 
@@ -41,8 +46,9 @@ export default function LocationFilter({ value, onChange }) {
     // list is not worth a request.
     if (confinedTo) return undefined;
     let alive = true;
-    api
-      .listBranches()
+    // The list on hand is the other configuration's once `load` changes.
+    setLocations(null);
+    load()
       .then(({ branches }) => {
         if (!alive) return;
         const inScope = branches.some((b) => b.isSelected)
@@ -60,7 +66,7 @@ export default function LocationFilter({ value, onChange }) {
     return () => {
       alive = false;
     };
-  }, [confinedTo]);
+  }, [confinedTo, load]);
 
   const empty = locations !== null && locations.length === 0;
 
@@ -95,7 +101,7 @@ export default function LocationFilter({ value, onChange }) {
         disabled={empty}
         title={
           empty
-            ? 'No branches configured yet — add them on the Configuration screen.'
+            ? `No branches configured yet — add them on the ${screen} screen.`
             : 'Show one branch only'
         }
       >

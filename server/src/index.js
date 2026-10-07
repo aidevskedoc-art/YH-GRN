@@ -15,6 +15,10 @@ import { msmeRecoRouter } from './routes/msmeReco.js';
 import { vendorMasterRouter } from './routes/vendorMaster.js';
 import { phBatchesRouter } from './routes/phBatches.js';
 import { phConfigRouter } from './routes/phConfig.js';
+import { phResultsRouter } from './routes/phResults.js';
+import { phCsdRouter } from './routes/phCsd.js';
+import { phRecordsRouter } from './routes/phRecords.js';
+import { phAccountsReturnsRouter } from './routes/phAccountsReturns.js';
 import { purgeOldLogs } from './services/activityLog.js';
 import { applyPendingVendorMasters } from './services/vendorMaster.js';
 import { errorHandler } from './middleware/error.js';
@@ -69,6 +73,18 @@ app.use('/api/vendor-master', vendorMasterRouter);
 // the pharmacies' own four files and in their own tables.
 app.use('/api/op-pharmacy/batches', phBatchesRouter);
 app.use('/api/op-pharmacy/config', phConfigRouter);
+// What the uploads came to: each pharmacy GRN with its verdict, its cheque and
+// the bank statement's answer on it. Read-only.
+app.use('/api/op-pharmacy/results', phResultsRouter);
+// The pharmacies' own CSD queue -- the CS Department screen's "OP Pharmacy CSD"
+// view, as /api/csd is its "Hospital CSD" one.
+app.use('/api/op-pharmacy/csd', phCsdRouter);
+// The other destination on a Pharmacy Results row -- /api/records for the
+// pharmacies.
+app.use('/api/op-pharmacy/records', phRecordsRouter);
+// Pharmacy GRNs CSD have handed back to Accounts -- /api/accounts-returns for
+// the pharmacies.
+app.use('/api/op-pharmacy/accounts-returns', phAccountsReturnsRouter);
 
 // Serve the built client if it exists, so `npm start` alone runs the whole app.
 const clientDist = path.join(config.rootDir, 'client', 'dist');

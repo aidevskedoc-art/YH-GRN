@@ -9,9 +9,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
 import { config } from '../config/env.js';
-import { pool, query } from './pool.js';
+import { pool, query, withTransaction } from './pool.js';
 import { backfillVendorMaster } from '../services/vendorMaster.js';
 import { relinkStoredResults } from '../services/ingest.js';
+import { relinkPhResults } from '../services/phIngest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -26,6 +27,14 @@ async function migrate() {
   // should be worked out in one place.
   const relinked = await relinkStoredResults();
   if (relinked > 0) console.log(`Reconciliation: re-linked ${relinked} result(s) to their GRN's ageing row.`);
+
+  // The same for OP Pharmacy, whose rule for which ageing row is a GRN's goes
+  // through Ph-Configuration: results stored before that rule existed, or
+  // under an earlier form of it, are brought in line with the branches as
+  // they stand. Touches only the ph_ tables, and changes nothing once every
+  // result is in line.
+  const ph = await withTransaction((client) => relinkPhResults(client));
+  if (ph.changed > 0) console.log(`OP Pharmacy: re-matched ${ph.changed} result(s) to Ph-Configuration.`);
 
   // The reco runs not yet applied to the Vendor Master -- on the first run,
   // every one stored before it existed. Not SQL in schema.sql: the vendor code

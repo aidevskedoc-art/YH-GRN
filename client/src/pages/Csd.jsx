@@ -10,8 +10,14 @@
  * from has been deleted or replaced by next month's -- so there is no batch
  * selector here, and the upload column shows "upload deleted" rather than
  * dropping the row.
+ *
+ * Two queues, one screen. The hospitals' handovers and OP Pharmacy's are kept
+ * in separate tables behind separate endpoints, and the Select View dropdown
+ * at the top says which of the two this is showing -- see SOURCES below. They
+ * are worked the same way, so everything under the dropdown is the one screen
+ * driven through whichever queue is chosen.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { exportCsd } from '../services/exporter.js';
@@ -34,10 +40,83 @@ import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from '../components/VendorCells.jsx';
 import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, leadFigures, tabTitle } from '../services/resultsViews.js';
 import { csdChequeHandovers, expandCheques } from '../services/chequeGroups.js';
+import { OP_PHARMACY_LABELS, opPharmacyPath } from '../services/screens.js';
 
 
 /** Matches the results page's search box -- see the note there. */
 const SEARCH_DELAY_MS = 300;
+
+/**
+ * The two queues the Select View dropdown chooses between, and everything
+ * about each that the screen needs to be told: which calls reach it, and the
+ * few places the two tables differ.
+ *
+ * `list`, `setStage`, `remove` and `deleteRecord` take and answer the same
+ * shapes for both (see the two sets in api/client.js), which is what lets the
+ * rest of this file not care which it has been handed.
+ *
+ * What differs is named rather than tested for by key:
+ *
+ *  - `vendorMaster`: the MSME filter and the Vendor Master's four columns.
+ *    Both queues have them: the master knows a pharmacy vendor by its Focus
+ *    code, which the pharmacies' server looks it up with.
+ *  - `unitColumn`: the GRN's Unit, shown for the pharmacies, whose GRNs are
+ *    known by their number AND their unit.
+ *  - `chequeScope`: what narrows "every handover this cheque pays" beyond the
+ *    cheque number. Nothing for the hospitals. For the pharmacies the row's
+ *    unit: a cheque number is one cheque only within the account it is drawn
+ *    on, and two units' accounts can each have issued the same number.
+ *
+ * The choice lives in the URL (`?source=pharmacy`) beside the stage, so a link
+ * can open the pharmacy queue and Back returns to the one that was showing.
+ * Anything unrecognised is the hospitals', which is what the screen has always
+ * opened on.
+ */
+const HOSPITAL = 'hospital';
+const PHARMACY = 'pharmacy';
+
+const SOURCES = {
+  [HOSPITAL]: {
+    key: HOSPITAL,
+    label: 'Hospital CSD',
+    list: api.listCsd,
+    setStage: api.setCsdStage,
+    remove: api.removeFromCsd,
+    deleteRecord: api.deleteCsdRecord,
+    listBranches: api.listBranches,
+    configScreen: 'Configuration',
+    vendorMaster: true,
+    unitColumn: false,
+    chequeScope: () => ({}),
+    sentFrom: 'the Valid GRNS tab',
+    emptyText:
+      'Open the Valid GRNS tab on the results page and press Send to CSD on a row. What you send appears here, with the GRN’s details as they stood at the time.',
+    resultsPath: '/results',
+    resultsLabel: 'Go to results',
+    searchPlaceholder: 'Search vendor, vendor code, GRN or bill no.',
+  },
+  [PHARMACY]: {
+    key: PHARMACY,
+    label: 'OP Pharmacy CSD',
+    list: api.phListCsd,
+    setStage: api.phSetCsdStage,
+    remove: api.phRemoveFromCsd,
+    deleteRecord: api.phDeleteCsdRecord,
+    listBranches: api.phListBranches,
+    configScreen: OP_PHARMACY_LABELS.config,
+    vendorMaster: true,
+    unitColumn: true,
+    chequeScope: (row) => (row.unitKey ? { unitKey: row.unitKey } : {}),
+    sentFrom: OP_PHARMACY_LABELS.results,
+    emptyText: `Open ${OP_PHARMACY_LABELS.results} and choose Send to CSD on a GRN that is in accounts with its cheque prepared. What you send appears here, with the GRN’s details as they stood at the time.`,
+    resultsPath: opPharmacyPath('results'),
+    resultsLabel: `Go to ${OP_PHARMACY_LABELS.results}`,
+    searchPlaceholder: 'Search vendor, vendor code, GRN, bill no. or unit',
+  },
+};
+
+/** The dropdown's options, in the order it lists them. */
+const SOURCE_OPTIONS = [SOURCES[HOSPITAL], SOURCES[PHARMACY]];
 
 /**
  * The five stages, in the order a handover travels through them.
@@ -177,11 +256,18 @@ const STAGE_DATES = [
  * The header row below, counted, for either view: Division, the pinned GRN No
  * (Cheque No on Cheque view), Vendor, Vendor Code and Status on both, with the
  * Vendor Master's four (MSME No, MSME Status, Inter, Supply Type -- see
- * VendorCells); GRN view adds GRN Date, Bill No, Bill Date, Focus doc_no and
- * the five amounts; Cheque view adds Cheque Date, Cheque Amount, PaymentDocNo
- * and Account No. Then one per stage date, then Action.
+ * VendorCells) where the queue has a master behind it, and the Unit where its
+ * GRNs are known by one; GRN view adds GRN Date, Bill No, Bill Date, Focus
+ * doc_no and the five amounts; Cheque view adds Cheque Date, Cheque Amount,
+ * PaymentDocNo and Account No. Then one per stage date, then Action.
  */
-const columnCount = (byCheque) => 5 + VENDOR_CELL_COUNT + (byCheque ? 4 : 9) + STAGE_DATES.length + 1;
+const columnCount = (byCheque, source) =>
+  5 +
+  (source.vendorMaster ? VENDOR_CELL_COUNT : 0) +
+  (source.unitColumn ? 1 : 0) +
+  (byCheque ? 4 : 9) +
+  STAGE_DATES.length +
+  1;
 
 /**
  * The two matched statuses, spelled for a reader. A GRN reaches CSD from either
@@ -338,7 +424,27 @@ function RejectReasonDialog({ subject, busy, error, onSubmit, onClose }) {
   );
 }
 
+/**
+ * The screen: whichever queue the URL names, as its own instance of the page
+ * below.
+ *
+ * Keyed on the queue, so that changing it -- by the dropdown, by the sidebar
+ * link, by Back -- throws away everything the page was holding rather than
+ * carrying it across: the rows, the filters, a selection, an open dialog, and
+ * above all any action still in flight. The two queues' rows are addressed by
+ * ids that mean different handovers in each, so one queue's rows must never
+ * be left on screen under the other's controls; and an action that finishes
+ * after the switch reloads the instance it belonged to, which is gone, rather
+ * than this one.
+ */
 export default function Csd() {
+  const [params] = useSearchParams();
+  const key = String(params.get('source') || '').toLowerCase() === PHARMACY ? PHARMACY : HOSPITAL;
+  return <CsdQueue key={key} source={SOURCES[key]} />;
+}
+
+/** One queue's page. `source` is which -- see SOURCES -- and never changes under it. */
+function CsdQueue({ source }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
 
@@ -419,7 +525,7 @@ export default function Csd() {
   // the browser's Back button.
   useEffect(() => {
     setPage(1);
-  }, [stage, location, msme, csdView]);
+  }, [stage, location, msme, csdView, source]);
 
   // A ticked row belongs to the page it was ticked on -- changing any of the
   // page's own inputs invalidates the selection rather than carrying it,
@@ -427,16 +533,30 @@ export default function Csd() {
   useEffect(() => {
     setSelected(new Set());
     setMultiMode(false);
-  }, [page, pageSize, q, stage, location, msme, csdView]);
+  }, [page, pageSize, q, stage, location, msme, csdView, source]);
+
+  // Only the latest request may answer: the filters can change faster than the
+  // server replies. (An answer for the other queue cannot arrive here at all --
+  // each queue is its own instance of this page; see Csd above.)
+  const request = useRef(0);
 
   const load = useCallback(() => {
+    const mine = ++request.current;
     setLoading(true);
-    api
-      .listCsd({ page, pageSize, q, stage, location, msme, view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined })
-      .then(setData)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [page, pageSize, q, stage, location, msme, byCheque]);
+    source
+      .list({
+        page,
+        pageSize,
+        q,
+        stage,
+        location,
+        msme: source.vendorMaster ? msme : undefined,
+        view: byCheque ? ACCOUNTS_CHEQUE_VIEW : undefined,
+      })
+      .then((answer) => mine === request.current && setData(answer))
+      .catch((err) => mine === request.current && setError(err.message))
+      .finally(() => mine === request.current && setLoading(false));
+  }, [source, page, pageSize, q, stage, location, msme, byCheque]);
 
   /** Switch the queue between a row per GRN and a row per cheque. */
   function selectCsdView(next) {
@@ -445,6 +565,19 @@ export default function Csd() {
     // The rows on hand are the other view's shape; drawing them under this
     // view's columns until the reload lands would show a broken table.
     setData(null);
+  }
+
+  /**
+   * Switch between the hospitals' queue and the pharmacies'.
+   *
+   * Only the URL changes here, and the stage goes with it: a stage is chosen
+   * within a queue. Everything else that narrowed this one -- the location,
+   * the MSME choice, the search, the rows themselves -- is let go of by the
+   * page being made afresh for the other queue; see Csd above.
+   */
+  function selectSource(next) {
+    if (next === source.key) return;
+    setParams(next === HOSPITAL ? {} : { source: next }, { replace: true });
   }
 
   useEffect(load, [load]);
@@ -465,7 +598,10 @@ export default function Csd() {
       next.add(row.id);
       if (row.chequeNo) {
         for (const r of data?.rows || []) {
-          if (r.chequeNo === row.chequeNo) next.add(r.id);
+          // The same cheque: its number, and on the pharmacies' queue its unit
+          // too (see chequeScope in SOURCES). The hospitals' rows carry no
+          // unit, so there the number alone decides, as it always has.
+          if (r.chequeNo === row.chequeNo && r.unitKey === row.unitKey) next.add(r.id);
         }
       }
       return next;
@@ -499,7 +635,11 @@ export default function Csd() {
    */
   function bulkTargets(eligible) {
     if (!byCheque) return selectedRows;
-    return expandCheques(selectedRows, (row) => csdChequeHandovers(row, eligible), (row) => row.id);
+    return expandCheques(
+      selectedRows,
+      (row) => csdChequeHandovers(row, eligible, (args) => source.list({ ...args, ...source.chequeScope(row) })),
+      (row) => row.id,
+    );
   }
 
   const bulkNextStages = selectedRows.length
@@ -524,7 +664,7 @@ export default function Csd() {
     setError('');
     try {
       const targets = await bulkTargets((r) => (NEXT_STAGES[r.stage] ?? []).includes(next));
-      await Promise.all(targets.map((row) => api.setCsdStage(row.id, next, remarks)));
+      await Promise.all(targets.map((row) => source.setStage(row.id, next, remarks)));
       setReject(null);
       exitMultiMode();
       load();
@@ -554,7 +694,7 @@ export default function Csd() {
     setError('');
     try {
       const targets = await bulkTargets((r) => TAKE_BACK_STAGES.includes(r.stage));
-      await Promise.all(targets.map((row) => api.removeFromCsd(row.id)));
+      await Promise.all(targets.map((row) => source.remove(row.id)));
       exitMultiMode();
       // Removing every row of the last page would otherwise leave the pager
       // pointing past the end of a now-shorter queue.
@@ -605,7 +745,14 @@ export default function Csd() {
 
     const found = [];
     for (let p = 1; p <= GROUP_MAX_PAGES; p += 1) {
-      const res = await api.listCsd({ chequeNo: row.chequeNo, page: p, pageSize: GROUP_PAGE_SIZE });
+      const res = await source.list({
+        chequeNo: row.chequeNo,
+        // The pharmacies' queue narrows a cheque to the row's own unit -- see
+        // chequeScope in SOURCES.
+        ...source.chequeScope(row),
+        page: p,
+        pageSize: GROUP_PAGE_SIZE,
+      });
       found.push(...res.rows);
       if (p >= res.totalPages) break;
     }
@@ -634,8 +781,12 @@ export default function Csd() {
    */
   function applyStage(next) {
     // replace, not push: working through the four stages should not leave four
-    // entries in the history for Back to walk out through.
-    setParams(next ? { stage: next } : {}, { replace: true });
+    // entries in the history for Back to walk out through. The queue being
+    // shown rides along -- a stage is chosen within it, not instead of it.
+    setParams(
+      { ...(source.key === HOSPITAL ? {} : { source: source.key }), ...(next ? { stage: next } : {}) },
+      { replace: true },
+    );
     setPage(1);
   }
 
@@ -643,7 +794,10 @@ export default function Csd() {
     setExporting(true);
     setError('');
     try {
-      await exportCsd(q, stage, location, csdView, msme);
+      await exportCsd(q, stage, location, csdView, source.vendorMaster ? msme : '', {
+        list: source.list,
+        pharmacy: source.key === PHARMACY,
+      });
     } catch (err) {
       setError(err.message);
     } finally {
@@ -682,7 +836,7 @@ export default function Csd() {
       beginBusy(group);
       // The one reason is written onto every handover the cheque pays: they
       // were rejected together, for the same thing, in one decision.
-      await Promise.all(group.map((r) => api.setCsdStage(r.id, next, remarks)));
+      await Promise.all(group.map((r) => source.setStage(r.id, next, remarks)));
       setReject(null);
       load();
     } catch (err) {
@@ -733,7 +887,7 @@ export default function Csd() {
 
     beginBusy(group);
     try {
-      await Promise.all(group.map((r) => api.removeFromCsd(r.id)));
+      await Promise.all(group.map((r) => source.remove(r.id)));
       // Removing every row of the last page would otherwise leave the pager
       // pointing past the end of a now-shorter queue.
       const goneFromPage = data.rows.filter((r) => group.some((g) => g.id === r.id)).length;
@@ -776,7 +930,7 @@ export default function Csd() {
     beginBusy([row]);
     setError('');
     try {
-      await api.deleteCsdRecord(row.id);
+      await source.deleteRecord(row.id);
       // Deleting the last row of the last page would otherwise leave the pager
       // pointing past the end of a now-shorter queue.
       if (data.rows.length === 1 && page > 1) setPage((p) => p - 1);
@@ -813,18 +967,49 @@ export default function Csd() {
     !location &&
     !msme &&
     Object.values(data.stages ?? {}).every((bucket) => (bucket?.count ?? 0) === 0);
+
+  /*
+   * Which queue this is, chosen at the top of the page. Rendered on the empty
+   * page too, and that is the reason it is its own piece: one queue being
+   * empty says nothing about the other, and a dropdown that vanished with the
+   * rows would leave no way across to it.
+   */
+  const sourcePicker = (
+    <label className="picker">
+      <span className="picker__label">Select View</span>
+      <select
+        className="field__input picker__input"
+        value={source.key}
+        onChange={(e) => selectSource(e.target.value)}
+        title="Show the hospitals' CSD queue or OP Pharmacy's"
+      >
+        {SOURCE_OPTIONS.map((option) => (
+          <option key={option.key} value={option.key}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+
   if (!loading && queueEmpty) {
     return (
-      <div className="empty empty--page">
-        <h2>Nothing sent to CSD yet</h2>
-        <p>
-          Open the Valid GRNS tab on the results page and press Send to CSD on a row. What you send
-          appears here, with the GRN&apos;s details as they stood at the time.
-        </p>
-        <button className="primary" type="button" onClick={() => navigate('/results')}>
-          Go to results
-        </button>
-      </div>
+      <>
+        <div className="page__head page__head--row">
+          <div>
+            <h2 className="page__title">Sent to CSD</h2>
+            <p className="page__lead">{source.label} — nothing has been handed over yet.</p>
+          </div>
+          <div className="page__actions">{sourcePicker}</div>
+        </div>
+        <div className="empty empty--page">
+          <h2>Nothing sent to CSD yet</h2>
+          <p>{source.emptyText}</p>
+          <button className="primary" type="button" onClick={() => navigate(source.resultsPath)}>
+            {source.resultsLabel}
+          </button>
+        </div>
+      </>
     );
   }
 
@@ -866,7 +1051,7 @@ export default function Csd() {
               ? `${data.total.toLocaleString('en-IN')} ${byCheque ? 'cheque' : 'GRN'}${data.total === 1 ? '' : 's'}` +
                 `${stage ? ` ${STAGE_LABELS[stage].toLowerCase()}` : ' handed over'}` +
                 ` — ₹ ${formatAmount(data.amount)} payable.`
-              : 'Everything handed over from the Valid GRNS tab.'}{' '}
+              : `Everything handed over from ${source.sentFrom}.`}{' '}
             Each row keeps the details as they stood when it was sent.
           </p>
         </div>
@@ -874,10 +1059,17 @@ export default function Csd() {
         {/* Where the results screen keeps its pair of scope pickers. This
             screen has no upload to choose -- a handover outlives the upload it
             came from, so the queue is every upload at once -- which leaves the
-            location on its own, in the same place and the same shape. */}
+            location, in the same place and the same shape, after the choice of
+            which queue it is a location of. */}
         <div className="page__actions">
+          {sourcePicker}
           <ViewModeRadios value={csdView} onChange={selectCsdView} />
-          <LocationFilter value={location} onChange={setLocation} />
+          <LocationFilter
+            value={location}
+            onChange={setLocation}
+            load={source.listBranches}
+            screen={source.configScreen}
+          />
         </div>
       </div>
 
@@ -920,8 +1112,9 @@ export default function Csd() {
       <div className="toolbar">
         <div className="toolbar__actions">
           {/* MSME or Non-MSME vendors -- first, ahead of the stage dropdown,
-              since it narrows the cards and the export as well as the rows. */}
-          <MsmeFilter value={msme} onChange={setMsme} />
+              since it narrows the cards and the export as well as the rows.
+              Only where there is a Vendor Master to ask: see SOURCES. */}
+          {source.vendorMaster && <MsmeFilter value={msme} onChange={setMsme} />}
           {/* Every stage, not just the four the cards count -- Moved to
               accounts has no card here (see STAGES) but is still a stage a
               row can be filtered to. Either control sets the filter and both
@@ -946,7 +1139,7 @@ export default function Csd() {
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search vendor, vendor code, GRN or bill no."
+            placeholder={source.searchPlaceholder}
             aria-label="Search the CSD queue by vendor name, GRN number or bill number"
           />
 
@@ -1040,6 +1233,10 @@ export default function Csd() {
                     {/* On Cheque view the cheque is what a row is looked up
                         by, so it takes GRN No's pinned place. */}
                     <th className="table__pin table__pin--grn">{byCheque ? 'Cheque No' : 'GRN No'}</th>
+                    {/* The unit, where a GRN is known by its number and its
+                        unit -- the pharmacies' queue. Beside the number it
+                        completes, on both views: a cheque is one unit's too. */}
+                    {source.unitColumn && <th title="Unit Name in the GRN Purchase report">Unit</th>}
                     {!byCheque && <th>GRN Date</th>}
                     {!byCheque && <th>Bill No</th>}
                     {!byCheque && <th>Bill Date</th>}
@@ -1050,11 +1247,16 @@ export default function Csd() {
                     {/* The vendor's details off the Vendor Master -- its MSME
                         registration, and the Inter and Supply Type picked there
                         -- read live rather than copied onto the handover. See
-                        VendorCells. On both views: they are about the vendor. */}
-                    <th>MSME No</th>
-                    <th>MSME Status</th>
-                    <th>Inter</th>
-                    <th>Supply Type</th>
+                        VendorCells. On both views: they are about the vendor.
+                        The hospitals' queue only: see SOURCES. */}
+                    {source.vendorMaster && (
+                      <>
+                        <th>MSME No</th>
+                        <th>MSME Status</th>
+                        <th>Inter</th>
+                        <th>Supply Type</th>
+                      </>
+                    )}
                     {!byCheque && (
                       <>
                         <th>Focus doc_no</th>
@@ -1105,7 +1307,7 @@ export default function Csd() {
                     <tr>
                       <td
                         className="table__empty"
-                        colSpan={columnCount(byCheque) + (multiMode ? 1 : 0)}
+                        colSpan={columnCount(byCheque, source) + (multiMode ? 1 : 0)}
                       >
                         {/* The same wording the results table uses for a search
                             that finds nothing, so the two screens answer an
@@ -1146,6 +1348,9 @@ export default function Csd() {
                       ) : (
                         <td className="table__mono table__pin table__pin--grn">{row.dprNo}</td>
                       )}
+                      {source.unitColumn && (
+                        <td>{row.location || <span className="table__miss">&mdash;</span>}</td>
+                      )}
                       {!byCheque && <td>{formatDate(row.dprDate)}</td>}
                       {!byCheque && <td className="table__mono">{row.billNo}</td>}
                       {!byCheque && <td>{formatDate(row.billDate)}</td>}
@@ -1153,7 +1358,7 @@ export default function Csd() {
                       <td className="table__mono">
                         {row.vendorCode || <span className="table__miss">&mdash;</span>}
                       </td>
-                      <VendorCells row={row} />
+                      {source.vendorMaster && <VendorCells row={row} />}
                       {!byCheque && (
                         <>
                           <td className="table__mono">{row.ageingGrnNo}</td>

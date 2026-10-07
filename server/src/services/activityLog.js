@@ -60,6 +60,18 @@ export const ACTIONS = {
   PH_BRANCH_CREATE: { label: 'Added pharmacy branch', category: 'CONFIG' },
   PH_BRANCH_UPDATE: { label: 'Updated pharmacy branch', category: 'CONFIG' },
   PH_BRANCH_DELETE: { label: 'Deleted pharmacy branch', category: 'CONFIG' },
+  // OP Pharmacy's own CSD queue -- routes/phCsd.js. Filed under CSD with the
+  // hospitals', and told apart by their wording.
+  PH_CSD_SEND: { label: 'Sent pharmacy GRN to CSD', category: 'CSD' },
+  PH_CSD_STAGE: { label: 'Moved pharmacy CSD stage', category: 'CSD' },
+  PH_CSD_TAKE_BACK: { label: 'Took pharmacy GRN back from CSD', category: 'CSD' },
+  PH_CSD_DELETE: { label: 'Deleted pharmacy CSD record', category: 'CSD' },
+  // ...and its Records filing -- routes/phRecords.js.
+  PH_RECORDS_SEND: { label: 'Sent pharmacy GRN to Records', category: 'RECORDS' },
+  PH_RECORDS_TAKE_BACK: { label: 'Took pharmacy GRN back from Records', category: 'RECORDS' },
+  // ...and Accounts' two moves once CSD hand one back -- routes/phAccountsReturns.js.
+  PH_ACCOUNTS_RECEIVE: { label: 'Accounts received pharmacy GRN', category: 'ACCOUNTS' },
+  PH_ACCOUNTS_FORWARD: { label: 'Accounts forwarded pharmacy GRN', category: 'ACCOUNTS' },
   MSME_RECO_RUN: { label: 'Ran HIS vs FOCUS reco', category: 'MSME' },
   // One file uploaded with nothing on file for the other side to reconcile it
   // against: kept for when it comes, and an HIS file applied to the Vendor Master.

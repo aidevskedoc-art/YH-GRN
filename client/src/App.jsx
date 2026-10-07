@@ -15,6 +15,8 @@ import VendorMaster from './pages/VendorMaster.jsx';
 import OpPharmacy from './pages/OpPharmacy.jsx';
 import PharmacyUpload from './pages/PharmacyUpload.jsx';
 import PharmacyConfig from './pages/PharmacyConfig.jsx';
+import PharmacyResults from './pages/PharmacyResults.jsx';
+import PharmacyAccounts from './pages/PharmacyAccounts.jsx';
 import { OP_PHARMACY_BASE, OP_PHARMACY_SCREENS, opPharmacyPath } from './services/screens.js';
 
 /**
@@ -24,6 +26,8 @@ import { OP_PHARMACY_BASE, OP_PHARMACY_SCREENS, opPharmacyPath } from './service
  */
 const OP_PHARMACY_PAGES = {
   upload: PharmacyUpload,
+  results: PharmacyResults,
+  'accounts-department': PharmacyAccounts,
   config: PharmacyConfig,
 };
 
@@ -119,10 +123,9 @@ export default function App() {
         />
         {/* The OP Pharmacy sub-menu: the GRN screens above over again, each at
             its hospital address under /op-pharmacy and behind the same grant.
-            Pharmacy Uploads and Ph-Configuration are their own pages, against
-            the pharmacies' own files and tables; the rest are not built yet --
-            see OP_PHARMACY_PAGES above. The bare address lands on its Results,
-            as the bare site does. */}
+            Each is its own page, against the pharmacies' own files and tables
+            -- see OP_PHARMACY_PAGES above. The bare address lands on its
+            Results, as the bare site does. */}
         <Route path={OP_PHARMACY_BASE} element={<Navigate to={opPharmacyPath('results')} replace />} />
         {OP_PHARMACY_SCREENS.map((screen) => {
           const Page = OP_PHARMACY_PAGES[screen];

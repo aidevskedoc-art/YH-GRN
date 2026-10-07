@@ -445,7 +445,157 @@ export const api = {
   phUpdateBranch: (id, body) =>
     request(`/op-pharmacy/config/branches/${id}`, { method: 'PATCH', body }),
 
+  /** Answers with `relinked`, as create and update do -- see routes/phConfig.js. */
   phDeleteBranch: (id) => request(`/op-pharmacy/config/branches/${id}`, { method: 'DELETE' }),
+
+  /**
+   * The figures the Pharmacy Results cards read -- how many GRNs stand at each
+   * verdict, the cheque cards' counts, where the pending ones are pending --
+   * with what is on file (`uploads`) and the configured branches. `q` is the
+   * search box, which narrows the cards with the rows.
+   */
+  phSummary: ({ q, location, msme } = {}) => {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    // One branch, by its Unit name -- the Location dropdown -- and MSME or
+    // Non-MSME vendors. Scopes like the search: every card and count follows.
+    if (location) params.set('location', location);
+    if (msme) params.set('msme', msme);
+    return request(`/op-pharmacy/results/summary?${params}`);
+  },
+
+  /**
+   * The GRN age view of Pharmacy Results: per-stage day counts over every GRN
+   * in accounts in scope, plus one page of the rows -- the shape `turnaround`
+   * answers in, so the same table draws it.
+   */
+  phTurnaround: ({ page = 1, pageSize = 50, q, location, msme } = {}) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (q) params.set('q', q);
+    if (location) params.set('location', location);
+    if (msme) params.set('msme', msme);
+    return request(`/op-pharmacy/results/turnaround?${params}`);
+  },
+
+  /** Acknowledge one pharmacy GRN CSD marked Moved to accounts, by its CSD dispatch id. */
+  phReceiveAccountsReturn: (id) => request(`/op-pharmacy/accounts-returns/${id}/receive`, { method: 'PATCH' }),
+
+  /** Record where Accounts sent a received pharmacy GRN on to -- the shape forwardAccountsReturn takes. */
+  phForwardAccountsReturn: (id, body) =>
+    request(`/op-pharmacy/accounts-returns/${id}/forward`, { method: 'PATCH', body }),
+
+  /**
+   * One page of pharmacy GRNs. `status` is VALID, PENDING, ALL or one stored
+   * verdict; `progress` one of the cheque five the hospital results use
+   * (CLEARED, CHEQUE_PREPARED, CHEQUE_NOT_REQUIRED, CHEQUE_NOT_PREPARED,
+   * PAYMENT_NOT_REQUIRED); `dept` one BPAD desk. Each narrows on top of the
+   * others.
+   */
+  phResults: ({
+    status,
+    progress,
+    action,
+    actionCounts,
+    dept,
+    supplyType,
+    q,
+    location,
+    msme,
+    chequeNo,
+    unitKey,
+    view,
+    all,
+    page = 1,
+    pageSize = 50,
+  } = {}) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (status) params.set('status', status);
+    if (progress) params.set('progress', progress);
+    // The Cheque Not Prepared section's Stents / Regular cards.
+    if (supplyType) params.set('supplyType', supplyType);
+    if (msme) params.set('msme', msme);
+    // Where the rows have got to, on top of `progress` -- the Action dropdown;
+    // `actionCounts` asks for the counts beside its options.
+    if (action) params.set('action', action);
+    if (actionCounts) params.set('actionCounts', '1');
+    if (dept) params.set('dept', dept);
+    if (q) params.set('q', q);
+    if (location) params.set('location', location);
+    // 'cheque' for the Accounts view's Cheque view: one row per cheque.
+    if (view) params.set('view', view);
+    // Every row, unpaginated -- the export.
+    if (all) params.set('all', '1');
+    // One cheque's bills, matched exactly -- and one unit's, since a cheque
+    // number is one cheque only within the account it is drawn on. What Send
+    // to CSD reads to gather the rest of a cheque before handing it over.
+    if (chequeNo) params.set('chequeNo', chequeNo);
+    if (unitKey) params.set('unitKey', unitKey);
+    return request(`/op-pharmacy/results?${params}`);
+  },
+
+  /**
+   * The BPAD view of Pharmacy Results: the BPAD bill status's own rows, with
+   * the desks they name (`departments`) and the Not Integrated in Accounts
+   * card's figure (`notIntegrated`). `dept` narrows the rows to one desk;
+   * `notIntegrated` to that card's bills, from `accountsFrom` where given.
+   */
+  phBpad: ({ q, location, msme, dept, notIntegrated, accountsFrom, all, page = 1, pageSize = 50 } = {}) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (q) params.set('q', q);
+    if (location) params.set('location', location);
+    if (msme) params.set('msme', msme);
+    if (dept) params.set('dept', dept);
+    if (notIntegrated) params.set('notIntegrated', '1');
+    if (accountsFrom) params.set('accountsFrom', accountsFrom);
+    if (all) params.set('all', '1');
+    return request(`/op-pharmacy/results/bpad?${params}`);
+  },
+
+  /** File one Pharmacy Results row to Records -- the other destination on that row. */
+  phSendToRecords: (row) => request('/op-pharmacy/records', { method: 'POST', body: row }),
+
+  /** Take a pharmacy GRN back from Records, by its record id (the row's recordsId). */
+  phRemoveFromRecords: (id) => request(`/op-pharmacy/records/${id}`, { method: 'DELETE' }),
+
+  /* --- OP Pharmacy's CSD queue ---------------------------------------------
+     The CS Department screen's "OP Pharmacy CSD" view. The five calls the
+     hospital queue has (listCsd and the four after it), against the
+     pharmacies' own table, taking and answering the same shapes -- so the one
+     screen drives either through whichever set it is handed. */
+
+  /**
+   * One page of the pharmacy queue, with its stage counts. As listCsd, less
+   * the MSME filter (there is no Vendor Master behind a pharmacy vendor), and
+   * with `unitKey` beside `chequeNo`: one cheque's handovers are that unit's.
+   */
+  phListCsd: ({ page = 1, pageSize = 20, q, stage, location, msme, all, chequeNo, unitKey, view } = {}) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (q) params.set('q', q);
+    if (stage) params.set('stage', stage);
+    if (location) params.set('location', location);
+    if (msme) params.set('msme', msme);
+    if (all) params.set('all', '1');
+    if (chequeNo) params.set('chequeNo', chequeNo);
+    if (unitKey) params.set('unitKey', unitKey);
+    if (view) params.set('view', view);
+    return request(`/op-pharmacy/csd?${params}`);
+  },
+
+  /** Hand one Pharmacy Results row to CSD. Sending one already queued refreshes it. */
+  phSendToCsd: (row) => request('/op-pharmacy/csd', { method: 'POST', body: row }),
+
+  /** Move a pharmacy handover to its next stage; `remarks` is required for REJECTED. */
+  phSetCsdStage: (id, stage, remarks) =>
+    request(`/op-pharmacy/csd/${id}/stage`, {
+      method: 'PATCH',
+      body: remarks ? { stage, remarks } : { stage },
+    }),
+
+  /** Take a pharmacy GRN back off the queue, by dispatch id. Refused once CSD have ruled. */
+  phRemoveFromCsd: (id) => request(`/op-pharmacy/csd/${id}`, { method: 'DELETE' }),
+
+  /** Delete a pharmacy handover whatever stage it reached. Administrator-only. */
+  phDeleteCsdRecord: (id) => request(`/op-pharmacy/csd/${id}/record`, { method: 'DELETE' }),
 
   /* --- MSME reco -----------------------------------------------------------
      The HIS vendor master against the Accounts vendor list. A run is the two

@@ -416,7 +416,10 @@ export function bpadAgeHeaderTitle(asOf) {
   );
 }
 
-function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, forwardedName, forwardedMobile, forwardedDate, forwardedCourierName, forwardedDocketNo, forwardedRemarks, rejectRemarks, priorRejection, filed, clearedOn }) {
+// Exported, with AccountsStagePicker below, for Pharmacy Results: its rows
+// carry these same fields off the pharmacies' own queue, and the Status and
+// Action cells have to read exactly as they do here.
+export function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, forwardedName, forwardedMobile, forwardedDate, forwardedCourierName, forwardedDocketNo, forwardedRemarks, rejectRemarks, priorRejection, filed, clearedOn }) {
   // Only where there is no current one -- see PriorRejection.
   const prior = !rejectRemarks && priorRejection ? priorRejection : null;
   // Records has no stages, so there is one thing to say about it and this is
@@ -716,7 +719,7 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, grouped = fal
  * means anything either. Bank alone acts at once, having no such record to
  * collect.
  */
-function AccountsStagePicker({ row, busy, grouped = false, onReceive, onForwardSimple, onOpenForwardForm }) {
+export function AccountsStagePicker({ row, busy, grouped = false, onReceive, onForwardSimple, onOpenForwardForm }) {
   const accountsStage = row.csdAccountsStage || 'QUEUED';
   // Same job as SendPicker's own -- say what the move actually moves.
   const groupNote = grouped

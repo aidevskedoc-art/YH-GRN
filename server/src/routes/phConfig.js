@@ -323,7 +323,8 @@ phConfigRouter.patch(
  *
  * No row references a branch, so removing one deletes nothing else. It does
  * change what the GRNs on file are matched to -- the ones matched through this
- * branch go back to pending -- and they are re-matched as it goes.
+ * branch go back to pending -- and they are re-matched as it goes. Answers
+ * with `relinked`, as POST and PATCH do.
  */
 phConfigRouter.delete(
   '/branches/:id',
@@ -363,7 +364,10 @@ phConfigRouter.delete(
         ...relinkedDetails(relinked),
       },
     });
-    return res.status(204).end();
+    // 200 with what the removal did, where the hospital route answers 204:
+    // removing a branch here sends the GRNs matched through it back to
+    // pending, and the screen should be able to say how many.
+    return res.json({ relinked });
   }),
 );
 

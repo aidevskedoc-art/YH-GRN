@@ -26,17 +26,74 @@
  */
 import { withTransaction } from '../db/pool.js';
 import { matchGrnAgeingPair } from './reconcile.js';
-import { bulkInsert, lastRowPerGrn } from './ingest.js';
+import { bulkInsert } from './ingest.js';
 
-/** Clear whatever a previous upload stored for the GRNs this one is about. */
+/* --------------------------------------------------------------------------
+   WHAT A PHARMACY GRN IS KNOWN BY
+
+   The hospital upload knows a GRN by its number. Here it is the number AND the
+   unit: the pharmacy units number their FeedNos independently, so "HE00184"
+   under Secunderabad and "HE00184" under Malakpet are two GRNs, and each has to
+   be stored, replaced and matched as its own.
+
+   So every identity below has the unit in it, under whichever of the branch's
+   three names the report in question writes:
+
+     a GRN row                 number + unit_key      (the Unit Name, folded)
+     its Vendor Age rows       number + division_key  (the DivisionCode, folded)
+     its BPAD rows             number + vendor code + unit_key of the GRN matched
+
+   The fold is normKey's (services/normalize.js), applied where the row is read
+   (services/phExcelParser.js) and stored beside the value it folds.
+   -------------------------------------------------------------------------- */
+
+/**
+ * The purchase register's rows, one per GRN -- per number and unit -- the last
+ * row winning, as lastRowPerGrn in ingest.js keeps the last per number. A row
+ * whose number folds to nothing is kept as it is: there is no telling two of
+ * those apart.
+ *
+ * Exported for routes/phBatches.js, which builds the BPAD rows from the same
+ * rows this stores. Applied again in storePhBatch all the same, so the rule
+ * holds whoever calls it.
+ */
+export function lastRowPerUnitGrn(grnRows) {
+  const seen = new Set();
+  const kept = [];
+  for (let i = grnRows.length - 1; i >= 0; i -= 1) {
+    const row = grnRows[i];
+    if (row.dprNoKey) {
+      const key = `${row.dprNoKey}|${row.unitKey ?? ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    kept.push(row);
+  }
+  return kept.reverse();
+}
+
+/**
+ * Clear whatever a previous upload stored for the GRNs this one is about --
+ * each GRN being its number and its unit, so that one unit's status never
+ * clears the rows of another unit's GRN of the same number.
+ *
+ * By the number and the unit, which is what a pharmacy GRN is known by, and
+ * not by the vendor code as well: a GRN whose PM Code a later purchase
+ * register corrects would otherwise keep the row stored under its old code
+ * for good -- never read for the GRN again (bpadRowIsGrns asks for the code),
+ * and still listed and counted on the BPAD view. Only where a row has no unit
+ * to be told by is the vendor code still asked for.
+ */
 async function clearBpadRecordsFor(client, rows) {
   const vendorCodeKeys = [];
   const grnNoKeys = [];
+  const unitKeys = [];
 
   for (const row of rows) {
     if (!row.vendorCodeKey || !row.grnNoKey) continue;
     vendorCodeKeys.push(row.vendorCodeKey);
     grnNoKeys.push(row.grnNoKey);
+    unitKeys.push(row.unitKey ?? '');
   }
 
   if (grnNoKeys.length === 0) return 0;
@@ -45,11 +102,72 @@ async function clearBpadRecordsFor(client, rows) {
     `DELETE FROM ph_bpad_records b
       USING (
         SELECT DISTINCT *
-        FROM unnest($1::text[], $2::text[]) AS t(vendor_code_key, grn_no_key)
+        FROM unnest($1::text[], $2::text[], $3::text[]) AS t(vendor_code_key, grn_no_key, unit_key)
       ) k
-      WHERE b.vendor_code_key = k.vendor_code_key
-        AND b.grn_no_key      = k.grn_no_key`,
-    [vendorCodeKeys, grnNoKeys],
+      WHERE b.grn_no_key = k.grn_no_key
+        AND b.unit_key   = k.unit_key
+        AND (k.unit_key <> '' OR b.vendor_code_key = k.vendor_code_key)`,
+    [vendorCodeKeys, grnNoKeys, unitKeys],
+  );
+
+  return rowCount;
+}
+
+/**
+ * Rejected handovers for GRNs this upload carries: archived, then taken off
+ * the pharmacies' CSD queue so the GRN reads as unsent again --
+ * reopenRejectedFor in ingest.js, which says why (a GRN CSD rejected that
+ * comes round again in a new report is a fresh bill), why only REJECTED, and
+ * why both files' rows count.
+ *
+ * A handover being its number and its unit, each report names one in its own
+ * words: the purchase register by the number and the Unit Name, the ageing
+ * report by the number and the DivisionCode -- held against the handover's own
+ * copy of the division it was matched under. So another unit's report carrying
+ * the same number reopens nothing of this unit's.
+ *
+ * One statement: the DELETE's own RETURNING feeds the INSERT, so a dispatch
+ * cannot be removed without its record being written.
+ *
+ * @returns {Promise<number>} how many handovers were reopened
+ */
+async function reopenRejectedFor(client, batchId, grnRows, ageingRows) {
+  const grns = grnRows.filter((r) => r.dprNoKey);
+  const ageing = ageingRows.filter((r) => r.grnNumberKey && r.divisionKey);
+  if (grns.length === 0 && ageing.length === 0) return 0;
+
+  const { rowCount } = await client.query(
+    `WITH superseded AS (
+       DELETE FROM ph_csd_dispatches c
+        WHERE c.stage = 'REJECTED'
+          AND (
+            EXISTS (
+              SELECT 1 FROM unnest($1::text[], $2::text[]) AS k(dpr_no_key, unit_key)
+               WHERE k.dpr_no_key = c.dpr_no_key AND k.unit_key = c.unit_key
+            )
+            OR EXISTS (
+              SELECT 1 FROM unnest($3::text[], $4::text[]) AS k(grn_number_key, division_key)
+               WHERE k.grn_number_key = c.dpr_no_key
+                 AND k.division_key = ${folded('c.division_code')}
+            )
+          )
+       RETURNING c.*
+     )
+     INSERT INTO ph_csd_rejection_history
+       (dpr_no_key, unit_key, dpr_no, division_code, location, bill_no, vendor_code,
+        vendor_name, cheque_no, payable_amount, reject_remarks, rejected_at,
+        rejected_by, sent_at, sent_by, superseded_by_batch_id)
+     SELECT dpr_no_key, unit_key, dpr_no, division_code, location, bill_no, vendor_code,
+            vendor_name, cheque_no, payable_amount, reject_remarks, rejected_at,
+            stage_by, sent_at, sent_by, $5
+       FROM superseded`,
+    [
+      grns.map((r) => r.dprNoKey),
+      grns.map((r) => r.unitKey ?? ''),
+      ageing.map((r) => r.grnNumberKey),
+      ageing.map((r) => r.divisionKey),
+      batchId,
+    ],
   );
 
   return rowCount;
@@ -70,7 +188,9 @@ async function lockUploadTables(client) {
 
 /**
  * Hand-typed cheque clearance dates on the ageing rows about to be replaced,
- * by GRN and cheque number, to be carried onto the rows that replace them.
+ * to be carried onto the rows that replace them -- by GRN number, division and
+ * cheque number, which is what a row is replaced by, so a date typed against
+ * one unit's cheque is never carried onto another's.
  *
  * Nothing on the pharmacy side writes one yet. The column is there because the
  * table is the hospitals' over again, and it is carried here so that whatever
@@ -79,7 +199,7 @@ async function lockUploadTables(client) {
 async function clearanceOverridesFor(client, keys) {
   if (keys.length === 0) return new Map();
   const { rows } = await client.query(
-    `SELECT grn_number_key, cheque_no, cheque_clearance_override
+    `SELECT grn_number_key, division_key, cheque_no, cheque_clearance_override
        FROM ph_vendor_ageing
       WHERE grn_number_key = ANY($1)
         AND cheque_clearance_override IS NOT NULL
@@ -87,15 +207,18 @@ async function clearanceOverridesFor(client, keys) {
       ORDER BY batch_id, id`,
     [keys],
   );
-  return new Map(rows.map((r) => [`${r.grn_number_key}|${r.cheque_no}`, r.cheque_clearance_override]));
+  return new Map(
+    rows.map((r) => [`${r.grn_number_key}|${r.division_key}|${r.cheque_no}`, r.cheque_clearance_override]),
+  );
 }
 
 /**
  * A text column folded the way normKey (services/normalize.js) folds a value:
  * capitals, and nothing but letters and digits. In SQL because the one place
- * it is used compares two columns inside a query -- see verdictsFor.
+ * it is used compares two columns inside a query -- see verdictsFor. Exported
+ * for routes/phResults.js, which ties a row to its branch by the same fold.
  */
-function folded(column) {
+export function folded(column) {
   return `regexp_replace(upper(COALESCE(${column}, '')), '[^A-Z0-9]', '', 'g')`;
 }
 
@@ -112,15 +235,20 @@ function folded(column) {
  *
  * Folded on both sides, so "pse" and "PSE " are one code and "SECUNDERABAD"
  * and "Secunderabad" one unit, as routes/phBatches.js compares the unit for
- * the BPAD status. A blank on the report's side matches nothing: a branch
- * whose code folded to nothing would otherwise claim every row without one.
+ * the BPAD status -- the rows' own folds being the keys stored beside them
+ * (division_key, unit_key). A blank on the report's side matches nothing: a
+ * branch whose code folded to nothing would otherwise claim every row without
+ * one.
+ *
+ * This is also what keeps two units' GRNs of one number apart: each is matched
+ * only to the ageing row filed under its own unit's division.
  */
 const SAME_BRANCH = `EXISTS (
   SELECT 1 FROM ph_branch_configs bc
-   WHERE ${folded('a.division_code')} <> ''
-     AND ${folded('g.location')} <> ''
-     AND ${folded('bc.branch_code')} = ${folded('a.division_code')}
-     AND ${folded('bc.location')} = ${folded('g.location')}
+   WHERE a.division_key <> ''
+     AND g.unit_key <> ''
+     AND ${folded('bc.branch_code')} = a.division_key
+     AND ${folded('bc.location')} = g.unit_key
 )`;
 
 /**
@@ -130,7 +258,9 @@ const SAME_BRANCH = `EXISTS (
  * the GRN's branch (SAME_BRANCH above). A GRN with no such row is PENDING.
  *
  * Of the rows that qualify, the one paired is the one that carries the payable
- * amount, and the first of them where more than one does or none does. For a
+ * amount -- a figure, and not nought: an export that writes 0 where this one
+ * leaves a blank means the same thing by it -- and the first of them where
+ * more than one does or none does. For a
  * GRN paid by several cheques that is the first row, as it is for the
  * hospitals: the later rows are the further cheques, and carry no amounts. It
  * differs for a bill accounts booked twice -- written off in full against a
@@ -140,23 +270,24 @@ const SAME_BRANCH = `EXISTS (
  * paid, and it is the one a result should point at.
  *
  * `where` selects the GRN rows, as SQL over `g`, with `params` for it. Returns
- * the verdict for each, with the result it has now, if any, and whether the
- * verdict would change it.
+ * the verdict for each, with the result it has now, if any, whether the
+ * verdict would change it, and which uploads the GRN row and the ageing row
+ * came in.
  */
 async function verdictsFor(client, where, params) {
   const { rows } = await client.query(
-    `SELECT g.id AS grn_id, g.bill_no_key, g.bill_no, g.vendor_name_key,
-            m.id AS ageing_id, m.bill_no_key AS ageing_bill_no_key,
+    `SELECT g.id AS grn_id, g.batch_id AS grn_batch_id, g.bill_no_key, g.bill_no, g.vendor_name_key,
+            m.id AS ageing_id, m.batch_id AS ageing_batch_id, m.bill_no_key AS ageing_bill_no_key,
             m.bill_no AS ageing_bill_no, m.vendor_name_key AS ageing_vendor_name_key,
             r.id AS result_id, r.matched_ageing_id, r.status AS current_status
        FROM ph_grn_transactions g
        LEFT JOIN LATERAL (
-         SELECT a.id, a.bill_no_key, a.bill_no, a.vendor_name_key
+         SELECT a.id, a.batch_id, a.bill_no_key, a.bill_no, a.vendor_name_key
            FROM ph_vendor_ageing a
           WHERE a.grn_number_key = g.dpr_no_key
             AND g.dpr_no_key <> ''
             AND ${SAME_BRANCH}
-          ORDER BY a.batch_id DESC, (a.payable_amount IS NULL), a.source_row_no NULLS LAST, a.id
+          ORDER BY a.batch_id DESC, (COALESCE(a.payable_amount, 0) = 0), a.source_row_no NULLS LAST, a.id
           LIMIT 1
        ) m ON TRUE
        LEFT JOIN ph_reconciliation_results r ON r.grn_transaction_id = g.id
@@ -178,7 +309,9 @@ async function verdictsFor(client, where, params) {
     );
     return {
       grnId: row.grn_id,
+      grnBatchId: row.grn_batch_id,
       ageingId: row.ageing_id ?? null,
+      ageingBatchId: row.ageing_batch_id ?? null,
       resultId: row.result_id ?? null,
       changed:
         row.result_id == null ||
@@ -190,11 +323,18 @@ async function verdictsFor(client, where, params) {
 }
 
 /**
- * One result per GRN this upload touched, rebuilt from what is stored now: a
- * GRN row this upload stored, or a GRN already on file whose ageing rows this
- * upload replaced. Read back out of the tables rather than taken from the
- * parsed files, so the answer is the same whichever order the two reports
- * arrived in.
+ * The verdict of every GRN this upload could have touched, read back out of
+ * the tables rather than taken from the parsed files -- so the answer is the
+ * same whichever order the two reports arrived in -- with the result written
+ * for each one that has none or whose result the upload changed.
+ *
+ * "Could have": every GRN row this upload stored, and every GRN already on
+ * file under a number its ageing rows carry. The second is a wider net than
+ * the upload's own GRNs, on purpose -- it is what finds the GRN whose ageing
+ * rows were just replaced -- and it also brings in the other units' GRNs of
+ * those numbers, which this upload has nothing to do with. Those come back
+ * with `changed` false and are left exactly as they are; see touchedBy for
+ * which of the verdicts an upload may call its own.
  */
 async function linkResults(client, batchId, ageingKeys) {
   const verdicts = await verdictsFor(
@@ -202,15 +342,147 @@ async function linkResults(client, batchId, ageingKeys) {
     'g.batch_id = $1 OR g.dpr_no_key = ANY($2)',
     [batchId, ageingKeys],
   );
-  if (verdicts.length === 0) return verdicts;
 
-  await client.query('DELETE FROM ph_reconciliation_results WHERE grn_transaction_id = ANY($1)', [
-    verdicts.map((v) => v.grnId),
-  ]);
-  await bulkInsert(client, 'ph_reconciliation_results', RESULT_COLUMNS, verdicts, (v) => [
-    batchId, v.grnId, v.ageingId, v.status, v.billNoMatch, v.vendorNameMatch, v.discrepancyNotes,
-  ]);
+  const stale = verdicts.filter((v) => v.changed);
+  if (stale.length > 0) {
+    await client.query('DELETE FROM ph_reconciliation_results WHERE grn_transaction_id = ANY($1)', [
+      stale.map((v) => v.grnId),
+    ]);
+    await bulkInsert(client, 'ph_reconciliation_results', RESULT_COLUMNS, stale, (v) => [
+      batchId, v.grnId, v.ageingId, v.status, v.billNoMatch, v.vendorNameMatch, v.discrepancyNotes,
+    ]);
+  }
   return verdicts;
+}
+
+/**
+ * Of linkResults' verdicts, the GRNs upload `batchId` touched -- the ones its
+ * answer counts:
+ *
+ *   - a GRN row it stored;
+ *   - a GRN on file now matched to an ageing row it stored;
+ *   - a GRN on file whose result it changed -- one whose ageing row it
+ *     replaced with nothing, say;
+ *   - a GRN on file left pending with one of its ageing rows waiting on a
+ *     branch (`waiting`, the ids unpairedFor found) -- the upload did reach
+ *     it, and the answer goes on to say what is in the way.
+ *
+ * Not another unit's GRN that merely shares a number with one of its rows.
+ */
+function touchedBy(verdicts, batchId, waiting) {
+  return verdicts.filter(
+    (v) =>
+      v.grnBatchId === batchId ||
+      v.ageingBatchId === batchId ||
+      v.changed ||
+      waiting.has(v.grnId),
+  );
+}
+
+/**
+ * Of the GRNs `grnIds` -- ones just left PENDING -- those that may well have an
+ * ageing row, and be pending only because no configured branch pairs that
+ * row's DivisionCode with the GRN's Unit Name.
+ *
+ * "Pending" says a bill has not reached accounts. These probably have: the
+ * ageing report carries a row under their number that belongs to no GRN at
+ * all, and what is missing is a line on Ph-Configuration -- no branch for the
+ * unit, a mistyped unit name, or two branches entered with their codes
+ * crossed. Counting the units and the codes separately cannot tell those
+ * apart, since each can be configured and the pair still not be; this reads
+ * the pair itself, so the answer can name it.
+ *
+ * Sharing the number is not enough to say so, now that two units may each have
+ * a GRN of that number. So a row counts only when it is nobody's:
+ *
+ *   - no GRN on file is paired with it by a branch. A row another unit's GRN
+ *     has rightly claimed is that GRN's, and says nothing about this one.
+ *   - it names a division, and the GRN a unit. A blank on either side is not
+ *     something a branch could pair, so it is not a branch that is missing.
+ *   - it does not carry the bill number of another GRN of that number, unless
+ *     it carries this one's too. The bill is what tells two units' GRNs of one
+ *     number apart while no branch does.
+ *   - where its division is already some branch's code AND the GRN's unit is
+ *     already some branch's unit, it carries the GRN's own bill number. Both
+ *     being configured, and not with each other, the configuration has said
+ *     the row is another unit's -- whose own GRN of that number may simply not
+ *     be uploaded yet. Only the bill can say otherwise, and it does where two
+ *     branches were entered with their codes crossed.
+ *
+ * And where several such rows share the GRN's number, the ones that also carry
+ * its bill number are taken to be its own, and the rest left out: two units
+ * with no branch between them would otherwise each be offered the other's row.
+ *
+ * @returns {Promise<{grnCount: number, pairs: Array<{divisionCode, unitName, grns}>, grnIds: Set<number>}>}
+ *   the pairs largest first, and which GRNs they are
+ */
+async function unpairedFor(client, grnIds) {
+  if (grnIds.length === 0) return { grnCount: 0, pairs: [], grnIds: new Set() };
+  const { rows } = await client.query(
+    `SELECT g.id, a.division_key, g.unit_key,
+            MIN(a.division_code) AS division_code, MIN(g.location) AS unit_name,
+            bool_or(g.bill_no_key <> '' AND a.bill_no_key = g.bill_no_key) AS same_bill
+       FROM ph_grn_transactions g
+       JOIN ph_vendor_ageing a ON a.grn_number_key = g.dpr_no_key
+      WHERE g.id = ANY($1)
+        AND g.dpr_no_key <> ''
+        AND g.unit_key <> ''
+        AND a.division_key <> ''
+        AND NOT EXISTS (
+          SELECT 1
+            FROM ph_grn_transactions o
+            JOIN ph_branch_configs bc ON ${folded('bc.location')} = o.unit_key
+           WHERE o.dpr_no_key = a.grn_number_key
+             AND o.unit_key <> ''
+             AND ${folded('bc.branch_code')} = a.division_key
+        )
+        AND (
+          (g.bill_no_key <> '' AND a.bill_no_key = g.bill_no_key)
+          OR NOT EXISTS (
+            SELECT 1
+              FROM ph_grn_transactions o
+             WHERE o.dpr_no_key = g.dpr_no_key
+               AND o.id <> g.id
+               AND o.bill_no_key <> ''
+               AND o.bill_no_key = a.bill_no_key
+          )
+        )
+        AND (
+          (g.bill_no_key <> '' AND a.bill_no_key = g.bill_no_key)
+          OR NOT EXISTS (
+            SELECT 1 FROM ph_branch_configs bd WHERE ${folded('bd.branch_code')} = a.division_key
+          )
+          OR NOT EXISTS (
+            SELECT 1 FROM ph_branch_configs bu WHERE ${folded('bu.location')} = g.unit_key
+          )
+        )
+      GROUP BY g.id, a.division_key, g.unit_key
+      ORDER BY g.id, a.division_key`,
+    [grnIds],
+  );
+
+  const byGrn = new Map();
+  for (const row of rows) {
+    const mine = byGrn.get(row.id);
+    if (mine) mine.push(row);
+    else byGrn.set(row.id, [row]);
+  }
+
+  const pairs = new Map();
+  for (const candidates of byGrn.values()) {
+    const sameBill = candidates.filter((row) => row.same_bill);
+    for (const row of sameBill.length > 0 ? sameBill : candidates) {
+      const key = `${row.division_key}|${row.unit_key}`;
+      const pair = pairs.get(key) ?? { divisionCode: row.division_code, unitName: row.unit_name, grns: 0 };
+      pair.grns += 1;
+      pairs.set(key, pair);
+    }
+  }
+  return {
+    grnCount: byGrn.size,
+    pairs: [...pairs.values()].sort((a, b) => b.grns - a.grns),
+    grnIds: new Set(byGrn.keys()),
+  };
 }
 
 /**
@@ -302,6 +574,7 @@ const GRN_COLUMNS = [
   'batch_id', 'source_row_no', 'dpr_no', 'dpr_no_key', 'dpr_date', 'bill_date', 'bill_no',
   'bill_no_key', 'vendor_code', 'vendor_name', 'vendor_name_key', 'total_amount', 'location',
   'purchase_type', 'focus_code', 'gstin', 'tot_taxable', 'cgst', 'sgst', 'igst', 'tcs_amt',
+  'unit_key',
 ];
 
 const AGEING_COLUMNS = [
@@ -314,6 +587,7 @@ const AGEING_COLUMNS = [
   'payment_doc_no', 'cheque_no', 'balance',
   'cheque_clearance_override',
   'payment_amt', 'advance_payment_amt',
+  'division_key',
 ];
 
 const BANK_COLUMNS = [
@@ -328,7 +602,7 @@ const BPAD_COLUMNS = [
   'po_number', 'po_date', 'pending_with_dept',
   'bpad_received_date', 'accounts_received_date',
   'pending_with_user', 'pend_reason',
-  'in_register',
+  'in_register', 'unit_key',
 ];
 
 const RESULT_COLUMNS = [
@@ -347,7 +621,10 @@ const RESULT_COLUMNS = [
  * stored rows the upload replaced per file, and `linked`: how many GRNs it
  * touched came out at each verdict, counted from the results as stored -- so
  * it covers a GRN uploaded earlier that this upload's ageing report has only
- * now found, which a count taken from the files alone would miss.
+ * now found, which a count taken from the files alone would miss. `unpaired`
+ * says how many of the pending ones are pending for want of a branch -- see
+ * unpairedFor -- and `reopenedRejections` how many GRNs it took back off the
+ * CSD queue by carrying a bill CSD had rejected.
  */
 export async function storePhBatch(
   client,
@@ -383,26 +660,56 @@ export async function storePhBatch(
 
   await lockUploadTables(client);
 
-  // GRN rows: whatever is stored for these GRN numbers goes -- taking its
-  // result with it (ON DELETE CASCADE) -- and this report's rows go in.
-  const grnToStore = lastRowPerGrn(grnRows);
-  const grnKeys = [...new Set(grnToStore.map((r) => r.dprNoKey).filter(Boolean))];
-  const { rowCount: replacedGrnRows } = grnKeys.length > 0
-    ? await client.query('DELETE FROM ph_grn_transactions WHERE dpr_no_key = ANY($1)', [grnKeys])
+  // GRN rows: whatever is stored for these GRNs goes -- taking its result with
+  // it (ON DELETE CASCADE) -- and this report's rows go in. A GRN being its
+  // number and its unit, another unit's GRN of the same number stays where it
+  // is.
+  const grnToStore = lastRowPerUnitGrn(grnRows);
+  const keyedGrns = grnToStore.filter((r) => r.dprNoKey);
+  const { rowCount: replacedGrnRows } = keyedGrns.length > 0
+    ? await client.query(
+        `DELETE FROM ph_grn_transactions g
+          USING (
+            SELECT DISTINCT *
+            FROM unnest($1::text[], $2::text[]) AS t(dpr_no_key, unit_key)
+          ) k
+          WHERE g.dpr_no_key = k.dpr_no_key
+            AND g.unit_key   = k.unit_key`,
+        [keyedGrns.map((r) => r.dprNoKey), keyedGrns.map((r) => r.unitKey ?? '')],
+      )
     : { rowCount: 0 };
 
   await bulkInsert(client, 'ph_grn_transactions', GRN_COLUMNS, grnToStore, (r) => [
     batchId, r.sourceRowNo, r.dprNo, r.dprNoKey, r.dprDate, r.billDate, r.billNo,
     r.billNoKey, r.vendorCode, r.vendorName, r.vendorNameKey, r.totalAmount, r.location,
     r.purchaseType, r.focusCode, r.gstin, r.totTaxable, r.cgst, r.sgst, r.igst, r.tcsAmt,
+    r.unitKey ?? '',
   ]);
 
   // Ageing rows: the same, a whole GRN at a time -- its rows in the report are
   // its current payment picture, and all of the older ones go.
-  const ageingKeys = [...new Set(ageingRows.map((r) => r.grnNumberKey).filter(Boolean))];
+  //
+  // "A GRN" here is the number AND the division it is filed under, where the
+  // hospital upload replaces by the number alone. A row is matched by both
+  // (SAME_BRANCH), so it has to be replaced by both: if another division's
+  // report carried the same number, replacing by number would delete this
+  // division's rows and leave its GRN pending, with nothing wrong with either
+  // report. Rows whose GRN number folds to nothing are never matched and never
+  // replaced.
+  const keyedAgeing = ageingRows.filter((r) => r.grnNumberKey);
+  const ageingKeys = [...new Set(keyedAgeing.map((r) => r.grnNumberKey))];
   const overrides = await clearanceOverridesFor(client, ageingKeys);
-  const { rowCount: replacedAgeingRows } = ageingKeys.length > 0
-    ? await client.query('DELETE FROM ph_vendor_ageing WHERE grn_number_key = ANY($1)', [ageingKeys])
+  const { rowCount: replacedAgeingRows } = keyedAgeing.length > 0
+    ? await client.query(
+        `DELETE FROM ph_vendor_ageing a
+          USING (
+            SELECT DISTINCT *
+            FROM unnest($1::text[], $2::text[]) AS t(grn_number_key, division_key)
+          ) k
+          WHERE a.grn_number_key = k.grn_number_key
+            AND a.division_key   = k.division_key`,
+        [keyedAgeing.map((r) => r.grnNumberKey), keyedAgeing.map((r) => r.divisionKey ?? '')],
+      )
     : { rowCount: 0 };
 
   await bulkInsert(client, 'ph_vendor_ageing', AGEING_COLUMNS, ageingRows, (r) => [
@@ -413,14 +720,22 @@ export async function storePhBatch(
     r.indentDate, r.poDate, r.securityDate, r.grnDate, r.billToAudit,
     r.billHandOverToAcc, r.chqDate, r.chequeClearanceDate,
     r.paymentDocNo, r.chequeNo, r.balance,
-    (r.grnNumberKey && r.chequeNo && overrides.get(`${r.grnNumberKey}|${r.chequeNo}`)) || null,
+    (r.grnNumberKey && r.chequeNo &&
+      overrides.get(`${r.grnNumberKey}|${r.divisionKey ?? ''}|${r.chequeNo}`)) || null,
     r.paymentAmt, r.advancePaymentAmt,
+    r.divisionKey ?? '',
   ]);
 
   // Then one result for every GRN either report touched.
   const verdicts = await linkResults(client, batchId, ageingKeys);
+  // Of the ones left pending, which have an ageing row that only the
+  // configuration is keeping them from.
+  const { grnIds: waiting, ...unpaired } = await unpairedFor(
+    client,
+    verdicts.filter((v) => v.ageingId == null).map((v) => v.grnId),
+  );
   const linked = { MATCHED: 0, MATCHED_WITH_DIFF: 0, PENDING: 0 };
-  for (const v of verdicts) linked[v.status] += 1;
+  for (const v of touchedBy(verdicts, batchId, waiting)) linked[v.status] += 1;
 
   // The statement, stored as it was read. In first, so the earlier copies of
   // its transactions can be found by joining to it.
@@ -446,13 +761,21 @@ export async function storePhBatch(
       r.poNumber, r.poDate, r.pendingWithDept,
       r.bpadReceivedDate, r.accountsReceivedDate,
       r.pendingWithUser, r.pendReason,
-      r.inRegister ?? true,
+      r.inRegister ?? true, r.unitKey ?? '',
     ]);
   }
+
+  // Last, once both files' rows are in: any GRN this upload carries that CSD
+  // had rejected comes back off the queue and reads as unsent again. After the
+  // inserts rather than before, so that if anything above fails the
+  // transaction rolls back with the rejections untouched.
+  const reopenedRejections = await reopenRejectedFor(client, batchId, grnToStore, ageingRows);
 
   return {
     batchId,
     linked,
+    unpaired,
+    reopenedRejections,
     replaced: {
       grnRows: replacedGrnRows,
       ageingRows: replacedAgeingRows,

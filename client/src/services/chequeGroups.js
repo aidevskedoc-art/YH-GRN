@@ -33,12 +33,19 @@ export async function resultsChequeBills(batchId, row, eligible) {
   return group.some((r) => r.dprNo === row.dprNo) ? group : [row, ...group];
 }
 
-/** Every CSD handover paid by `row`'s cheque that `eligible` accepts. */
-export async function csdChequeHandovers(row, eligible) {
+/**
+ * Every CSD handover paid by `row`'s cheque that `eligible` accepts.
+ *
+ * `list` is the queue the row is from, asked for one cheque's handovers: the
+ * hospitals' by default, and the CS Department screen passes its own when it
+ * is showing the pharmacies' (see SOURCES in Csd.jsx, which also narrows the
+ * cheque to the row's unit there).
+ */
+export async function csdChequeHandovers(row, eligible, list = api.listCsd) {
   if (!row.chequeNo) return [row];
   const found = [];
   for (let page = 1; page <= GROUP_MAX_PAGES; page += 1) {
-    const res = await api.listCsd({ chequeNo: row.chequeNo, page, pageSize: GROUP_PAGE_SIZE });
+    const res = await list({ chequeNo: row.chequeNo, page, pageSize: GROUP_PAGE_SIZE });
     found.push(...res.rows);
     if (page >= res.totalPages) break;
   }

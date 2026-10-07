@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { formatAmount, formatAmountOrDash, formatDate } from './ResultsTable.jsx';
@@ -47,8 +47,33 @@ function Days({ value }) {
   return <span className={value < 0 ? 'table__neg' : undefined}>{value}</span>;
 }
 
-export default function TurnaroundView({ batchId, q, location, msme, spans = [], onSpansChange }) {
-  const { isAdmin } = useAuth();
+/**
+ * `load` and `updateDates` are where the rows come from and where a corrected
+ * CSD date goes: the hospitals' by default. Pharmacy Results passes its own
+ * `load` -- the same answer over the pharmacy tables -- and `updateDates` null,
+ * there being no pharmacy route that corrects a date: the table is then read
+ * only, as it is for anyone who is not an administrator.
+ *
+ * `sourceDated` is whether the ageing report behind the rows carries the stage
+ * dates. The hospitals' does, so rows with no stage measured at all are an
+ * upload made before those dates were captured, and the view says so. The
+ * pharmacy Vendor Age report never has them -- nothing is measured there until
+ * a GRN has gone to CSD -- so Pharmacy Results passes false and the table is
+ * drawn with those stages blank.
+ */
+export default function TurnaroundView({
+  batchId,
+  q,
+  location,
+  msme,
+  spans = [],
+  onSpansChange,
+  load: loadRows,
+  updateDates = api.updateCsdDates,
+  sourceDated = true,
+}) {
+  const { isAdmin: administrator } = useAuth();
+  const isAdmin = administrator && Boolean(updateDates);
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = usePageSize();
@@ -81,15 +106,22 @@ export default function TurnaroundView({ batchId, q, location, msme, spans = [],
     setDraft({});
   }, [batchId, q, location, msme, page]);
 
+  // Only the latest request may answer. Changing the scope from a later page
+  // asks twice -- for that page of the new scope, then for its first -- and
+  // the first of the two to be asked must not be the one that is kept.
+  const request = useRef(0);
+
   const load = useCallback(() => {
     if (!batchId) return;
+    const mine = ++request.current;
+    const latest = () => mine === request.current;
     setLoading(true);
-    api
-      .turnaround(batchId, { page, pageSize, q, location, msme })
-      .then(setData)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [batchId, page, pageSize, q, location, msme]);
+    const filters = { page, pageSize, q, location, msme };
+    (loadRows ? loadRows(filters) : api.turnaround(batchId, filters))
+      .then((answer) => latest() && setData(answer))
+      .catch((err) => latest() && setError(err.message))
+      .finally(() => latest() && setLoading(false));
+  }, [batchId, page, pageSize, q, location, msme, loadRows]);
 
   useEffect(load, [load]);
 
@@ -142,7 +174,7 @@ export default function TurnaroundView({ batchId, q, location, msme, spans = [],
     setSaving(true);
     setError('');
     try {
-      await api.updateCsdDates(row.csdId, draft);
+      await updateDates(row.csdId, draft);
       setEditingRow(null);
       setDraft({});
       load();
@@ -201,7 +233,8 @@ export default function TurnaroundView({ batchId, q, location, msme, spans = [],
   // An upload made before the stage dates were captured has rows but no dates.
   // Guarded on isEmpty: with nothing in scope every stage is empty too, and
   // that is a search with no matches rather than an upload with no dates.
-  if (!isEmpty && overall.n === 0 && stages.every((s) => s.n === 0)) {
+  // Only where the source carries those dates at all -- see sourceDated.
+  if (sourceDated && !isEmpty && overall.n === 0 && stages.every((s) => s.n === 0)) {
     return (
       <div className="alert alert--info">
         <strong>This upload predates the turnaround report.</strong> The stage dates are read at
@@ -338,7 +371,9 @@ export default function TurnaroundView({ batchId, q, location, msme, spans = [],
             {rows.map((row) => {
               const isEditing = row.csdId != null && editingRow === row.csdId;
               return (
-              <tr key={row.dprNo} className={isEditing ? 'is-editing' : undefined}>
+              // `rowKey` where the rows carry one: a pharmacy GRN number is not
+              // unique on its own. The hospitals' rows do not, and key by it.
+              <tr key={row.rowKey ?? row.dprNo} className={isEditing ? 'is-editing' : undefined}>
                 <td className="table__pin table__pin--division">
                   {row.divisionCode || <span className="table__miss">&mdash;</span>}
                 </td>

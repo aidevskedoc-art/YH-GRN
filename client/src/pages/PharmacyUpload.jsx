@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { useAuth } from '../context/AuthContext.jsx';
 import FileDrop, { readableSize } from '../components/FileDrop.jsx';
 import { IconAlert, IconArrowRight, IconCheck } from '../components/icons.jsx';
+import { OP_PHARMACY_LABELS, opPharmacyPath } from '../services/screens.js';
 
 /** "GRN report" for one file, "3 GRN reports" for several. */
 function several(files, noun) {
@@ -16,11 +19,12 @@ function count(n) {
 /**
  * What an upload stored, a sentence per file it brought.
  *
- * The hospital upload goes straight to its results screen, which is where its
- * outcome is read. Pharmacy Results is not built yet, so this is the only
- * place the outcome of a pharmacy upload can be shown -- and "it went through"
- * is not enough of one: the figures are what say the right files went into the
- * right boxes.
+ * The hospital upload goes straight to its results screen. This one stays put
+ * and says what it stored first, with the way on to Pharmacy Results beside
+ * it: an upload here can leave GRNs unmatched for want of a branch on
+ * Ph-Configuration, and the results screen would show those as plain pending
+ * with nothing to say why. The figures are also what say the right files went
+ * into the right boxes.
  */
 function storedLines(done) {
   const lines = [];
@@ -31,20 +35,32 @@ function storedLines(done) {
   if (done.ageingRowCount > 0) lines.push(`Vendor Age report: ${count(done.ageingRowCount)} rows.`);
   // Either report can touch a GRN -- an ageing report on its own reconciles
   // the GRNs already on file -- so this is not tied to the GRN report's line.
+  // Worded as what was found in the report, not as "in accounts": a GRN the
+  // report lists is in Accounts only while the BPAD bill status has its bill
+  // at Accounts' desk -- BPAD is matched first (see BEFORE_ACCOUNTS in
+  // server/src/routes/phResults.js) -- and where each GRN stands is Pharmacy
+  // Results' to say.
   if (touched > 0) {
     lines.push(
-      `${count(touched)} GRNs reconciled: ${count(linked.MATCHED)} in accounts, ` +
-        `${count(linked.MATCHED_WITH_DIFF)} in accounts under a different bill number, ` +
-        `${count(linked.PENDING)} pending.`,
+      `${count(touched)} GRNs compared with the Vendor Age report: ${count(linked.MATCHED)} found, ` +
+        `${count(linked.MATCHED_WITH_DIFF)} found under a different bill number, ` +
+        `${count(linked.PENDING)} not found.`,
     );
   } else if (done.ageingRowCount > 0) {
-    lines.push('No GRN Purchase report is on file yet, so nothing was reconciled.');
+    // Not "no GRN report is on file": there may be one, about other GRNs.
+    lines.push('None of the GRNs this report names is on file yet, so nothing was reconciled.');
   }
   if (done.bpadRowCount > 0) {
-    const missing = done.bpadStoredCount - done.bpadMatchedCount;
+    // Both figures as the server counted them -- the kept rows once per GRN
+    // however many files named it. Subtracting stored from matched here is
+    // only right for a single file.
+    const noEntry = done.bpadNoEntryCount ?? 0;
     lines.push(
-      `BPAD bill status: ${count(done.bpadMatchedCount)} of ${count(done.bpadRowCount)} rows matched a GRN` +
-        (missing > 0 ? `; ${count(missing)} GRNs have no entry in it.` : '.') +
+      `BPAD bill status: ${count(done.bpadRowCount)} rows read, ${count(done.bpadMatchedCount)} matched to a GRN` +
+        (noEntry > 0
+          ? `; ${count(noEntry)} GRNs have no entry in it, and are pending at the GRN store until it has them.`
+          : '.') +
+        ' Only the bills it has at Accounts are compared with the Vendor Age report for the Accounts section.' +
         (done.bpadOtherBranchCount > 0
           ? ` ${count(done.bpadOtherBranchCount)} rows named another branch's Location and were left out.`
           : ''),
@@ -52,13 +68,42 @@ function storedLines(done) {
   }
   // What Ph-Configuration could not place. A GRN is matched to the other two
   // reports only through a configured branch, so each of these is something
-  // stored that will read as unmatched until the branch is added -- worth
+  // stored that will read as unmatched until the branch is put right -- worth
   // saying beside the figures, or "pending" would be taken at its word.
+  //
+  // First the GRNs that look to have a Vendor Age row and be pending only for
+  // want of a branch pairing the row's DivisionCode with their Unit Name. The
+  // server reads this off what is stored, so it covers a GRN uploaded earlier
+  // and a pair of branches entered with their codes crossed, which the two
+  // counts after it cannot see.
+  //
+  // "Look to", and worded as a question: a GRN number is shared between units,
+  // so a row under the number is this GRN's only if that division IS this
+  // unit. The server leaves out the rows another unit's GRN is matched to, and
+  // what is left is for whoever knows the branches to say.
+  const unpaired = done.unpaired ?? { grnCount: 0, pairs: [] };
+  if (unpaired.grnCount > 0) {
+    const pairs = unpaired.pairs
+      .slice(0, 3)
+      .map((p) => `DivisionCode ${p.divisionCode || '(blank)'} with Unit Name ${p.unitName || '(blank)'}`)
+      .join('; ');
+    lines.push(
+      `${count(unpaired.grnCount)} of the pending GRNs have a Vendor Age row under their GRN number that no ` +
+        `branch on Ph-Configuration pairs with their unit: ${pairs}. If that division is that unit, add or ` +
+        'correct the branch and they are matched at once.',
+    );
+  }
+  // Said beside the line above, not instead of it: the two are different GRNs
+  // as often as not -- a unit with no branch has its GRNs here whether or not
+  // the Vendor Age report carries them.
   if (done.grnUnconfiguredCount > 0) {
-    const units = (done.grnUnconfiguredUnits ?? []).map((u) => u || '(blank)').join(', ');
+    const names = done.grnUnconfiguredUnits ?? [];
+    const units = names.map((u) => u || '(blank)').join(', ');
     lines.push(
       `${count(done.grnUnconfiguredCount)} GRNs have a Unit Name (${units}) with no branch on Ph-Configuration, ` +
-        'so they stay pending until one is added.',
+        'so they stay pending until one is added.' +
+        // A branch cannot be given a blank unit, so that promise is not theirs.
+        (names.some((u) => !u) ? ' The ones with no Unit Name at all have no branch to be given, and stay pending.' : ''),
     );
   }
   if (done.ageingUnconfiguredRowCount > 0) {
@@ -78,10 +123,55 @@ function storedLines(done) {
         'has no branch with a Location (BPAD) on Ph-Configuration.',
     );
   }
-  if (done.bankRowCount > 0) {
+  // GRNs of units the BPAD file does not cover at all -- it carries no row
+  // under their Location. Left exactly as they were, which is worth saying:
+  // "no entry" is an answer, and this is the absence of one.
+  if (done.bpadNotCoveredGrnCount > 0) {
+    const units = (done.bpadNotCoveredUnits ?? []).map((u) => u || '(blank)').join(', ');
     lines.push(
-      `Bank statement: ${count(done.bankRowCount)} transactions` +
-        (done.bankAccountNo ? `, account ${done.bankAccountNo}.` : '.'),
+      `The BPAD file has no row under the Location of ${units}, so its ${count(done.bpadNotCoveredGrnCount)} GRNs ` +
+        'were left as they were.',
+    );
+  }
+  // GRNs from earlier uploads that this BPAD file does not list. It came with
+  // a GRN Purchase report, so it says "no entry" for that report's GRNs only:
+  // a file for one period is silent about another's bills, not denying them.
+  if (done.bpadUnlistedGrnCount > 0) {
+    lines.push(
+      `${count(done.bpadUnlistedGrnCount)} GRNs from earlier uploads are not in this BPAD file, and were left as ` +
+        'they were. To bring them up to date, upload the BPAD bill status that lists them — on its own, or with ' +
+        'their GRN Purchase report.',
+    );
+  }
+  // The others it does not list, whose unit had no BPAD status on file until
+  // this upload: nothing was stored for them either, but BPAD is matched first
+  // for their unit from now on -- so they are held at the GRN store, and "left
+  // as they were" would not be true of them.
+  if (done.bpadUnlistedNewlyHeldGrnCount > 0) {
+    lines.push(
+      `${count(done.bpadUnlistedNewlyHeldGrnCount)} GRNs from earlier uploads are not in this BPAD file, and it is ` +
+        'the first BPAD bill status stored for their unit: with no BPAD entry on file they now read as pending at ' +
+        'the GRN store, whatever the Vendor Age report says of them. To place them, upload the BPAD bill status ' +
+        'that lists them — on its own, or with their GRN Purchase report.',
+    );
+  }
+  // GRNs CSD had rejected that this upload carries again: taken back off the
+  // CSD queue, as on the hospital side, so they can be sent round afresh.
+  if (done.reopenedRejections > 0) {
+    const n = done.reopenedRejections;
+    lines.push(
+      `${count(n)} GRN${n === 1 ? '' : 's'} CSD had rejected ${n === 1 ? 'is' : 'are'} in this upload again, and ` +
+        `${n === 1 ? 'has' : 'have'} come back off the CSD queue to be sent afresh.`,
+    );
+  }
+  if (done.bankRowCount > 0) {
+    // Every statement's account, not the first one's beside the total of all.
+    const accounts = [...new Set((done.bankAccountNos ?? [done.bankAccountNo]).filter(Boolean))];
+    const statements = done.bankStatementCount ?? 1;
+    lines.push(
+      `${statements > 1 ? `${count(statements)} bank statements` : 'Bank statement'}: ` +
+        `${count(done.bankRowCount)} transactions` +
+        (accounts.length > 0 ? `, account${accounts.length > 1 ? 's' : ''} ${accounts.join(', ')}.` : '.'),
     );
   }
   return lines;
@@ -100,6 +190,9 @@ function storedLines(done) {
  * upload.
  */
 export default function PharmacyUpload() {
+  const navigate = useNavigate();
+  const { can } = useAuth();
+
   // All optional, and every one works uploaded on its own -- see Upload.jsx.
   // Each slot is a list: several months' reports go up in one upload.
   const [grnFiles, setGrnFiles] = useState([]);
@@ -218,7 +311,7 @@ export default function PharmacyUpload() {
           <FileDrop
             step={4}
             label="Pharmacy BPAD Bill Status — optional"
-            hint="Matched to the GRN Purchase report by vendor code, GRN number, and the branch's unit and location on Ph-Configuration."
+            hint="Matched to the GRN Purchase report by vendor code and GRN number, under the Location of the GRN's own unit on Ph-Configuration."
             example="02. BPAd current bill status.xls"
             multiple
             maxBytes={limits?.maxFileBytes}
@@ -265,7 +358,12 @@ export default function PharmacyUpload() {
           <div className="alert alert--info alert--icon" role="status">
             <IconCheck size={16} />
             <span>
-              <strong>Stored.</strong> {storedLines(done).join(' ')}
+              <strong>Stored.</strong> {storedLines(done).join(' ')}{' '}
+              {can('results') && (
+                <button type="button" className="ghost ghost--sm" onClick={() => navigate(opPharmacyPath('results'))}>
+                  Open {OP_PHARMACY_LABELS.results} <IconArrowRight size={13} />
+                </button>
+              )}
             </span>
           </div>
         )}

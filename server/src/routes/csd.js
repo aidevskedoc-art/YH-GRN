@@ -33,7 +33,14 @@ csdRouter.use(requireAuth);
 const CSD_QUEUE = requireScreen('csd');
 const CSD_HANDOVER = requireScreen('csd', 'results', 'accounts-department');
 
-const MAX_PAGE_SIZE = 200;
+/*
+ * Exported, here and below: the rules of a handover that hold whichever table
+ * it is stored in -- the stages and the ladder between them, which of them can
+ * still be taken back, what a rejection must carry, and how a posted row is
+ * read. routes/phCsd.js is this router for the pharmacies' own queue, and
+ * imports them so that the two cannot come to disagree about the rule.
+ */
+export const MAX_PAGE_SIZE = 200;
 
 /**
  * How far a handover has got at CSD's end.
@@ -46,8 +53,8 @@ const MAX_PAGE_SIZE = 200;
  * Distinct from a dispatch's `status`, which is the reconciliation's verdict on
  * the GRN and does not change once it has been sent.
  */
-const STAGES = ['QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED', 'MOVED_TO_ACCOUNTS'];
-const STAGE_SET = new Set(STAGES);
+export const STAGES = ['QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED', 'MOVED_TO_ACCOUNTS'];
+export const STAGE_SET = new Set(STAGES);
 
 /**
  * Where a handover may go next, and nowhere else. A one-way ladder: nothing
@@ -67,7 +74,7 @@ const STAGE_SET = new Set(STAGES);
  * Enforced here rather than only in the dropdown that offers it: the dropdown is
  * a convenience, this is the rule.
  */
-const NEXT_STAGES = {
+export const NEXT_STAGES = {
   QUEUED: ['RECEIVED'],
   RECEIVED: ['APPROVED', 'REJECTED'],
   APPROVED: ['MOVED_TO_ACCOUNTS'],
@@ -76,7 +83,7 @@ const NEXT_STAGES = {
 };
 
 /** Stage names as the message writes them: APPROVED -> "approved". */
-const spellStage = (stage) => (stage === 'MOVED_TO_ACCOUNTS' ? 'moved to accounts' : String(stage).toLowerCase());
+export const spellStage = (stage) => (stage === 'MOVED_TO_ACCOUNTS' ? 'moved to accounts' : String(stage).toLowerCase());
 
 /**
  * The column that records when a row reached each stage, alongside the general
@@ -86,7 +93,7 @@ const spellStage = (stage) => (stage === 'MOVED_TO_ACCOUNTS' ? 'moved to account
  * measures sent-to-received and received-to-approved separately, and a single
  * stamp would have been overwritten by the second move.
  */
-const STAGE_STAMPS = {
+export const STAGE_STAMPS = {
   RECEIVED: 'received_at',
   APPROVED: 'approved_at',
   REJECTED: 'rejected_at',
@@ -301,27 +308,27 @@ function mapDispatch(r) {
 }
 
 /** The stored statuses a dispatch may carry, mirroring reconciliation_results. */
-const DISPATCHABLE = new Set(['MATCHED', 'MATCHED_WITH_DIFF']);
+export const DISPATCHABLE = new Set(['MATCHED', 'MATCHED_WITH_DIFF']);
 
 /**
  * A yyyy-MM-dd string, or null. The client sends the dates straight back out of
  * a results row, where they are already ISO; anything else is dropped rather
  * than handed to Postgres to reject.
  */
-function toDate(value) {
+export function toDate(value) {
   const text = String(value ?? '').slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
 }
 
 /** A finite number, or null. */
-function toNumber(value) {
+export function toNumber(value) {
   if (value === null || value === undefined || value === '') return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
 }
 
 /** Trimmed text, or null -- never an empty string in a nullable column. */
-function toText(value) {
+export function toText(value) {
   const text = String(value ?? '').trim();
   return text === '' ? null : text;
 }
@@ -366,13 +373,13 @@ function branchClauses(req, params) {
 }
 
 /** `WHERE a AND b`, or '' when nothing is being filtered on. */
-function whereFrom(clauses) {
+export function whereFrom(clauses) {
   const kept = clauses.filter(Boolean);
   return kept.length > 0 ? `WHERE ${kept.join(' AND ')}` : '';
 }
 
 /** The CS Department screen's Cheque view, as the `view` query parameter spells it. */
-const CHEQUE_VIEW = 'cheque';
+export const CHEQUE_VIEW = 'cheque';
 
 /**
  * The queue's Cheque view: one row per cheque instead of one per handover.
@@ -701,10 +708,10 @@ csdRouter.post(
  * Enforced here rather than only in the dialog that collects it: the dialog is
  * a courtesy, this is the rule.
  */
-const STAGE_REMARKS_REQUIRED = { REJECTED: 'rejecting' };
+export const STAGE_REMARKS_REQUIRED = { REJECTED: 'rejecting' };
 
 /** The longest reason worth storing; past this it is a document, not a remark. */
-const MAX_REMARKS = 1000;
+export const MAX_REMARKS = 1000;
 
 /**
  * PATCH /api/csd/:id/stage
@@ -983,10 +990,10 @@ csdRouter.patch(
  * So the undo is for the mistake it is meant for -- the wrong GRN sent a
  * moment ago -- and not a way of rewriting a handover after the fact.
  */
-const TAKE_BACK_STAGES = ['QUEUED', 'RECEIVED'];
+export const TAKE_BACK_STAGES = ['QUEUED', 'RECEIVED'];
 
 /** Why it is too late, in the words of what CSD did. */
-const NO_TAKE_BACK_REASON = {
+export const NO_TAKE_BACK_REASON = {
   APPROVED: 'CSD have already approved it',
   REJECTED: 'CSD have already rejected it',
   MOVED_TO_ACCOUNTS: 'CSD have already handed it back to Accounts',

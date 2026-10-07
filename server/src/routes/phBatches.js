@@ -25,8 +25,7 @@ import { asyncHandler, tablesNotMigrated } from '../middleware/error.js';
 import { readBankStatement } from '../services/excelParser.js';
 import { readPhGrnReport, readPhAgeingReport, readPhBpadReport } from '../services/phExcelParser.js';
 import { normKey } from '../services/normalize.js';
-import { lastRowPerGrn } from '../services/ingest.js';
-import { savePhBatch } from '../services/phIngest.js';
+import { lastRowPerUnitGrn, savePhBatch } from '../services/phIngest.js';
 import { logActivity } from '../services/activityLog.js';
 import {
   MAX_FILES_PER_SLOT,
@@ -39,7 +38,6 @@ import {
   lastFilePerKey,
   fileNames,
   bpadLocationMismatch,
-  bpadRowsForGrns,
 } from './batches.js';
 
 export const phBatchesRouter = express.Router();
@@ -76,6 +74,12 @@ phBatchesRouter.get('/limits', requireScreen('upload'), (req, res) => {
    branch for is matched on its numbers alone. Here a GRN whose Unit Name is
    not configured is matched to neither report: without the configuration there
    is nothing to say a row carrying the right GRN number is not another unit's.
+
+   And it may well be. The units number their FeedNos independently, so one
+   number under two units is two GRNs (see "What a pharmacy GRN is known by" in
+   services/phIngest.js) -- each stored on its own, each matched to the ageing
+   row filed under its own division, and each given the status row written
+   under its own Location.
 
    The ageing half of the rule is applied where the result is worked out, in
    SQL (SAME_BRANCH in services/phIngest.js); what is here is the BPAD half,
@@ -195,6 +199,7 @@ export function grnForBpad(row) {
     invNo: row.billNo,
     invDate: row.billDate,
     unitName: row.location,
+    unitKey: row.unitKey ?? normKey(row.location),
   };
 }
 
@@ -221,40 +226,101 @@ export function bpadLocationsForUnit(unitName, branches) {
 }
 
 /**
- * The GRNs the status is read against, keyed by `VENDORCODE|GRNNUMBER`, each
- * with `bpadLocationKeys` -- the Locations its status rows may carry, or null
- * where its unit is not configured.
+ * The GRNs the status is read against, keyed by `VENDORCODE|GRNNUMBER` -- under
+ * each key, every unit's GRN of that vendor and number, since the number alone
+ * does not say which unit's bill a status row is about. Each has `unitKey` and
+ * `bpadLocationKeys`: the Locations its status rows may carry, or null where
+ * its unit is not configured.
  *
  * The vendor code is the purchase register's PM Code, which is the code the
  * status files a bill under: on the sample, every one of the status's 12,446
  * rows names a GRN in the register under exactly that code.
  *
- * First writer wins, so `grns` is handed over newest first where one GRN can
- * arrive more than once.
+ * Within a unit, first writer wins, so `grns` is handed over newest first
+ * where one GRN can arrive more than once.
  */
 export function indexGrnsForBpad(grns, branches) {
   const identities = new Map();
   for (const grn of grns) {
-    if (!grn.vendorCode || !grn.grnNoKey) continue;
     const vendorCodeKey = normKey(grn.vendorCode);
+    if (!vendorCodeKey || !grn.grnNoKey) continue;
+    const unitKey = grn.unitKey ?? normKey(grn.unitName);
     const key = `${vendorCodeKey}|${grn.grnNoKey}`;
-    if (identities.has(key)) continue;
-    identities.set(key, {
+    const sharing = identities.get(key) ?? [];
+    if (sharing.some((id) => id.unitKey === unitKey)) continue;
+    sharing.push({
       ...grn,
       vendorCodeKey,
+      unitKey,
       bpadLocationKeys: bpadLocationsForUnit(grn.unitName, branches),
     });
+    identities.set(key, sharing);
   }
   return identities;
 }
 
+/** Every GRN in `identities`, whichever number it is filed under. */
+function everyGrn(identities) {
+  return [...identities.values()].flat();
+}
+
 /**
- * The units among `identities` that Ph-Configuration does not have with a
- * Location (BPAD), largest first, and how many GRNs they come to.
+ * The units among `grns` that Ph-Configuration does not have with a Location
+ * (BPAD), largest first, and how many GRNs they come to.
  */
-function unconfiguredUnits(identities) {
-  const strays = [...identities.values()].filter((id) => !id.bpadLocationKeys);
+function unconfiguredUnits(grns) {
+  const strays = grns.filter((id) => !id.bpadLocationKeys);
   return { grnCount: strays.length, units: tally(strays, (id) => id.unitName) };
+}
+
+/**
+ * The GRNs a status row is about: of the ones sharing its vendor code and GRN
+ * number, those whose unit is configured with the Location the row carries.
+ *
+ * One, nearly always. More than one only where two units share both a number
+ * and a Location (BPAD) -- and there the row's Inv.No. settles it, where it is
+ * the bill number of some of them and not of the others. Where it does not,
+ * the row is every such GRN's: the status has said where the bill under that
+ * number at that Location is, and nothing says which unit's bill it meant.
+ */
+function grnsForBpadRow(sharing, locationKey, invNo) {
+  const located = sharing.filter((id) => id.bpadLocationKeys?.has(locationKey));
+  if (located.length < 2) return located;
+  const invNoKey = normKey(invNo);
+  const billed = invNoKey ? located.filter((id) => normKey(id.invNo) === invNoKey) : [];
+  return billed.length > 0 ? billed : located;
+}
+
+/**
+ * The row stored for a GRN the status has no entry for -- bpadRowsForGrns in
+ * routes/batches.js, which says why such a row is written at all and why it
+ * carries so little, with the unit the GRN is known by.
+ */
+function noEntryRow(id) {
+  return {
+    sourceRowNo: null,
+    slNo: null,
+    location: null,
+    warehouse: null,
+    vendorCode: id.vendorCode,
+    vendorCodeKey: id.vendorCodeKey,
+    vendorName: id.vendorName,
+    invNo: id.invNo,
+    invDate: id.invDate,
+    grnNo: id.grnNo,
+    grnNoKey: id.grnNoKey,
+    grnDate: id.grnDate,
+    grnAmount: id.grnAmount,
+    poNumber: id.poNumber,
+    poDate: null,
+    pendingWithDept: null,
+    bpadReceivedDate: null,
+    accountsReceivedDate: null,
+    pendingWithUser: null,
+    pendReason: null,
+    inRegister: false,
+    unitKey: id.unitKey,
+  };
 }
 
 /**
@@ -284,104 +350,310 @@ function notConfiguredMessage(unconfigured, fileLocations) {
 }
 
 /**
+ * Why the upload is refused when a unit's Location (BPAD) is in the status but
+ * the rows about its GRNs are mostly written under another one -- see where
+ * matchBpadFiles builds `swapped`.
+ */
+function swappedLocationMessage(swapped) {
+  const problems = swapped.map(({ own, location, away, kept }) => {
+    const names = own.map((b) => `${b.branchCode} has Location (BPAD) "${b.bpadLocation}"`).join(' and ');
+    return (
+      `${names}, but the BPAD bill status writes ${counted(away, 'row')} about this unit's GRNs under ` +
+      `${location || '(blank)'} and ${kept === 0 ? 'none' : `only ${kept.toLocaleString('en-IN')}`} under its own.`
+    );
+  });
+  return (
+    `${problems.join(' ')} Two branches' Location (BPAD) look swapped, or set to the same one. ` +
+    'Correct Location (BPAD) on the Ph-Configuration screen and upload again. Nothing from this upload was stored.'
+  );
+}
+
+/**
  * Read the status files against `identities` and settle what is stored.
  *
  * A row is kept when its Vendor Code and GRN No are a GRN's and its Location
- * is one that GRN's unit is configured with. The rest are read past, and
- * counted by why:
+ * is one that GRN's unit is configured with -- and it is kept for that unit's
+ * GRN, whichever other units have one of the same number (grnsForBpadRow). The
+ * rest are read past, and counted by why:
  *
- *  - `otherBranchCount`: the GRN's unit is configured, and the row's Location
- *    is not one of its own -- another unit's bill under the same number;
- *  - `unconfigured.rowCount`: the GRN's unit is not configured, so the row was
- *    not considered.
+ *  - `unconfigured.rowCount`: a GRN of that number has no Location (BPAD) to
+ *    be held against, so the row may be its own and nothing can say -- it was
+ *    not considered;
+ *  - `otherBranchCount`: every GRN of that number has its unit configured, and
+ *    the row's Location is none of theirs -- another unit's bill under the
+ *    number.
  *
- * Every GRN whose unit IS configured gets a row -- the status's own, or one
- * saying the status has no entry for it (see bpadRowsForGrns in
- * routes/batches.js). A GRN whose unit is not configured gets neither: the
- * upload says nothing about it, and whatever is stored for it stays.
+ * Then every GRN the files answer for gets a row: the status's own, or one
+ * saying the status has no entry for it (noEntryRow). The files answer for a
+ * GRN when its unit is configured AND they carry at least one row under one of
+ * that unit's Locations. A status that never writes a unit's Location is not
+ * saying that unit's bills are missing from BPAD -- it is another unit's
+ * export -- so those GRNs get nothing, and whatever is stored for them stays
+ * (`notCovered`). The same for a GRN whose unit is not configured. And the
+ * same for a GRN from an earlier report (`listedOnly`) that a status uploaded
+ * beside a GRN report does not list (`unlistedCount`): that status answers
+ * for the report's own GRNs, and moves an earlier one only by listing it.
+ * Nothing is stored for those either -- but the ones whose unit gets its
+ * first status rows from this upload are held by that from now on, and are
+ * counted apart (`unlistedNewlyHeldCount`).
  *
  * Returns `{ error }` when the upload has to be refused: a Location (BPAD)
- * that looks mistyped (bpadLocationMismatch), or no GRN that can be matched at
- * all (notConfiguredMessage). With no GRNs to read against there is nothing to
+ * that looks mistyped (bpadLocationMismatch) or swapped with another branch's
+ * (swappedLocationMessage), or no GRN that can be matched at all
+ * (notConfiguredMessage). With no GRNs to read against there is nothing to
  * refuse -- the status is stored as a file that matched nothing, as before.
  */
 export function matchBpadFiles(files, identities, branches) {
-  // Every Location the files write, folded, and how many rows carry it.
+  // Every Location the files write, folded, and how many rows carry it; how
+  // many of those rows were kept, by Location and by the unit they were kept
+  // for; and the rows turned away, by the Location that would have kept them
+  // and by the unit whose GRN they named.
   const fileLocations = new Map();
+  const keptAt = new Map();
+  const keptFor = new Map();
   const turnedAway = new Map();
+  const awayFrom = new Map();
   let otherBranchCount = 0;
   let unconfiguredRowCount = 0;
 
+  const bump = (counts, key) => counts.set(key, (counts.get(key) ?? 0) + 1);
+  const bumpIn = (maps, key, inner) => {
+    const counts = maps.get(key) ?? new Map();
+    bump(counts, inner);
+    maps.set(key, counts);
+  };
+
   const keep = (vendorCodeKey, grnNoKey, locationKey) => {
-    fileLocations.set(locationKey, (fileLocations.get(locationKey) ?? 0) + 1);
-    const id = identities.get(`${vendorCodeKey}|${grnNoKey}`);
-    if (!id) return false;
-    if (!id.bpadLocationKeys) {
+    bump(fileLocations, locationKey);
+    const sharing = identities.get(`${vendorCodeKey}|${grnNoKey}`);
+    if (!sharing) return false;
+    const located = sharing.filter((id) => id.bpadLocationKeys?.has(locationKey));
+    if (located.length > 0) {
+      bump(keptAt, locationKey);
+      for (const unitKey of new Set(located.map((id) => id.unitKey))) bump(keptFor, unitKey);
+      return true;
+    }
+    // Nobody's by its Location. Where one of the GRNs it could be about has no
+    // Location (BPAD) to be held against, it may well be that one's -- so it is
+    // counted as unconfigured, and is no evidence against the others' settings.
+    if (sharing.some((id) => !id.bpadLocationKeys)) {
       unconfiguredRowCount += 1;
       return false;
     }
-    if (!id.bpadLocationKeys.has(locationKey)) {
-      otherBranchCount += 1;
-      for (const required of id.bpadLocationKeys) {
-        const seen = turnedAway.get(required) ?? new Map();
-        seen.set(locationKey, (seen.get(locationKey) ?? 0) + 1);
-        turnedAway.set(required, seen);
-      }
-      return false;
+    otherBranchCount += 1;
+    for (const required of new Set(sharing.flatMap((id) => [...id.bpadLocationKeys]))) {
+      bumpIn(turnedAway, required, locationKey);
     }
-    return true;
+    for (const unitKey of new Set(sharing.map((id) => id.unitKey))) bumpIn(awayFrom, unitKey, locationKey);
+    return false;
   };
 
   const bpads = readEach(files, 'BPAD current bill status', (buffer) => readPhBpadReport(buffer, { keep }));
 
-  // `false`: clearing a Location (BPAD) is no way out here -- the unit would
+  const grns = everyGrn(identities);
+
+  // Rows turned away are evidence of a wrong Location (BPAD) only where the
+  // Location they do carry is not, in the main, being kept for its own unit's
+  // GRNs. Numbers are shared between units, so a status written wholly under
+  // "SBD1" will name a few GRNs that only another unit has on file -- and that
+  // is that unit's number turning up, not its Location being wrong. Where the
+  // rows under a Location are turned away more often than they are kept, it is
+  // the setting.
+  //
+  // And never where the Location is a branch's whose unit has no GRN on hand:
+  // rows under it cannot be kept whatever the settings say, so being turned
+  // away from another unit's GRN of the same number tells nothing.
+  const unitsOnHand = new Set(grns.map((id) => id.unitKey));
+  const tellsNothing = (location) => {
+    const owners = branches.filter((b) => b.bpadLocationKey !== '' && b.bpadLocationKey === location);
+    return owners.length > 0 && !owners.some((b) => unitsOnHand.has(b.unitKey));
+  };
+  const outnumbersKept = ([location, n]) => !tellsNothing(location) && n > (keptAt.get(location) ?? 0);
+
+  // For the Location-never-written check they also have to be the bulk of what
+  // the files write under that Location. A mistyped Location (BPAD) has nearly
+  // every row under the real one turned away; another unit's number turning up
+  // is a handful among the rows of a unit that is not configured yet, or has
+  // little on hand -- and now that every GRN on file is read against, that
+  // must not be blamed on a branch that is set correctly. Missing a real
+  // mistype here stores nothing wrong where none of the unit's Locations is in
+  // the files: its GRNs are notCovered, below. (The swapped check further down
+  // keeps outnumbersKept as it is: there both Locations are in the files, and
+  // wrong rows would be stored.)
+  const bulkOfLocation = ([location, n]) => n * 2 > (fileLocations.get(location) ?? 0);
+
+  // ...but only where missing the mistype really does store nothing. A GRN is
+  // notCovered only when NONE of its unit's Locations is in the files, so
+  // where a branch that has `required` shares its Unit name with a branch
+  // whose Location the files do write, that unit's GRNs are covered and would
+  // be given "no entry" rows -- there the test stays outnumbersKept alone, for
+  // rows under a Location no branch holds.
+  const unitIsCovered = (required) =>
+    branches.some(
+      (b) =>
+        b.unitKey !== '' &&
+        b.bpadLocationKey === required &&
+        branches.some(
+          (o) => o.unitKey === b.unitKey && o.bpadLocationKey !== '' && fileLocations.has(o.bpadLocationKey),
+        ),
+    );
+
+  // ...and only for those: a Location no branch is configured with is what a
+  // mistyped Location's real one is. Rows under another branch's own Location
+  // are that branch's rows naming a number this unit also has; they keep the
+  // bulkOfLocation test, so a branch that is set correctly is not blamed for
+  // them.
+  const heldByABranch = (location) =>
+    branches.some((b) => b.bpadLocationKey !== '' && b.bpadLocationKey === location);
+
+  const suspect = new Map();
+  for (const [required, seen] of turnedAway) {
+    const strict = unitIsCovered(required);
+    const odd = new Map(
+      [...seen].filter(
+        (entry) => outnumbersKept(entry) && ((strict && !heldByABranch(entry[0])) || bulkOfLocation(entry)),
+      ),
+    );
+    if (odd.size > 0) suspect.set(required, odd);
+  }
+
+  // The hospitals' check, worded for this screen and this file: a configured
+  // Location the files never write, with rows turned away for it. canClear is
+  // false: clearing a Location (BPAD) is no way out here -- the unit would
   // then not be matched at all.
-  const mismatch = bpadLocationMismatch(
-    turnedAway,
-    new Set(fileLocations.keys()),
-    branches,
-    'Ph-Configuration',
-    false,
-  );
+  const mismatch = bpadLocationMismatch(suspect, new Set(fileLocations.keys()), branches, {
+    screen: 'Ph-Configuration',
+    canClear: false,
+    file: 'BPAD bill status',
+    fileShort: 'file',
+  });
   if (mismatch) return { error: mismatch };
 
-  const eligible = new Map([...identities].filter(([, id]) => id.bpadLocationKeys));
-  const unconfigured = unconfiguredUnits(identities);
-  if (identities.size > 0 && eligible.size === 0) {
+  // What that check cannot see, because it stops at any Location the files do
+  // write: two branches with their Locations swapped, or given the same one,
+  // and a status that carries both. Each wrong Location is in the files then,
+  // so nothing looks missing -- and the rows would be stored against the other
+  // unit's GRN wherever a number is shared, with "no entry" written over every
+  // other GRN's status. Judged per unit: more of the rows naming its GRNs
+  // turned away under one Location than kept under its own.
+  const swapped = [];
+  for (const [unitKey, seen] of awayFrom) {
+    const own = branches.filter((b) => b.unitKey === unitKey && b.bpadLocationKey !== '');
+    if (!own.some((b) => fileLocations.has(b.bpadLocationKey))) continue;
+    const kept = keptFor.get(unitKey) ?? 0;
+    const [worst] = [...seen].filter(outnumbersKept).sort((a, b) => b[1] - a[1]);
+    if (worst && worst[1] > kept) swapped.push({ own, location: worst[0], away: worst[1], kept });
+  }
+  if (swapped.length > 0) return { error: swappedLocationMessage(swapped) };
+
+  const eligible = grns.filter((id) => id.bpadLocationKeys);
+  const unconfigured = unconfiguredUnits(grns);
+  if (grns.length > 0 && eligible.length === 0) {
     return { error: notConfiguredMessage(unconfigured, fileLocations) };
   }
 
+  // Each kept row, once for the GRN it is about, with that GRN's unit on it --
+  // which is what it is stored and replaced by from here on.
+  const keyOf = (r) => `${r.vendorCodeKey}|${r.grnNoKey}|${r.unitKey}`;
   const registerRows = lastFilePerKey(
-    bpads.map((b) => b.rows),
-    (r) => (r.vendorCodeKey && r.grnNoKey ? `${r.vendorCodeKey}|${r.grnNoKey}` : null),
+    bpads.map((b) =>
+      b.rows.flatMap((row) =>
+        grnsForBpadRow(
+          identities.get(`${row.vendorCodeKey}|${row.grnNoKey}`) ?? [],
+          normKey(row.location),
+          row.invNo,
+        ).map((id) => ({ ...row, unitKey: id.unitKey })),
+      ),
+    ),
+    keyOf,
   );
+
+  const seen = new Set(registerRows.map(keyOf));
+  const noEntry = [];
+  const notCovered = [];
+  // GRNs from earlier reports that a status uploaded beside a GRN report does
+  // not list: nothing is stored or replaced for them -- see grnMatchKeys. Not
+  // notCovered: their Location IS in the files.
+  const unlisted = [];
+  for (const id of eligible) {
+    if (seen.has(keyOf(id))) continue;
+    if (![...id.bpadLocationKeys].some((location) => fileLocations.has(location))) notCovered.push(id);
+    else if (id.listedOnly) unlisted.push(id);
+    else noEntry.push(noEntryRow(id));
+  }
+
+  const rows = [...registerRows, ...noEntry];
+  // "Left as they were" is true of an unlisted GRN only where its unit already
+  // had a status on file: it keeps the row it has, or was held by its unit
+  // already. Where this upload stores the unit's FIRST rows, a status is on
+  // file for the unit from now on, and an earlier GRN with no row of its own
+  // reads as pending at the GRN store (BPAD_ON_FILE in routes/phResults.js) --
+  // so those are counted apart, for the answer to say so. `=== false`: a GRN
+  // indexed without the flag (indexGrnsForBpad called directly) is not one.
+  const storedUnits = new Set(rows.map((r) => r.unitKey));
+  const newlyHeld = unlisted.filter((id) => id.unitHadStatus === false && storedUnits.has(id.unitKey));
 
   return {
     bpads,
-    rows: bpadRowsForGrns(registerRows, eligible),
+    rows,
+    // The status's own rows that were kept, counted after the files were
+    // merged -- several files naming one GRN count once -- and the GRNs the
+    // status had no entry for. The two the answer's sentence is made of.
+    matchedCount: registerRows.length,
+    noEntryCount: noEntry.length,
+    unlistedCount: unlisted.length - newlyHeld.length,
+    unlistedNewlyHeldCount: newlyHeld.length,
     otherBranchCount,
     unconfigured: { ...unconfigured, rowCount: unconfiguredRowCount },
+    // GRNs of configured units whose Location the files never write.
+    notCovered: { grnCount: notCovered.length, units: tally(notCovered, (id) => id.unitName) },
   };
 }
 
 /**
- * The GRNs the status is read against: with a GRN Purchase report in the same
- * upload, that report's own rows and nothing else; without one, every pharmacy
- * GRN on file, newest upload first.
+ * The GRNs the status is read against: the GRN Purchase rows of this upload,
+ * and every other pharmacy GRN on file, newest upload first.
+ *
+ * Every one on file, where the hospital upload reads its register against the
+ * GRN report beside it and nothing else. A pharmacy GRN is in Accounts only
+ * while the latest status has its bill at Accounts' desk (BEFORE_ACCOUNTS in
+ * routes/phResults.js), so a status that lists a GRN from an earlier report
+ * has to be able to move it: read against the report beside it alone, that
+ * GRN would keep the desk an older status had it at for good.
+ *
+ * But only to be moved by a row that lists it. Beside a GRN report, the
+ * status answers "no entry" for that report's GRNs and for no others
+ * (`listedOnly`; see matchBpadFiles): a status exported for the report's own
+ * period says nothing of an earlier period's bills, and uploading May's must
+ * not write "no entry" over April's. A status uploaded on its own answers
+ * for every GRN on file of the units it covers, as it always has.
+ *
+ * A GRN this upload carries is stored over the copy on file (storePhBatch), so
+ * that copy is left out: the upload's own row is the GRN.
+ *
+ * `db` is what runs the query -- the pool, or one connection for a check.
  */
-async function grnMatchKeys(grnRows, branches) {
-  if (grnRows.length > 0) return indexGrnsForBpad(grnRows.map(grnForBpad), branches);
+export async function grnMatchKeys(grnRows, branches, db = { query }) {
+  const mine = grnRows.map(grnForBpad);
+  const carried = new Set(mine.filter((g) => g.grnNoKey).map((g) => `${g.grnNoKey}|${g.unitKey}`));
 
-  const { rows } = await query(
-    `SELECT DISTINCT ON (vendor_code, dpr_no_key)
+  // The units a status already answers for, before this upload -- so the
+  // answer can tell an earlier GRN that is left as it was from one this upload
+  // is the first to hold (unlistedNewlyHeldCount in matchBpadFiles).
+  const { rows: covered } = await db.query(`SELECT DISTINCT unit_key FROM ph_bpad_records WHERE unit_key <> ''`);
+  const unitsWithStatus = new Set(covered.map((row) => row.unit_key));
+
+  const { rows } = await db.query(
+    `SELECT DISTINCT ON (vendor_code, dpr_no_key, unit_key)
             vendor_code, vendor_name, dpr_no, dpr_no_key, dpr_date,
-            total_amount, po_no, bill_no, bill_date, location
+            total_amount, po_no, bill_no, bill_date, location, unit_key
      FROM ph_grn_transactions
-     WHERE vendor_code IS NOT NULL AND vendor_code <> ''
-     ORDER BY vendor_code, dpr_no_key, batch_id DESC, id DESC`,
+     WHERE vendor_code IS NOT NULL AND vendor_code <> '' AND dpr_no_key <> ''
+     ORDER BY vendor_code, dpr_no_key, unit_key, batch_id DESC, id DESC`,
   );
-  return indexGrnsForBpad(
-    rows.map((row) => ({
+  const onFile = rows
+    .filter((row) => !carried.has(`${row.dpr_no_key}|${row.unit_key}`))
+    .map((row) => ({
       vendorCode: row.vendor_code,
       vendorName: row.vendor_name,
       grnNo: row.dpr_no,
@@ -392,9 +664,15 @@ async function grnMatchKeys(grnRows, branches) {
       invNo: row.bill_no,
       invDate: row.bill_date,
       unitName: row.location,
-    })),
-    branches,
-  );
+      unitKey: row.unit_key,
+      // Beside a GRN report: on hand to take a row the status lists for it,
+      // and given no "no entry" row where the status lists none.
+      listedOnly: mine.length > 0,
+      // Whether any BPAD row was on file for this GRN's unit before this upload.
+      unitHadStatus: unitsWithStatus.has(row.unit_key),
+    }));
+  // The upload's own first: within a unit the first writer wins.
+  return indexGrnsForBpad([...mine, ...onFile], branches);
 }
 
 /**
@@ -452,11 +730,15 @@ phBatchesRouter.post(
     const ageings = readEach(ageingFiles, 'Vendor Age report', readPhAgeingReport);
     const banks = readEach(bankFiles, 'Bank statement', readBankStatement);
 
-    // One row per GRN number, as the upload will store them.
-    const grnRows = lastRowPerGrn(grns.flatMap((g) => g.rows));
+    // One row per GRN -- per number and unit -- as the upload will store them.
+    const grnRows = lastRowPerUnitGrn(grns.flatMap((g) => g.rows));
+    // Where two files carry one GRN, the later file's rows are kept -- "one
+    // GRN" being its number under one division, as the upload stores and
+    // replaces it (see storePhBatch). Two divisions' documents that share a
+    // number are two GRNs' rows, and both are kept.
     const ageingRows = lastFilePerKey(
       ageings.map((a) => a.rows),
-      (r) => r.grnNumberKey,
+      (r) => (r.grnNumberKey ? `${r.grnNumberKey}|${r.divisionKey ?? normKey(r.divisionCode)}` : null),
     );
 
     // What Ph-Configuration holds, which is what ties the three reports to one
@@ -475,23 +757,40 @@ phBatchesRouter.post(
     const grnUnconfigured = unconfiguredGrnUnits(grnRows, branches);
 
     // Read last, and narrowed as it is read -- against this upload's own GRN
-    // reports where there are any, and against every pharmacy GRN on file
-    // where there are not. See matchBpadFiles for what makes a row a GRN's.
+    // rows and every other pharmacy GRN on file (grnMatchKeys says why every
+    // one). See matchBpadFiles for what makes a row a GRN's.
     let bpads = [];
     let bpadRows = [];
+    // The status's rows that were kept, and the GRNs it had no entry for.
+    let bpadMatchedCount = 0;
+    let bpadNoEntryCount = 0;
     // Status rows that named one of these GRNs under another unit's Location.
     let bpadOtherBranchCount = 0;
     // GRNs whose Unit Name Ph-Configuration has no Location (BPAD) for, and
     // the status rows about them that were therefore not considered.
     let bpadUnconfigured = { grnCount: 0, rowCount: 0, units: [] };
+    // GRNs of configured units whose Location the status never writes: not
+    // answered for, so nothing was stored or replaced for them either.
+    let bpadNotCovered = { grnCount: 0, units: [] };
+    // GRNs from earlier reports that the status, uploaded beside a GRN
+    // report, does not list: left as they were.
+    let bpadUnlistedCount = 0;
+    // And the ones of those that this upload is the first to hold: their unit
+    // had no status on file, and has one now.
+    let bpadUnlistedNewlyHeldCount = 0;
     if (bpadFiles.length > 0) {
       const identities = await grnMatchKeys(grnRows, branches);
       const matched = matchBpadFiles(bpadFiles, identities, branches);
       if (matched.error) return res.status(400).json({ error: matched.error });
       bpads = matched.bpads;
       bpadRows = matched.rows;
+      bpadMatchedCount = matched.matchedCount;
+      bpadNoEntryCount = matched.noEntryCount;
+      bpadUnlistedCount = matched.unlistedCount;
+      bpadUnlistedNewlyHeldCount = matched.unlistedNewlyHeldCount;
       bpadOtherBranchCount = matched.otherBranchCount;
       bpadUnconfigured = matched.unconfigured;
+      bpadNotCovered = matched.notCovered;
     }
 
     const [firstBank, ...laterBanks] = banks;
@@ -527,10 +826,12 @@ phBatchesRouter.post(
       replacedBankRows += extra.replaced.bankRows;
     }
 
-    const { batchId, linked } = main;
+    const { batchId, linked, unpaired, reopenedRejections } = main;
     const replaced = { ...main.replaced, bankRows: replacedBankRows };
     const bankRowCount = banks.reduce((sum, b) => sum + b.rows.length, 0);
-    const bpadMatchedCount = bpads.reduce((sum, b) => sum + b.rows.length, 0);
+    // One per statement, in the order uploaded; null where a letterhead named
+    // no account.
+    const bankAccountNos = banks.map((b) => b.accountNo ?? null);
 
     const files = allFiles.map((f) => f.originalname);
     logActivity(req, {
@@ -552,11 +853,17 @@ phBatchesRouter.post(
         bpadUnconfiguredGrns: bpadUnconfigured.grnCount,
         bpadUnconfiguredRows: bpadUnconfigured.rowCount,
         bpadUnconfiguredUnits: bpadUnconfigured.units.map((u) => u.name),
+        bpadNotCoveredGrns: bpadNotCovered.grnCount,
+        bpadNotCoveredUnits: bpadNotCovered.units.map((u) => u.name),
+        bpadUnlistedGrns: bpadUnlistedCount,
+        bpadUnlistedNewlyHeldGrns: bpadUnlistedNewlyHeldCount,
         ageingUnconfiguredRows: ageingUnconfigured.rowCount,
         ageingUnconfiguredDivisions: ageingUnconfigured.divisions.map((d) => d.name),
         grnUnconfiguredGrns: grnUnconfigured.grnCount,
         grnUnconfiguredUnits: grnUnconfigured.units.map((u) => u.name),
         linked,
+        unpaired,
+        reopenedRejections,
         replaced,
       },
     });
@@ -571,13 +878,23 @@ phBatchesRouter.post(
       // stored: in accounts, in accounts under a different bill number, or
       // pending. Either report can touch a GRN -- see storePhBatch.
       linked,
+      // Of the pending ones, the GRNs that do have a Vendor Age row and are
+      // pending only because no branch pairs its DivisionCode with their Unit
+      // Name -- how many, and which pairs. See unpairedFor in phIngest.js.
+      unpaired,
+      // How many GRNs this upload took back off the CSD queue by carrying a
+      // bill CSD had rejected -- see reopenRejectedFor in phIngest.js.
+      reopenedRejections,
       bankRowCount,
+      bankStatementCount: banks.length,
       bankAccountNo: firstBank?.accountNo ?? null,
-      // How big the statuses were, how much of them was about these GRNs, and
-      // how many rows were stored -- the matched ones plus one per GRN the
-      // status had no entry for.
+      bankAccountNos,
+      // How big the statuses were; how many of their rows were kept, counted
+      // once per GRN however many files named it; how many GRNs the status had
+      // no entry for; and the two together, which is what was stored.
       bpadRowCount: bpads.reduce((sum, b) => sum + b.scanned, 0),
       bpadMatchedCount,
+      bpadNoEntryCount,
       bpadStoredCount: bpadRows.length,
       // Status rows that named one of these GRNs under a Location that is not
       // its unit's.
@@ -589,6 +906,20 @@ phBatchesRouter.post(
       bpadUnconfiguredGrnCount: bpadUnconfigured.grnCount,
       bpadUnconfiguredRowCount: bpadUnconfigured.rowCount,
       bpadUnconfiguredUnits: bpadUnconfigured.units.map((u) => u.name),
+      // GRNs of configured units whose Location the status never writes -- a
+      // status exported for other units. Nothing was stored or replaced for
+      // these GRNs either.
+      bpadNotCoveredGrnCount: bpadNotCovered.grnCount,
+      bpadNotCoveredUnits: bpadNotCovered.units.map((u) => u.name),
+      // GRNs from earlier uploads, of units the status does cover, that it
+      // does not list -- it came beside a GRN report, so it answers "no entry"
+      // for that report's GRNs only. Left as they were. See grnMatchKeys.
+      bpadUnlistedGrnCount: bpadUnlistedCount,
+      // The others it does not list, of a unit that had no status on file
+      // until this upload: nothing is stored for them, but BPAD is matched
+      // first for their unit from now on, so they read as pending at the GRN
+      // store.
+      bpadUnlistedNewlyHeldGrnCount: bpadUnlistedNewlyHeldCount,
       // Vendor Age rows whose DivisionCode is no configured branch's Branch
       // code (Focus), and which codes: stored, and matched to no GRN until a
       // branch is configured for them.

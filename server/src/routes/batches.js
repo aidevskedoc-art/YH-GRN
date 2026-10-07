@@ -310,19 +310,22 @@ async function branchBpadLocations() {
  * @param {Map<string, Map<string, number>>} turnedAway configured code ->
  *   register Location -> rows turned away for GRNs requiring that code
  * @param {Set<string>} registerLocations every Location the registers carry
- * @param {string} [screen] the screen the setting is corrected on, as the
- *   message names it -- the pharmacies' is Ph-Configuration
- * @param {boolean} [canClear] whether clearing the setting is a way out. It
- *   is here, where a branch without one is matched on vendor code and GRN
- *   number alone; it is not for the pharmacies, where a branch without one is
- *   not matched at all, so their message does not offer it
+ * @param {object} [wording] how the message names things. Every default is
+ *   this route's own, so the hospital call passes nothing and reads as it
+ *   always has; the pharmacies' call (routes/phBatches.js) passes its own.
+ * @param {string} [wording.screen] the screen the setting is corrected on
+ * @param {boolean} [wording.canClear] whether clearing the setting is a way
+ *   out. It is here, where a branch without one is matched on vendor code and
+ *   GRN number alone; it is not for the pharmacies, where a branch without one
+ *   is not matched at all
+ * @param {string} [wording.file] what the uploaded file is called
+ * @param {string} [wording.fileShort] and what it is called the second time
  */
 export function bpadLocationMismatch(
   turnedAway,
   registerLocations,
   branches,
-  screen = 'Configuration',
-  canClear = true,
+  { screen = 'Configuration', canClear = true, file = 'BPAD register', fileShort = 'register' } = {},
 ) {
   const problems = [];
   for (const [key, locations] of turnedAway) {
@@ -335,8 +338,8 @@ export function bpadLocationMismatch(
       .slice(0, 3)
       .map(([loc, n]) => `${loc || '(blank)'} (${n.toLocaleString('en-IN')} row${n === 1 ? '' : 's'})`);
     problems.push(
-      `${names.join(' and ')}, but no row in the BPAD register has that Location. ` +
-        `The register writes this branch's GRNs under ${found.join(', ')}.`,
+      `${names.join(' and ')}, but no row in the ${file} has that Location. ` +
+        `The ${fileShort} writes this branch's GRNs under ${found.join(', ')}.`,
     );
   }
   if (problems.length === 0) return null;

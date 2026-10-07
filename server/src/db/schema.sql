@@ -1366,7 +1366,11 @@ CREATE TABLE IF NOT EXISTS ph_grn_transactions (
   cgst             NUMERIC(18, 4),
   sgst             NUMERIC(18, 4),
   igst             NUMERIC(18, 4),
-  tcs_amt          NUMERIC(18, 4)
+  tcs_amt          NUMERIC(18, 4),
+  -- Unit Name folded for comparison -- capitals, letters and digits only, as
+  -- every other *_key here is. Half of what a pharmacy GRN is known by: see
+  -- "One GRN per number AND unit" below.
+  unit_key         TEXT NOT NULL DEFAULT ''
 );
 
 -- For a day this column was called payment_type. CREATE TABLE above is a no-op
@@ -1389,8 +1393,51 @@ BEGIN
 END $$;
 
 CREATE INDEX IF NOT EXISTS idx_ph_grn_batch_key ON ph_grn_transactions (batch_id, dpr_no_key);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_ph_grn_one_per_key
-  ON ph_grn_transactions (dpr_no_key) WHERE dpr_no_key <> '';
+
+-- --------------------------------------------------------------------------
+-- One GRN per number AND unit.
+--
+-- The hospitals know a GRN by its number alone. The pharmacy units number
+-- their FeedNos independently, so the same number under two units is two
+-- GRNs, and each is matched to the other reports only with its unit: to a
+-- Vendor Age row filed under the unit's DivisionCode, and to a BPAD row
+-- carrying the unit's Location (the three names being one branch's on
+-- Ph-Configuration). So a GRN's identity here is (dpr_no_key, unit_key), and
+-- that pair is what an upload replaces by and what the index holds unique.
+--
+-- unit_key arrived after the table did: added here for a table created
+-- without it, and filled from Unit Name by the same fold the upload applies
+-- (normKey in services/normalize.js). The unique index on the number alone
+-- that the table started with is dropped -- it is what would refuse a second
+-- unit's GRN -- and the pair's takes its place. Idempotent throughout.
+-- --------------------------------------------------------------------------
+ALTER TABLE ph_grn_transactions ADD COLUMN IF NOT EXISTS unit_key TEXT NOT NULL DEFAULT '';
+
+-- Not where the GRN is already on file under that unit: such a pair can only
+-- have been left by a server still running the code from before the key
+-- existed, and filling this one in would break the unique index below and
+-- take the whole migration down with it. The stray stays as it is, keyless.
+UPDATE ph_grn_transactions g
+   SET unit_key = regexp_replace(upper(COALESCE(g.location, '')), '[^A-Z0-9]', '', 'g')
+ WHERE g.unit_key = ''
+   AND regexp_replace(upper(COALESCE(g.location, '')), '[^A-Z0-9]', '', 'g') <> ''
+   AND NOT EXISTS (
+     SELECT 1 FROM ph_grn_transactions o
+      WHERE o.id <> g.id
+        AND o.dpr_no_key = g.dpr_no_key
+        AND o.unit_key = regexp_replace(upper(COALESCE(g.location, '')), '[^A-Z0-9]', '', 'g')
+   );
+
+-- The default was only there to add the column to rows that had none. Without
+-- it, a server still running the earlier code -- which does not know the
+-- column, and replaces a GRN by its number alone -- has its upload refused
+-- outright, rather than storing GRNs with no unit and deleting other units'
+-- GRNs of the same numbers as it goes. The upload here always gives the key.
+ALTER TABLE ph_grn_transactions ALTER COLUMN unit_key DROP DEFAULT;
+
+DROP INDEX IF EXISTS idx_ph_grn_one_per_key;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ph_grn_one_per_unit
+  ON ph_grn_transactions (dpr_no_key, unit_key) WHERE dpr_no_key <> '';
 
 -- Rows from the pharmacies' Vendor Age report.
 --
@@ -1445,11 +1492,34 @@ CREATE TABLE IF NOT EXISTS ph_vendor_ageing (
   -- The report's own: what has been paid against the bill so far, and what was
   -- paid ahead of it.
   payment_amt          NUMERIC(18, 4),
-  advance_payment_amt  NUMERIC(18, 4)
+  advance_payment_amt  NUMERIC(18, 4),
+  -- DivisionCode folded for comparison, as unit_key is on the GRN row. With
+  -- the GRN number it is what an ageing row is known and replaced by: the same
+  -- number under another division is another unit's document.
+  division_key         TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_ph_ageing_batch_key ON ph_vendor_ageing (batch_id, grn_number_key);
 CREATE INDEX IF NOT EXISTS idx_ph_ageing_grn_number_key ON ph_vendor_ageing (grn_number_key, batch_id DESC);
+
+-- division_key for a table created without it, filled from DivisionCode by the
+-- upload's own fold. Idempotent.
+ALTER TABLE ph_vendor_ageing ADD COLUMN IF NOT EXISTS division_key TEXT NOT NULL DEFAULT '';
+
+UPDATE ph_vendor_ageing
+   SET division_key = regexp_replace(upper(COALESCE(division_code, '')), '[^A-Z0-9]', '', 'g')
+ WHERE division_key = ''
+   AND regexp_replace(upper(COALESCE(division_code, '')), '[^A-Z0-9]', '', 'g') <> '';
+
+CREATE INDEX IF NOT EXISTS idx_ph_ageing_grn_division ON ph_vendor_ageing (grn_number_key, division_key);
+
+-- grn_no on rows stored before it was settled as the GRN number itself: the
+-- number is already beside it in grn_number, so it is copied across. Never
+-- blanks a value, and idempotent -- once the two agree, nothing matches.
+UPDATE ph_vendor_ageing
+   SET grn_no = grn_number
+ WHERE grn_no IS DISTINCT FROM grn_number
+   AND COALESCE(grn_number, '') <> '';
 
 CREATE TABLE IF NOT EXISTS ph_reconciliation_results (
   id                 SERIAL PRIMARY KEY,
@@ -1487,9 +1557,15 @@ CREATE INDEX IF NOT EXISTS idx_ph_bank_batch ON ph_bank_statement_transactions (
 CREATE INDEX IF NOT EXISTS idx_ph_bank_cheque ON ph_bank_statement_transactions (extracted_cheque_no);
 
 -- Rows from the pharmacies' BPAD current bill status, matched to a GRN on the
--- vendor code -- the purchase register's PM Code -- and the GRN number
--- together. The status has PO Number and PO Date in one column; whatever it
--- holds is kept as po_number, and po_date stays NULL.
+-- vendor code -- the purchase register's PM Code -- the GRN number, and the
+-- Location being the GRN's unit's Location (BPAD) on Ph-Configuration. The
+-- status has PO Number and PO Date in one column; whatever it holds is kept as
+-- po_number, and po_date stays NULL.
+--
+-- unit_key is the unit_key of the GRN the row was matched to. It is what ties
+-- a stored row -- the status's own, or the one written for a GRN the status
+-- had no entry for, which has no Location to go by -- back to that GRN where
+-- two units have a GRN of the same number.
 CREATE TABLE IF NOT EXISTS ph_bpad_records (
   id                     SERIAL PRIMARY KEY,
   batch_id               INTEGER NOT NULL REFERENCES ph_upload_batches(id) ON DELETE CASCADE,
@@ -1513,11 +1589,36 @@ CREATE TABLE IF NOT EXISTS ph_bpad_records (
   accounts_received_date DATE,
   pending_with_user      TEXT,
   pend_reason            TEXT,
-  in_register            BOOLEAN NOT NULL DEFAULT TRUE
+  in_register            BOOLEAN NOT NULL DEFAULT TRUE,
+  unit_key               TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_ph_bpad_batch ON ph_bpad_records (batch_id);
 CREATE INDEX IF NOT EXISTS idx_ph_bpad_grn_no_key ON ph_bpad_records (grn_no_key, batch_id DESC);
+
+-- unit_key for a table created without it. A row stored before it existed is
+-- given its GRN's unit where that can only be one unit -- the number and the
+-- vendor code name a single GRN on file. Where they name more than one, the
+-- row is left without, and is replaced the next time the status is uploaded.
+-- Idempotent.
+ALTER TABLE ph_bpad_records ADD COLUMN IF NOT EXISTS unit_key TEXT NOT NULL DEFAULT '';
+
+UPDATE ph_bpad_records b
+   SET unit_key = one.unit_key
+  FROM (
+    SELECT g.dpr_no_key,
+           regexp_replace(upper(COALESCE(g.vendor_code, '')), '[^A-Z0-9]', '', 'g') AS vendor_code_key,
+           MIN(g.unit_key) AS unit_key
+      FROM ph_grn_transactions g
+     WHERE g.unit_key <> ''
+     GROUP BY 1, 2
+    HAVING COUNT(DISTINCT g.unit_key) = 1
+  ) one
+ WHERE b.unit_key = ''
+   AND b.grn_no_key = one.dpr_no_key
+   AND b.vendor_code_key = one.vendor_code_key;
+
+CREATE INDEX IF NOT EXISTS idx_ph_bpad_grn_unit ON ph_bpad_records (grn_no_key, unit_key);
 
 -- Pharmacy branches, as configured on the Ph-Configuration screen. What each
 -- column is matched against:
@@ -1543,3 +1644,154 @@ CREATE TABLE IF NOT EXISTS ph_branch_configs (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ph_branch_code ON ph_branch_configs (upper(branch_code));
 CREATE INDEX IF NOT EXISTS idx_ph_branch_selected ON ph_branch_configs (is_selected);
+
+-- --------------------------------------------------------------------------
+-- One pharmacy handover to CSD: a GRN taken off Pharmacy Results and passed on.
+--
+-- csd_dispatches for the pharmacies, column for column -- see the comments
+-- there for what each is and why the GRN's details are copied in rather than
+-- joined to. The CS Department screen shows this table under its "OP Pharmacy
+-- CSD" view and the hospitals' under "Hospital CSD" (routes/phCsd.js).
+--
+-- What differs is the key. A pharmacy GRN is its number AND its unit (see "One
+-- GRN per number AND unit" above), so a handover is too: unit_key is the
+-- GRN's own, and the pair is what is held unique -- one live handover per GRN,
+-- which is what lets Pharmacy Results join to this table without multiplying
+-- its rows, with two units' GRNs of one number each free to be handed over.
+--
+-- `location` is the GRN's Unit Name, as it is on ph_grn_transactions.
+--
+-- The Accounts columns (accounts_stage onwards) are the hospitals' too.
+-- accounts_stage is started by the Moved to accounts move, as it is there;
+-- nothing reads the rest yet -- Ph-Accounts is not built -- and they are here
+-- so that it needs no change to this table when it is.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ph_csd_dispatches (
+  id                     SERIAL PRIMARY KEY,
+  dpr_no_key             TEXT NOT NULL,
+  unit_key               TEXT NOT NULL DEFAULT '',
+  dpr_no                 TEXT NOT NULL,
+  division_code          TEXT,
+  location               TEXT,
+  dpr_date               DATE,
+  bill_no                TEXT,
+  bill_date              DATE,
+  vendor_code            TEXT,
+  vendor_name            TEXT,
+  -- The Vendor Age report's document reference, GRNDoc ("PSE/26-27/HE00184"),
+  -- or the GRN number taken from it where a row has no GRNDoc.
+  ageing_grn_no          TEXT,
+  net_amt                NUMERIC(18, 4),
+  adj_pur_return         NUMERIC(18, 4),
+  adjusted_jv            NUMERIC(18, 4),
+  tds_jv                 NUMERIC(18, 4),
+  payable_amount         NUMERIC(18, 4),
+  cheque_no              TEXT,
+  chq_date               DATE,
+  payment_doc_no         TEXT,
+  status                 TEXT,
+  discrepancy_notes      TEXT,
+  stage                  TEXT NOT NULL DEFAULT 'QUEUED'
+                           CHECK (stage IN ('QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED', 'MOVED_TO_ACCOUNTS')),
+  stage_at               TIMESTAMPTZ,
+  stage_by               INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  received_at            TIMESTAMPTZ,
+  approved_at            TIMESTAMPTZ,
+  rejected_at            TIMESTAMPTZ,
+  moved_to_accounts_at   TIMESTAMPTZ,
+  reject_remarks         TEXT,
+  accounts_stage         TEXT CHECK (accounts_stage IN ('QUEUED', 'RECEIVED')),
+  accounts_received_at   TIMESTAMPTZ,
+  accounts_received_by   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  forwarded_to           TEXT CHECK (forwarded_to IN ('BANK', 'VENDOR', 'OTHERS', 'COURIER')),
+  forwarded_route        TEXT CHECK (forwarded_route IN ('VENDOR', 'PURCHASE_DEPT')),
+  forwarded_name         TEXT,
+  forwarded_mobile       TEXT,
+  forwarded_date         DATE,
+  forwarded_remarks      TEXT,
+  forwarded_courier_name TEXT,
+  forwarded_docket_no    TEXT,
+  forwarded_at           TIMESTAMPTZ,
+  forwarded_by           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  -- SET NULL rather than CASCADE: removing an upload must not remove the
+  -- record that the GRN went to CSD.
+  batch_id               INTEGER REFERENCES ph_upload_batches(id) ON DELETE SET NULL,
+  sent_by                INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sent_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- The vendor's Focus code, as the GRN Purchase report carries it beside the PM
+-- Code. It is the code the Vendor Master knows a pharmacy vendor by -- the PM
+-- Code is the pharmacy system's own, and is on no master -- so it is what the
+-- queue's MSME, Inter and Supply Type columns are looked up with
+-- (services/vendorMsme.js). Snapshotted like every other field here; filled
+-- for a handover made before the column existed from the GRN it was made for,
+-- where that GRN is still on file.
+ALTER TABLE ph_csd_dispatches ADD COLUMN IF NOT EXISTS focus_code TEXT;
+
+UPDATE ph_csd_dispatches c
+   SET focus_code = g.focus_code
+  FROM ph_grn_transactions g
+ WHERE c.focus_code IS NULL
+   AND g.dpr_no_key = c.dpr_no_key
+   AND g.unit_key = c.unit_key
+   AND COALESCE(g.focus_code, '') <> '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ph_csd_one_per_unit ON ph_csd_dispatches (dpr_no_key, unit_key);
+CREATE INDEX IF NOT EXISTS idx_ph_csd_sent_at ON ph_csd_dispatches (sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ph_csd_stage ON ph_csd_dispatches (stage);
+CREATE INDEX IF NOT EXISTS idx_ph_csd_cheque ON ph_csd_dispatches (cheque_no);
+
+-- Pharmacy rejections that a later upload reopened -- csd_rejection_history
+-- for the pharmacies, with the unit a handover is known by. See
+-- reopenRejectedFor in services/phIngest.js.
+CREATE TABLE IF NOT EXISTS ph_csd_rejection_history (
+  id                     SERIAL PRIMARY KEY,
+  dpr_no_key             TEXT NOT NULL,
+  unit_key               TEXT NOT NULL DEFAULT '',
+  dpr_no                 TEXT NOT NULL,
+  division_code          TEXT,
+  location               TEXT,
+  bill_no                TEXT,
+  vendor_code            TEXT,
+  vendor_name            TEXT,
+  cheque_no              TEXT,
+  payable_amount         NUMERIC(18, 4),
+  reject_remarks         TEXT,
+  rejected_at            TIMESTAMPTZ,
+  rejected_by            INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sent_at                TIMESTAMPTZ,
+  sent_by                INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  superseded_by_batch_id INTEGER REFERENCES ph_upload_batches(id) ON DELETE SET NULL,
+  superseded_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ph_csd_rejection_history_key
+  ON ph_csd_rejection_history (dpr_no_key, unit_key);
+
+-- --------------------------------------------------------------------------
+-- A pharmacy GRN handed to Records -- record_dispatches for the pharmacies:
+-- the other destination a GRN in accounts can be sent to from Pharmacy
+-- Results, beside CSD. As thin as the hospitals', and for the same reason:
+-- Records has no queue and no stages, so nothing is read back but the fact
+-- that the GRN went, beside the results row it belongs to.
+--
+-- Keyed on the number AND the unit, as every pharmacy record of a GRN is, so
+-- two units' GRNs of one number are filed separately -- and the pair is what
+-- lets Pharmacy Results join to this table without multiplying its rows.
+-- `location` is the Unit Name as the report wrote it, kept so the activity
+-- log can say which unit's GRN was filed.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ph_record_dispatches (
+  id         SERIAL PRIMARY KEY,
+  dpr_no_key TEXT NOT NULL,
+  unit_key   TEXT NOT NULL DEFAULT '',
+  dpr_no     TEXT NOT NULL,
+  location   TEXT,
+  batch_id   INTEGER REFERENCES ph_upload_batches(id) ON DELETE SET NULL,
+  sent_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  sent_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ph_record_one_per_unit ON ph_record_dispatches (dpr_no_key, unit_key);
+CREATE INDEX IF NOT EXISTS idx_ph_record_sent_at ON ph_record_dispatches (sent_at DESC);

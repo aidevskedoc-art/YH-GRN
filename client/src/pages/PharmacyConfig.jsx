@@ -75,6 +75,38 @@ const BLANK = {
   isSelected: false,
 };
 
+/** 12542 -> "12,542". */
+function count(n) {
+  return Number(n ?? 0).toLocaleString('en-IN');
+}
+
+/**
+ * What saving or removing a branch did to the GRNs already uploaded, as the
+ * server reports it (`relinked`) -- or '' when it re-matched nothing because
+ * the change could not affect a match, or because nothing is on file.
+ *
+ * Said on the page rather than left to be discovered: a branch is what ties a
+ * GRN to its Vendor Age row, so correcting one can move every GRN on file from
+ * pending to matched, and removing one can move them all back.
+ */
+function rematchNotice(relinked) {
+  if (!relinked) return '';
+  const { MATCHED = 0, MATCHED_WITH_DIFF = 0, PENDING = 0 } = relinked.linked ?? {};
+  const total = MATCHED + MATCHED_WITH_DIFF + PENDING;
+  if (total === 0) return '';
+  const what =
+    relinked.changed > 0
+      ? `${count(relinked.changed)} of the ${count(total)} GRNs on file were re-matched to the Vendor Age report.`
+      : `The ${count(total)} GRNs on file are matched as they were.`;
+  // What the Vendor Age report has, not "in accounts": a GRN is in Accounts
+  // only while the BPAD bill status also has its bill at Accounts' desk, which
+  // is Pharmacy Results' to say (BEFORE_ACCOUNTS in routes/phResults.js).
+  return (
+    `${what} Now: ${count(MATCHED)} found in it, ${count(MATCHED_WITH_DIFF)} found under a different ` +
+    `bill number, ${count(PENDING)} not found.`
+  );
+}
+
 /** The add/edit panel. The source of each field is its tooltip. */
 function BranchForm({ initial, saving, error, onSave, onClose }) {
   const [form, setForm] = useState(initial);
@@ -82,7 +114,11 @@ function BranchForm({ initial, saving, error, onSave, onClose }) {
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
 
   return (
-    <Sheet label={editing ? 'Edit branch' : 'New branch'} onClose={onClose}>
+    /* Escape does nothing while a save is in flight, as the Cancel button does
+       nothing: a save here can wait on an upload and take a while, and a panel
+       closed under it would leave its answer -- or its error -- to land on
+       whatever was opened next. */
+    <Sheet label={editing ? 'Edit branch' : 'New branch'} onClose={saving ? () => {} : onClose}>
       <form
         className="sheet__form"
         onSubmit={(e) => {
@@ -165,24 +201,49 @@ function BranchForm({ initial, saving, error, onSave, onClose }) {
 export default function PharmacyConfig() {
   const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Whether the list has ever arrived. Until it has, an empty list is not "no
+  // branches configured" -- it is not known yet, or the request failed.
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
   const [form, setForm] = useState(null);
   const [formError, setFormError] = useState('');
   const [saving, setSaving] = useState(false);
-  // Which branch's tick box is in flight, so only its own row goes quiet.
-  const [busy, setBusy] = useState(null);
+  // The branches whose tick box or removal is in flight, so each one's own row
+  // goes quiet -- and cannot be acted on a second time while the first is
+  // waiting. A set: two rows can be in flight at once, and the first to answer
+  // must not wake the other.
+  const [busy, setBusy] = useState(() => new Set());
+  // What the last save or removal did to the GRNs on file -- see rematchNotice.
+  const [notice, setNotice] = useState('');
   const [confirm, confirmDialog] = useConfirm();
+
+  const markBusy = (id, on) =>
+    setBusy((current) => {
+      const next = new Set(current);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
 
   const load = useCallback(() => {
     setLoading(true);
     api
       .phListBranches()
-      .then(({ branches: list }) => setBranches(list))
+      .then(({ branches: list }) => {
+        setBranches(list);
+        setLoaded(true);
+      })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(load, [load]);
+
+  /** Open the add/edit panel clean: the last panel's error is not this one's. */
+  function openForm(values) {
+    setFormError('');
+    setForm(values);
+  }
 
   /**
    * Tick or untick one branch. Updated in place rather than by reloading: the
@@ -190,15 +251,16 @@ export default function PharmacyConfig() {
    * under the pointer at the moment it was clicked.
    */
   async function toggle(row) {
-    setBusy(row.id);
+    markBusy(row.id, true);
     setError('');
+    setNotice('');
     try {
       const { branch } = await api.phUpdateBranch(row.id, { isSelected: !row.isSelected });
       setBranches((list) => list.map((b) => (b.id === branch.id ? branch : b)));
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(null);
+      markBusy(row.id, false);
     }
   }
 
@@ -206,23 +268,25 @@ export default function PharmacyConfig() {
     setSaving(true);
     setFormError('');
     try {
-      if (values.id === null) {
-        await api.phCreateBranch({
-          branchCode: values.branchCode,
-          location: values.location,
-          bpadLocation: values.bpadLocation,
-          accountNo: values.accountNo,
-          isSelected: values.isSelected,
-        });
-      } else {
-        await api.phUpdateBranch(values.id, {
-          branchCode: values.branchCode,
-          location: values.location,
-          bpadLocation: values.bpadLocation,
-          accountNo: values.accountNo,
-        });
-      }
+      const answer =
+        values.id === null
+          ? await api.phCreateBranch({
+              branchCode: values.branchCode,
+              location: values.location,
+              bpadLocation: values.bpadLocation,
+              accountNo: values.accountNo,
+              isSelected: values.isSelected,
+            })
+          : await api.phUpdateBranch(values.id, {
+              branchCode: values.branchCode,
+              location: values.location,
+              bpadLocation: values.bpadLocation,
+              accountNo: values.accountNo,
+            });
       setForm(null);
+      // The page's own error is about an earlier action, and this one worked.
+      setError('');
+      setNotice(rematchNotice(answer?.relinked));
       load();
     } catch (err) {
       setFormError(err.message);
@@ -234,16 +298,26 @@ export default function PharmacyConfig() {
   async function remove(row) {
     const ok = await confirm({
       title: 'Remove this branch?',
-      message: `Are you sure you want to remove ${row.branchCode}?`,
+      // The second paragraph is what removing one does here and not on the
+      // hospital screen: it is what the GRNs were matched through.
+      message: [
+        `Are you sure you want to remove ${row.branchCode}?`,
+        'GRNs matched to the Vendor Age report through this branch go back to pending. Nothing uploaded is deleted, and adding the branch again matches them again.',
+      ],
       confirmLabel: 'Remove branch',
     });
     if (!ok) return;
+    markBusy(row.id, true);
     setError('');
+    setNotice('');
     try {
-      await api.phDeleteBranch(row.id);
+      const answer = await api.phDeleteBranch(row.id);
+      setNotice(rematchNotice(answer?.relinked));
       load();
     } catch (err) {
       setError(err.message);
+    } finally {
+      markBusy(row.id, false);
     }
   }
 
@@ -266,7 +340,7 @@ export default function PharmacyConfig() {
           </p>
         </div>
         <div className="page__actions">
-          <button className="primary" type="button" onClick={() => setForm(BLANK)}>
+          <button className="primary" type="button" onClick={() => openForm(BLANK)}>
             <span className="csd__icon">
               <IconPlus size={15} />
             </span>
@@ -276,30 +350,39 @@ export default function PharmacyConfig() {
       </div>
 
       {error && <div className="alert alert--error">{error}</div>}
+      {notice && <div className="alert alert--info">{notice}</div>}
 
-      {/* What the ticks currently mean, said in words. */}
-      <div className="alert alert--info">
-        {branches.length === 0 ? (
-          <>
-            <strong>No branches configured.</strong> The pharmacy figures cover every row. Add a
-            branch to be able to narrow them.
-          </>
-        ) : selected.length === 0 ? (
-          <>
-            <strong>Nothing is ticked.</strong> The pharmacy figures cover every row, whichever
-            branch it belongs to.
-          </>
-        ) : (
-          <>
-            <strong>In scope: {selected.map((b) => b.branchCode).join(', ')} only.</strong> The
-            pharmacy figures are narrowed to {selected.length === 1 ? 'this branch' : 'these branches'}.
-            Nothing has been deleted — untick to see everything again.
-          </>
-        )}
-      </div>
+      {/* What the ticks currently mean, said in words -- once the list is in. */}
+      {loaded && (
+        <div className="alert alert--info">
+          {branches.length === 0 ? (
+            /* Not the hospital screen's "shows every row": with no branch here,
+               nothing is matched at all. */
+            <>
+              <strong>No branches configured.</strong> No GRN can be matched to the Vendor Age
+              report or the BPAD file until a branch is added, and an upload carrying either is
+              refused.
+            </>
+          ) : selected.length === 0 ? (
+            <>
+              <strong>Nothing is ticked.</strong> The pharmacy figures cover every row, whichever
+              branch it belongs to.
+            </>
+          ) : (
+            <>
+              <strong>In scope: {selected.map((b) => b.branchCode).join(', ')} only.</strong> The
+              pharmacy figures are narrowed to{' '}
+              {selected.length === 1 ? 'this branch' : 'these branches'}. Nothing has been deleted —
+              untick to see everything again.
+            </>
+          )}
+        </div>
+      )}
 
-      {loading && branches.length === 0 ? (
-        <div className="loading">Loading…</div>
+      {!loaded ? (
+        /* Not an empty table: the list has not arrived, or could not be read --
+           and the error above says which. */
+        loading && <div className="loading">Loading…</div>
       ) : (
         <div className="table-wrap table-wrap--sticky">
           <table className="table">
@@ -328,7 +411,7 @@ export default function PharmacyConfig() {
                       <input
                         type="checkbox"
                         checked={row.isSelected}
-                        disabled={busy === row.id}
+                        disabled={busy.has(row.id)}
                         onChange={() => toggle(row)}
                       />
                       <span className="tick__text">{row.isSelected ? 'In scope' : 'Not applied'}</span>
@@ -347,8 +430,9 @@ export default function PharmacyConfig() {
                       <button
                         type="button"
                         className="ghost ghost--sm"
+                        disabled={busy.has(row.id)}
                         onClick={() =>
-                          setForm({
+                          openForm({
                             ...row,
                             accountNo: row.accountNo ?? '',
                             bpadLocation: row.bpadLocation ?? '',
@@ -361,6 +445,7 @@ export default function PharmacyConfig() {
                       <button
                         type="button"
                         className="ghost ghost--sm danger"
+                        disabled={busy.has(row.id)}
                         onClick={() => remove(row)}
                         title={`Remove ${row.branchCode}`}
                       >
