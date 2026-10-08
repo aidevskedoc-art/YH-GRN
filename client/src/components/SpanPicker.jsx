@@ -19,10 +19,13 @@ import { CHECKPOINTS, checkpointLabel, spanId, spanLabel } from '../services/sta
  * With nothing picked the table is as it was, every stage and every date. That
  * is deliberate: this narrows the report, so an empty picker has to mean the
  * whole of it rather than an empty table waiting to be configured.
+ *
+ * `checkpoints` is what there is to measure between: the hospitals' fourteen
+ * unless said, the pharmacies' eleven on their report (PHARMACY_CHAIN).
  */
-export default function SpanPicker({ spans, onChange }) {
-  const [from, setFrom] = useState(CHECKPOINTS[0].key);
-  const [to, setTo] = useState(CHECKPOINTS[1].key);
+export default function SpanPicker({ spans, onChange, checkpoints = CHECKPOINTS }) {
+  const [from, setFrom] = useState(checkpoints[0].key);
+  const [to, setTo] = useState(checkpoints[1].key);
 
   // A span from a checkpoint to itself measures nothing, and one already on
   // screen would draw a second identical column. Neither is an error worth
@@ -49,7 +52,7 @@ export default function SpanPicker({ spans, onChange }) {
           onChange={(e) => setFrom(e.target.value)}
           aria-label="Measure from which checkpoint"
         >
-          {CHECKPOINTS.map((c) => (
+          {checkpoints.map((c) => (
             <option key={c.key} value={c.key}>
               {c.label}
             </option>
@@ -62,7 +65,7 @@ export default function SpanPicker({ spans, onChange }) {
           onChange={(e) => setTo(e.target.value)}
           aria-label="Measure to which checkpoint"
         >
-          {CHECKPOINTS.map((c) => (
+          {checkpoints.map((c) => (
             <option key={c.key} value={c.key}>
               {c.label}
             </option>

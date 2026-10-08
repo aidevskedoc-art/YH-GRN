@@ -66,6 +66,8 @@ export const ACTIONS = {
   PH_CSD_STAGE: { label: 'Moved pharmacy CSD stage', category: 'CSD' },
   PH_CSD_TAKE_BACK: { label: 'Took pharmacy GRN back from CSD', category: 'CSD' },
   PH_CSD_DELETE: { label: 'Deleted pharmacy CSD record', category: 'CSD' },
+  // ...and a stamp's day put right from the pharmacy GRN age report.
+  PH_CSD_DATES: { label: 'Corrected pharmacy CSD dates', category: 'DATES' },
   // ...and its Records filing -- routes/phRecords.js.
   PH_RECORDS_SEND: { label: 'Sent pharmacy GRN to Records', category: 'RECORDS' },
   PH_RECORDS_TAKE_BACK: { label: 'Took pharmacy GRN back from Records', category: 'RECORDS' },

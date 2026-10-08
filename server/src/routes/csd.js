@@ -850,7 +850,7 @@ csdRouter.patch(
  * same reason: each is still just the day a button was pressed, and that can
  * be entered late exactly as a CSD stamp can.
  */
-const EDITABLE_CSD_DATES = {
+export const EDITABLE_CSD_DATES = {
   sentToCsd: 'sent_at',
   csdReceived: 'received_at',
   csdApproved: 'approved_at',
@@ -861,7 +861,7 @@ const EDITABLE_CSD_DATES = {
 };
 
 /** The stage a stamp belongs to, for the message when it has not been reached. */
-const STAMP_STAGE = {
+export const STAMP_STAGE = {
   sentToCsd: 'sent',
   csdReceived: 'received',
   csdApproved: 'approved',
@@ -877,7 +877,7 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
  * A real calendar date in yyyy-MM-dd. The pattern alone accepts 2026-02-31,
  * which Postgres then rejects with an error nobody can act on.
  */
-function isCalendarDate(value) {
+export function isCalendarDate(value) {
   if (!ISO_DATE.test(value)) return false;
   const parsed = new Date(`${value}T00:00:00Z`);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;

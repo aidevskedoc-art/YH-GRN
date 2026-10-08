@@ -19,7 +19,7 @@
  * the same sheet they sent, annotated.
  */
 import { api } from '../api/client.js';
-import { CHECKPOINTS, STAGE_KEYS, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
+import { HOSPITAL_CHAIN, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
 import { chequeNotRequired, chequePrepared, paymentNotRequired } from './cheque.js';
 import { ageingDays, asBpadAgeRow, bpadAgeDays, grnStoreAgeDays, todayIso } from './ageing.js';
 
@@ -381,10 +381,14 @@ const TURNAROUND_PARTICULARS = [
  * the Total leaves with the checkpoints that would have explained it.
  *
  * The day counts arrive nested under `gaps` on each row and the span counts are
- * worked out row by row, so sheetRows flattens both up a level before
- * building -- toCell only reads top-level keys.
+ * worked out row by row, so turnaroundSheetRows flattens both up a level
+ * before building -- toCell only reads top-level keys.
+ *
+ * `chain` is the run the report covers -- the hospitals' unless said, the
+ * pharmacies' (PHARMACY_CHAIN, from the GRN onward) for Pharmacy Results'
+ * export, which is why this is exported.
  */
-function turnaroundColumns(spans = []) {
+export function turnaroundColumns(spans = [], chain = HOSPITAL_CHAIN) {
   const custom = spans.length > 0;
 
   // The day counts, named from the same helpers the table's header reads.
@@ -396,7 +400,7 @@ function turnaroundColumns(spans = []) {
         group: 'Days taken',
       }))
     : [
-        ...STAGE_KEYS.map((key) => ({
+        ...chain.stageKeys.map((key) => ({
           key,
           label: `${stageLabel(key)} (days)`,
           integer: true,
@@ -406,14 +410,30 @@ function turnaroundColumns(spans = []) {
       ];
 
   const reached = custom
-    ? CHECKPOINTS.filter((c) => spans.some((s) => s.from === c.key || s.to === c.key))
-    : CHECKPOINTS;
+    ? chain.checkpoints.filter((c) => spans.some((s) => s.from === c.key || s.to === c.key))
+    : chain.checkpoints;
 
   return [
     ...TURNAROUND_PARTICULARS,
     ...days,
     ...reached.map((c) => ({ key: c.key, label: c.label, date: true, group: 'Reached' })),
   ];
+}
+
+/**
+ * Turnaround rows as a sheet reads them: the day counts lifted out of `gaps`,
+ * and the Total and the span counts worked out here, from the same helpers the
+ * table uses, so the file and the screen cannot disagree about them. All of it
+ * goes in whether or not the layout has a column for it; the columns decide
+ * what is written.
+ */
+export function turnaroundSheetRows(rows, spans = [], chain = HOSPITAL_CHAIN) {
+  return rows.map((r) => ({
+    ...r,
+    ...r.gaps,
+    totalDays: totalDays(r, chain.start),
+    ...Object.fromEntries(spans.map((span) => [spanId(span), spanDays(r, span)])),
+  }));
 }
 
 /**
@@ -1007,16 +1027,7 @@ async function sheetRows(batchId, spec, { q, location, msme, spans, view, ageing
   });
   const rows =
     spec.status === 'TURNAROUND'
-      ? // The Total and the span counts are worked out here, from the same
-        // helpers the table uses, so the file and the screen cannot disagree
-        // about them. Both go in whether or not this layout has a column for
-        // them; the columns decide what is written.
-        raw.map((r) => ({
-          ...r,
-          ...r.gaps,
-          totalDays: totalDays(r),
-          ...Object.fromEntries(spans.map((span) => [spanId(span), spanDays(r, span)])),
-        }))
+      ? turnaroundSheetRows(raw, spans)
       : spec.status === 'BPAD'
         ? // Age from GRN Date, as the tab shows it: a bill still at Stores
           // counts to the "as of" date picked on screen -- see

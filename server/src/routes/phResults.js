@@ -52,10 +52,11 @@
  * (VENDOR_CODE below). A vendor it has no row for reads as a dash in all four.
  *
  * What the hospitals have and this does not: the Ageing columns and their "as
- * of" date. The GRN age view is here, and reads what the pharmacy Vendor Age
- * report carries -- the cheque date -- with the CSD and Accounts stamps this
- * application writes and the bank's clearance; the report has no PR, PO,
- * security, audit or handover date, so those stages are blank on it.
+ * of" date. The GRN age view is here from the GRN onward -- a pharmacy purchase
+ * has no PR, PO or security step -- with each date read from the file that has
+ * it: the GRN Purchase report, the BPAD bill status, the Vendor Age report,
+ * the stamps this application writes and the bank's clearance (see
+ * TURNAROUND_DATES below).
  *
  * Read-only: nothing here writes.
  */
@@ -82,7 +83,7 @@ import {
   vendorSupplyType,
   SUPPLY_TYPE_CHOICES,
 } from '../services/vendorMsme.js';
-import { summarise, dataQuality, gapsFor } from '../services/turnaround.js';
+import { summarise, dataQuality, gapsFor, PHARMACY_CHAIN } from '../services/turnaround.js';
 
 export const phResultsRouter = express.Router();
 
@@ -1615,26 +1616,41 @@ export async function phResultRows(
 
 /* --------------------------------------------------------------------------
    GRN age: how many days a bill spends at each step. results.js's Turnaround
-   section, through the same arithmetic (services/turnaround.js).
+   section, through the same arithmetic (services/turnaround.js) -- from the
+   GRN onward, which is where a pharmacy purchase starts (PHARMACY_CHAIN).
    -------------------------------------------------------------------------- */
 
 /**
  * The checkpoints of one GRN in accounts, under the names services/turnaround.js
- * measures between.
+ * measures between. A pharmacy purchase has no PR, PO or security date, and the
+ * pharmacy Vendor Age report carries none of the hospital report's handover
+ * dates, so each checkpoint is read from the file that does have it:
  *
- * The pharmacy Vendor Age report carries the cheque date and none of the six
- * before it -- no PR, PO, security, audit or handover date -- so those come
- * back as the report has them, which is empty, and the stages between them are
- * blank. What does have both ends is everything from the cheque on: to CSD,
- * through CSD's stages, back to Accounts and on, and to the bank's clearance.
+ *   GRN       the GRN Purchase report's InvDate (bill_date). Not its FeedDate,
+ *             which the other tables head "GRN Date": the run is measured from
+ *             the day on the vendor's invoice.
+ *   Audit     the BPAD bill status's BPAD Received Date.
+ *   Accounts  the BPAD bill status's Accounts Received Date.
+ *   Cheque    the Vendor Age report's ChqDate.
  *
- * GRN Date is the purchase register's own where the ageing report has none, so
- * the row at least says when the goods came in.
+ * and from there on as the hospitals': the stamps this application wrote on the
+ * handover (sent to CSD, received, approved, moved to Accounts, received there,
+ * forwarded), and the bank statement's clearance.
+ *
+ * The Vendor Age report's own grn_date and bill_to_audit are not read, even
+ * where it has them: one checkpoint read from two files would be two
+ * definitions of it under one heading. A unit with no BPAD status on file has
+ * no Audit or Accounts date, and the three stages either side are blank.
+ *
+ * Both BPAD dates are renamed on the way out. `accounts_received_date` in
+ * particular is already the handover's own stamp below -- the day Accounts
+ * acknowledged a bill CSD handed back -- which is a different day altogether.
  */
 const TURNAROUND_DATES = `
-         a.indent_date, a.po_date, a.security_date,
-         COALESCE(a.grn_date, g.dpr_date) AS grn_date,
-         a.bill_to_audit, a.bill_handover_to_acc, a.chq_date,
+         g.bill_date               AS grn_date,
+         pb.bpad_received_date     AS bill_to_audit,
+         pb.accounts_received_date AS bill_handover_to_acc,
+         a.chq_date,
          ${CHEQUE_COLUMNS},
          c.id                          AS csd_id,
          c.sent_at::date               AS sent_to_csd,
@@ -1649,9 +1665,6 @@ const TURNAROUND_DATES = `
 /** The date fields of a row, as gapsFor, summarise and dataQuality read them. */
 function turnaroundDates(r) {
   return {
-    indentDate: r.indent_date,
-    poDate: r.po_date,
-    securityDate: r.security_date,
     grnDate: r.grn_date,
     billToAudit: r.bill_to_audit,
     billHandOverToAcc: r.bill_handover_to_acc,
@@ -1670,33 +1683,48 @@ function turnaroundDates(r) {
 
 /**
  * Per-stage statistics over every GRN in accounts in scope, plus one page of
- * the rows -- GET /:id/turnaround in results.js, answer for answer. Only GRNs
- * that reached the Vendor Age report have any of these dates, so the pending
- * ones are not in it.
+ * the rows -- GET /:id/turnaround in results.js, answer for answer, over the
+ * pharmacies' chain. Only a GRN in accounts is measured, as there: one BPAD
+ * still has at Audit or Stores has a GRN date and perhaps an Audit one, and is
+ * no further along than the Pending GRNs at BPAD view already says.
+ *
+ * `all` is the export's: every row in scope and no paging, as phBpadRows
+ * answers it. The rows are then the population the figures are counted over,
+ * so they are read once.
  */
-export async function phTurnaround(db, { q, grant, location, msme, page = 1, pageSize = 50 } = {}) {
+export async function phTurnaround(db, { q, grant, location, msme, page = 1, pageSize = 50, all = false } = {}) {
   const params = [];
   const where = whereFrom([`a.id IS NOT NULL`, ...scopeClauses({ q, grant, location, msme }, params)]);
 
-  const [{ rows: population }, { rows }] = await Promise.all([
-    db.query(`SELECT a.grn_no, ${TURNAROUND_DATES} ${RESULT_JOINS} ${where}`, params),
-    db.query(
-      `SELECT r.status, g.id AS grn_id, a.id AS ageing_id,
+  const rowsSql = `
+       SELECT r.status, g.id AS grn_id, a.id AS ageing_id,
               g.dpr_no, g.bill_date, g.vendor_name, g.vendor_code, g.location, g.total_amount,
               a.division_code, a.net_amt, a.adj_pur_return, a.adjusted_jv, a.tds_jv,
               ${PAYABLE_AMOUNT} AS payable_amount,
               a.grn_doc, a.grn_no, a.bill_no, a.cheque_no, a.payment_doc_no,
               ${TURNAROUND_DATES},
               ${vendorColumns(VENDOR_CODE)}
-       ${RESULT_JOINS} ${where} ${ROW_ORDER}
-       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
-      [...params, pageSize, (page - 1) * pageSize],
-    ),
-  ]);
+       ${RESULT_JOINS} ${where} ${ROW_ORDER}`;
+
+  let population;
+  let rows;
+  if (all) {
+    ({ rows } = await db.query(rowsSql, params));
+    population = rows;
+  } else {
+    [{ rows: population }, { rows }] = await Promise.all([
+      db.query(`SELECT a.grn_no, ${TURNAROUND_DATES} ${RESULT_JOINS} ${where}`, params),
+      db.query(`${rowsSql} LIMIT $${params.length + 1} OFFSET $${params.length + 2}`, [
+        ...params,
+        pageSize,
+        (page - 1) * pageSize,
+      ]),
+    ]);
+  }
 
   const dated = population.map((r) => ({ grnNo: r.grn_no, ...turnaroundDates(r) }));
-  const { stages, overall } = summarise(dated);
-  const { era, impossible, backwards } = dataQuality(dated);
+  const { stages, overall } = summarise(dated, PHARMACY_CHAIN);
+  const { era, impossible, backwards } = dataQuality(dated, { chain: PHARMACY_CHAIN });
   const total = dated.length;
 
   return {
@@ -1708,10 +1736,8 @@ export async function phTurnaround(db, { q, grant, location, msme, page = 1, pag
       backwards: backwards.length,
       impossibleGrns: impossible.map((r) => r.grnNo),
     },
-    page,
-    pageSize,
+    ...(all ? {} : { page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) }),
     total,
-    totalPages: Math.max(1, Math.ceil(total / pageSize)),
     rows: rows.map((r) => {
       const row = {
         // A pharmacy GRN number is not a key on its own -- two units can share
@@ -1747,7 +1773,7 @@ export async function phTurnaround(db, { q, grant, location, msme, page = 1, pag
         csdStage: r.csd_stage,
         ...turnaroundDates(r),
       };
-      return { ...row, gaps: gapsFor(row) };
+      return { ...row, gaps: gapsFor(row, PHARMACY_CHAIN) };
     }),
   };
 }
@@ -1768,7 +1794,7 @@ phResultsRouter.get(
   }),
 );
 
-/** GET /api/op-pharmacy/results/turnaround?q=&location=&msme=&page=&pageSize= -- see phTurnaround. */
+/** GET /api/op-pharmacy/results/turnaround?q=&location=&msme=&page=&pageSize=&all= -- see phTurnaround. */
 phResultsRouter.get(
   '/turnaround',
   asyncHandler(async (req, res) => {
@@ -1782,6 +1808,7 @@ phResultsRouter.get(
         grant: branchFor(req.user),
         page,
         pageSize,
+        all: String(req.query.all || '') === '1',
       }),
     );
   }),

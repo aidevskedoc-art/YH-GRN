@@ -469,13 +469,21 @@ export const api = {
    * in accounts in scope, plus one page of the rows -- the shape `turnaround`
    * answers in, so the same table draws it.
    */
-  phTurnaround: ({ page = 1, pageSize = 50, q, location, msme } = {}) => {
+  phTurnaround: ({ page = 1, pageSize = 50, q, location, msme, all } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (q) params.set('q', q);
     if (location) params.set('location', location);
     if (msme) params.set('msme', msme);
+    // Every row in scope and no paging -- the export's.
+    if (all) params.set('all', '1');
     return request(`/op-pharmacy/results/turnaround?${params}`);
   },
+
+  /**
+   * Correct the day one or more stamps landed on, on a pharmacy handover --
+   * updateCsdDates for the pharmacy queue. Administrators only.
+   */
+  phUpdateCsdDates: (id, dates) => request(`/op-pharmacy/csd/${id}/dates`, { method: 'PATCH', body: dates }),
 
   /** Acknowledge one pharmacy GRN CSD marked Moved to accounts, by its CSD dispatch id. */
   phReceiveAccountsReturn: (id) => request(`/op-pharmacy/accounts-returns/${id}/receive`, { method: 'PATCH' }),

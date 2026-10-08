@@ -22,8 +22,9 @@ import VendorCells, { VENDOR_CELL_COUNT } from '../components/VendorCells.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import { chequeNotRequired, chequePrepared, paymentNotRequired } from '../services/cheque.js';
 import { expandCheques } from '../services/chequeGroups.js';
-import { exportPharmacySection } from '../services/exporter.js';
+import { exportPharmacySection, turnaroundColumns, turnaroundSheetRows } from '../services/exporter.js';
 import { singlePress } from '../services/press.js';
+import { PHARMACY_CHAIN, spanLabel } from '../services/stages.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
   ACCOUNTS_GRN_VIEW,
@@ -110,9 +111,9 @@ import { OP_PHARMACY_LABELS, opPharmacyPath } from '../services/screens.js';
  * number within its unit.
  *
  * What the hospital pages have and this does not: the Ageing column and its
- * "as of" date, and correcting a date on the GRN age view. That view is here,
- * but the pharmacy Vendor Age report carries no PR, PO, security, audit or
- * handover date, so only the stages from the cheque onward have figures.
+ * "as of" date. The GRN age view is here from the GRN onward -- a pharmacy
+ * purchase has no PR, PO or security step -- with each date read from the
+ * pharmacy file that has it (PH_TURNAROUND_TAB below).
  */
 
 const SEARCH_DELAY_MS = 300;
@@ -140,15 +141,36 @@ const HELD_TAB = {
   hint: 'Handed to CSD or Records, and not in Accounts by the BPAD bill status',
 };
 
+/**
+ * The GRN age view, named for the run it measures: the hospitals' is PR to
+ * Bank, and a pharmacy purchase starts at the GRN (PHARMACY_CHAIN in
+ * services/stages.js). Its dates come from four places -- the GRN Purchase
+ * report's InvDate, the BPAD bill status's two received dates, the Vendor Age
+ * report's ChqDate, and from there on the days the CSD and Accounts steps were
+ * done on this application and the bank statement's clearance; see
+ * TURNAROUND_DATES in server/src/routes/phResults.js.
+ */
+const PH_TURNAROUND_TAB = { ...TURNAROUND_TAB, label: 'GRN age from GRN to Bank' };
+
+/**
+ * The export's titles for the reports that are not the hospitals', or not
+ * under the hospitals' name: the held handovers, and the GRN age report, which
+ * starts at the GRN here. Every other sheet keeps the hospital report's title.
+ */
+const OWN_TITLES = {
+  [HELD_TAB.status]: `${HELD_TAB.label} Report`,
+  [TURNAROUND]: 'GRN Age From GRN to Bank Report',
+};
+
 const DESKS = {
   results: {
-    tabs: [TOTAL_TAB, BPAD_TAB, PH_ACCOUNTS_TAB, CHEQUE_NOT_PREPARED_TAB, PENDING_TAB, HELD_TAB, TURNAROUND_TAB],
+    tabs: [TOTAL_TAB, BPAD_TAB, PH_ACCOUNTS_TAB, CHEQUE_NOT_PREPARED_TAB, PENDING_TAB, HELD_TAB, PH_TURNAROUND_TAB],
     home: ALL_GRNS,
     // The four counts stand over the GRN age view here, as on the hospital page.
     ageCards: [ALL_GRNS, BPAD, VALID, 'PENDING'],
   },
   accounts: {
-    tabs: [PH_ACCOUNTS_TAB, CHEQUE_NOT_PREPARED_TAB, HELD_TAB, TURNAROUND_TAB],
+    tabs: [PH_ACCOUNTS_TAB, CHEQUE_NOT_PREPARED_TAB, HELD_TAB, PH_TURNAROUND_TAB],
     home: VALID,
     ageCards: [],
   },
@@ -1366,20 +1388,17 @@ export default function PharmacyResults({ desk = 'results' }) {
   /**
    * What Export Excel hands back: the section's own sheet, then a sheet per
    * card below it -- read off the very cards on screen, as the hospital page
-   * does (sectionSheets). One sheet on the GRN age view, whose own columns are
-   * that view's and are not exported from here.
+   * does (sectionSheets). One sheet on the GRN age view: the table on screen,
+   * with the spans picked for it.
    */
-  const exportSheets = status === TURNAROUND
-    ? []
-    : sectionSheets(section, cards, {
-        labelFor: (card) => (card.kind === 'bucket' ? bucketLabel(card) : card.label),
-        pendingInBpad: registerOnFile,
-        // The hospital reports' own titles, said to be the pharmacies'.
-      }).map((sheet) => ({
-        ...sheet,
-        // The held handovers are no report of the hospitals', so theirs is named here.
-        title: `OP Pharmacy ${sheet.status === HELD_TAB.status ? `${HELD_TAB.label} Report` : sheet.title}`,
-      }));
+  const exportSheets = sectionSheets(section, cards, {
+    labelFor: (card) => (card.kind === 'bucket' ? bucketLabel(card) : card.label),
+    pendingInBpad: registerOnFile,
+    // The hospital reports' own titles, said to be the pharmacies'.
+  }).map((sheet) => ({
+    ...sheet,
+    title: `OP Pharmacy ${OWN_TITLES[sheet.status] ?? sheet.title}`,
+  }));
 
   async function handleExport() {
     setExporting(true);
@@ -1392,17 +1411,30 @@ export default function PharmacyResults({ desk = 'results' }) {
       // switch is hidden and the workbook is per GRN with it.
       const sheetByCheque = (sheet) =>
         byCheque && sheet.status === VALID && !sheet.supplyType && !NO_CHEQUE_PROGRESS.has(sheet.progress);
+      // The GRN age report narrowed to GRN-to-Cheque is not the same report as
+      // the whole of it, so it does not arrive under the same name.
+      const measured =
+        status === TURNAROUND && spans.length > 0 ? ` ${spans.map(spanLabel).join(' ')}` : '';
       await exportPharmacySection(exportSheets, {
-        fileName: `OP Pharmacy ${bucketLabel(section)}${byCheque ? ' Cheque View' : ''}`,
+        fileName: `OP Pharmacy ${bucketLabel(section)}${measured}${byCheque ? ' Cheque View' : ''}`,
         columnsFor: (sheet) =>
-          sheet.status === BPAD
-            ? EXPORT_COLUMNS[BPAD]
-            : sheetByCheque(sheet)
-              ? EXPORT_COLUMNS.cheque
-              : EXPORT_COLUMNS[sheet.status] ?? EXPORT_COLUMNS[ALL_GRNS],
+          sheet.status === TURNAROUND
+            ? // The table's own columns, over the pharmacies' chain.
+              turnaroundColumns(spans, PHARMACY_CHAIN)
+            : sheet.status === BPAD
+              ? EXPORT_COLUMNS[BPAD]
+              : sheetByCheque(sheet)
+                ? EXPORT_COLUMNS.cheque
+                : EXPORT_COLUMNS[sheet.status] ?? EXPORT_COLUMNS[ALL_GRNS],
         // Only the page's scope travels -- the search, the branch and MSME.
         // Each sheet carries its own card's narrowing instead of the dropdowns'.
         loadSheet: async (sheet) => {
+          if (sheet.status === TURNAROUND) {
+            // Every GRN in scope, with its day counts, Total and spans worked
+            // out as the table works them out.
+            const { rows: aged } = await api.phTurnaround({ q, location, msme, all: true });
+            return turnaroundSheetRows(aged, spans, PHARMACY_CHAIN);
+          }
           const answer =
             sheet.status === BPAD
               ? await api.phBpad({
@@ -1915,19 +1947,17 @@ export default function PharmacyResults({ desk = 'results' }) {
           />
 
           {/* The section showing, as one workbook: its own sheet, then a sheet
-              per card on the row below. Not on the GRN age view, whose table
-              is not exported from here. */}
+              per card on the row below. One sheet on the GRN age view -- the
+              table as it stands, spans and all. */}
           <button
             className="ghost"
             type="button"
             onClick={handleExport}
             disabled={exporting || exportSheets.length === 0}
             title={
-              status === TURNAROUND
-                ? 'The GRN age view is not exported from this page'
-                : exportSheets.length > 1
-                  ? `Download ${bucketLabel(section)} as Excel — a sheet per card below`
-                  : `Download ${bucketLabel(section)} as Excel`
+              exportSheets.length > 1
+                ? `Download ${bucketLabel(section)} as Excel — a sheet per card below`
+                : `Download ${bucketLabel(section)} as Excel`
             }
           >
             {exporting ? 'Preparing…' : 'Export Excel'}
@@ -2353,15 +2383,18 @@ export default function PharmacyResults({ desk = 'results' }) {
       {error && <div className="alert alert--error">{error}</div>}
 
       {status === TURNAROUND ? (
-        /* The hospital page's own view, fed the pharmacy rows. Read only: no
-           pharmacy route corrects a date. The stages before the cheque are
-           blank -- the pharmacy Vendor Age report has no dates for them. */
+        /* The hospital page's own view, fed the pharmacy rows over the
+           pharmacies' chain: from the GRN, there being no PR, PO or security
+           step. An administrator corrects a captured date in place, as there. */
         <>
-          <div className="alert alert--info">
-            The pharmacy Vendor Age report carries the cheque date and none of the earlier ones — PR, PO, security,
-            audit, handover — so the days are counted from the cheque onward: to CSD, through CSD, back to Accounts,
-            and to the bank.
-          </div>
+          {/* Where each date is read from, since no one report has them all. */}
+          <p className="table__note">
+            Counted from the GRN. <strong>GRN</strong> is the InvDate of the GRN Purchase report;{' '}
+            <strong>Audit</strong> and <strong>Accounts</strong> are the BPAD Received Date and Accounts Received
+            Date of the BPAD report; <strong>Cheque</strong> is the ChqDate of the Vendor Age report; the CSD and
+            Accounts steps after it are the days they were done here; and <strong>Cheque Clearance</strong> is the
+            bank statement&rsquo;s. Audit and Accounts are blank for a unit with no BPAD bill status on file.
+          </p>
           <TurnaroundView
             batchId="all"
             q={q}
@@ -2370,8 +2403,9 @@ export default function PharmacyResults({ desk = 'results' }) {
             spans={spans}
             onSpansChange={setSpans}
             load={api.phTurnaround}
-            updateDates={null}
+            updateDates={api.phUpdateCsdDates}
             sourceDated={false}
+            chain={PHARMACY_CHAIN}
           />
         </>
       ) : status === BPAD && summary && !registerOnFile && !msme ? (

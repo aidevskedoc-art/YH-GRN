@@ -23,8 +23,9 @@
  *  - The Vendor Master's four columns and the MSME filter are looked up by the
  *    vendor's Focus code, which a handover keeps beside its PM Code: the
  *    master knows a pharmacy vendor by that code, not by the PM Code.
- *  - Nothing here corrects a stage's date. The hospitals do that from their
- *    turnaround report, which the pharmacies do not have.
+ *  - A stamp's date is corrected as the hospitals' is, from the pharmacies' own
+ *    GRN age report (phTurnaround in routes/phResults.js): the same seven
+ *    stamps, and the same refusals.
  *
  * Behind the same grants as the hospital queue: the CS Department screen for
  * the queue itself, and that or either of the two results screens for handing
@@ -64,6 +65,9 @@ import {
   MAX_REMARKS,
   TAKE_BACK_STAGES,
   NO_TAKE_BACK_REASON,
+  EDITABLE_CSD_DATES,
+  STAMP_STAGE,
+  isCalendarDate,
 } from './csd.js';
 
 export const phCsdRouter = express.Router();
@@ -606,6 +610,75 @@ export async function movePhCsdStage(db, id, stageIn, remarksIn, userId = null) 
 }
 
 /**
+ * Correct the day one or more of a handover's stamps landed on -- PATCH
+ * /api/csd/:id/dates, rule for rule: any subset of the seven stamps, each a
+ * real yyyy-MM-dd; only a stamp the handover already carries, since writing one
+ * for a stage it has not reached would leave a state the ladder cannot
+ * produce; and never cleared, since a stage that was reached happened on some
+ * day. Nothing is written unless every field given passes.
+ *
+ * @returns `{ dispatch, changes, dprNo, location }` -- `changes` being each
+ *   stamp's old and new day. `dispatch` is null where the handover was taken
+ *   back or deleted between the write and reading it again: the correction was
+ *   made all the same, so the GRN and its unit come from the row as first read
+ *   and the route can still say whose dates were changed.
+ */
+export async function updatePhCsdDates(db, id, body = {}) {
+  if (!Number.isInteger(id)) return refuse(400, 'Unknown row.');
+
+  const { rows: existing } = await db.query(
+    `SELECT dpr_no, location, sent_at, received_at, approved_at, rejected_at,
+            moved_to_accounts_at, accounts_received_at, forwarded_at
+     FROM ph_csd_dispatches WHERE id = $1`,
+    [id],
+  );
+  if (existing.length === 0) return refuse(404, GONE);
+
+  const given = body || {};
+  const assignments = [];
+  const params = [];
+  // Old and new day per corrected stamp, for the activity log.
+  const changes = {};
+
+  for (const [field, column] of Object.entries(EDITABLE_CSD_DATES)) {
+    if (!(field in given)) continue;
+
+    const raw = given[field];
+    if (raw === '' || raw === null || raw === undefined) {
+      return refuse(400, `"${field}" cannot be cleared — the GRN did reach that stage on some day.`);
+    }
+
+    const value = String(raw);
+    if (!isCalendarDate(value)) return refuse(400, `"${field}" must be a real date in yyyy-MM-dd.`);
+
+    if (!existing[0][column]) {
+      return refuse(409, `This GRN has not been ${STAMP_STAGE[field]} yet, so it has no date to correct.`);
+    }
+
+    params.push(value);
+    assignments.push(`${column} = $${params.length}::date`);
+    changes[field] = { from: existing[0][column], to: value };
+  }
+
+  if (assignments.length === 0) return refuse(400, 'No date was given to change.');
+
+  params.push(id);
+  const { rows } = await db.query(
+    `UPDATE ph_csd_dispatches SET ${assignments.join(', ')} WHERE id = $${params.length} RETURNING id`,
+    params,
+  );
+  // Taken back between the read and the write.
+  if (rows.length === 0) return refuse(404, GONE);
+
+  return {
+    dispatch: await dispatchById(db, id),
+    changes,
+    dprNo: existing[0].dpr_no,
+    location: existing[0].location,
+  };
+}
+
+/**
  * Take a GRN back off the queue -- DELETE /api/csd/:id. Refused once CSD have
  * acted, here as well as in the two screens that offer the button.
  *
@@ -739,6 +812,32 @@ phCsdRouter.patch(
         ...(remarks ? { remarks } : {}),
       },
     });
+    return res.json({ dispatch });
+  }),
+);
+
+/** PATCH /api/op-pharmacy/csd/:id/dates -- an administrator's; body: the stamps to correct. See updatePhCsdDates. */
+phCsdRouter.patch(
+  '/:id/dates',
+  CSD_QUEUE,
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const answer = await updatePhCsdDates(POOL, id, req.body || {});
+    if (refused(res, answer)) return undefined;
+
+    // Logged from the row as it was read, not as it is read back: the dates
+    // were changed whether or not the handover is still there to show them.
+    const { dispatch, changes, dprNo, location } = answer;
+    const changed = Object.keys(changes).length;
+    logActivity(req, {
+      action: 'PH_CSD_DATES',
+      target: dprNo,
+      summary: `Corrected ${changed} CSD date${changed === 1 ? '' : 's'} on pharmacy GRN ${dprNo}`,
+      details: { dispatchId: id, unitName: location, changes },
+    });
+    // Taken back or deleted since the write: there is no row to answer with.
+    if (!dispatch) return res.status(404).json({ error: GONE });
     return res.json({ dispatch });
   }),
 );

@@ -30,6 +30,8 @@ export const STAGE_LABELS = {
   approvedToClearance: 'Cheque Clearance',
   // The end-to-end figure, measured PR to Cheque.
   prToCheque: 'PR to Cheque',
+  // ...and the OP Pharmacies', whose run starts at the GRN.
+  grnToCheque: 'GRN to Cheque',
 };
 
 /** The stage's name, falling back to its key so a new stage is never blank. */
@@ -111,10 +113,18 @@ export function daysBetween(fromIso, toIso) {
   return Math.round((to - from) / 86400000);
 }
 
-/** PR to the furthest checkpoint this row has reached, in whole days. */
-export function totalDays(row) {
-  const end = CHAIN_END.find((key) => row[key]);
-  return end ? daysBetween(row.indentDate, row[end]) : null;
+/**
+ * The run's first checkpoint to the furthest one this row has reached, in whole
+ * days.
+ *
+ * `from` is where the run starts: the PR unless said, the GRN for a pharmacy
+ * purchase (see PHARMACY_CHAIN below). The start is never its own end -- a row
+ * that has got no further than where it began has no run to measure, which is
+ * blank rather than nought days.
+ */
+export function totalDays(row, from = 'indentDate') {
+  const end = CHAIN_END.find((key) => key !== from && row[key]);
+  return end ? daysBetween(row[from], row[end]) : null;
 }
 
 /**
@@ -159,6 +169,30 @@ const CHECKPOINT_LABELS = Object.fromEntries(CHECKPOINTS.map((c) => [c.key, c.la
 export function checkpointLabel(key) {
   return CHECKPOINT_LABELS[key] ?? key;
 }
+
+/**
+ * A chain: the checkpoints a report draws, the stages its export counts, and
+ * the checkpoint its row total is measured from.
+ *
+ * The hospitals' is the lists above, whole, and it is what the table, the span
+ * picker and the export read unless they are handed another.
+ */
+export const HOSPITAL_CHAIN = { checkpoints: CHECKPOINTS, stageKeys: STAGE_KEYS, start: 'indentDate' };
+
+/** What a pharmacy purchase has no date for: the three checkpoints ahead of the GRN, and the stages to them. */
+const BEFORE_GRN = new Set(['indentDate', 'poDate', 'securityDate', 'prToPo', 'poToSecurity', 'securityToGrn']);
+
+/**
+ * The OP Pharmacies' chain: the hospitals' from the GRN onward -- PHARMACY_CHAIN
+ * in server/src/services/turnaround.js, which leaves out the same three stages.
+ * Filtered out of the lists above rather than written again, so a checkpoint
+ * keeps one name and one place on both reports.
+ */
+export const PHARMACY_CHAIN = {
+  checkpoints: CHECKPOINTS.filter((c) => !BEFORE_GRN.has(c.key)),
+  stageKeys: STAGE_KEYS.filter((key) => !BEFORE_GRN.has(key)),
+  start: 'grnDate',
+};
 
 /**
  * A span: one pair of checkpoints, `{ from, to }`, measured on demand.

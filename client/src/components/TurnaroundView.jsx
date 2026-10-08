@@ -3,7 +3,15 @@ import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { formatAmount, formatAmountOrDash, formatDate } from './ResultsTable.jsx';
 import SpanPicker from './SpanPicker.jsx';
-import { CHECKPOINTS, spanDays, spanId, spanLabel, stageLabel, totalDays } from '../services/stages.js';
+import {
+  HOSPITAL_CHAIN,
+  checkpointLabel,
+  spanDays,
+  spanId,
+  spanLabel,
+  stageLabel,
+  totalDays,
+} from '../services/stages.js';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
 
@@ -49,17 +57,22 @@ function Days({ value }) {
 
 /**
  * `load` and `updateDates` are where the rows come from and where a corrected
- * CSD date goes: the hospitals' by default. Pharmacy Results passes its own
- * `load` -- the same answer over the pharmacy tables -- and `updateDates` null,
- * there being no pharmacy route that corrects a date: the table is then read
- * only, as it is for anyone who is not an administrator.
+ * CSD date goes: the hospitals' by default. Pharmacy Results passes its own of
+ * each -- the same answers over the pharmacy tables. With `updateDates` null
+ * the table is read only, as it is for anyone who is not an administrator.
+ *
+ * `chain` is the run the report covers: which checkpoints it draws and offers
+ * to the span picker, and where the row total is measured from. The hospitals'
+ * unless said -- PR to the bank; Pharmacy Results passes PHARMACY_CHAIN, which
+ * starts at the GRN. The day columns need no telling: they are drawn in the
+ * order the server sends its stages, and it sends that chain's.
  *
  * `sourceDated` is whether the ageing report behind the rows carries the stage
  * dates. The hospitals' does, so rows with no stage measured at all are an
  * upload made before those dates were captured, and the view says so. The
- * pharmacy Vendor Age report never has them -- nothing is measured there until
- * a GRN has gone to CSD -- so Pharmacy Results passes false and the table is
- * drawn with those stages blank.
+ * pharmacies' dates come from three files, any of which may not be on file
+ * yet, so Pharmacy Results passes false and the table is drawn with whatever
+ * stages can be measured.
  */
 export default function TurnaroundView({
   batchId,
@@ -71,6 +84,7 @@ export default function TurnaroundView({
   load: loadRows,
   updateDates = api.updateCsdDates,
   sourceDated = true,
+  chain = HOSPITAL_CHAIN,
 }) {
   const { isAdmin: administrator } = useAuth();
   const isAdmin = administrator && Boolean(updateDates);
@@ -218,8 +232,8 @@ export default function TurnaroundView({
     ? spans.map((span) => ({ key: spanId(span), label: spanLabel(span), span }))
     : stages.map((s) => ({ key: s.key, label: stageLabel(s.key) }));
   const dateColumns = custom
-    ? CHECKPOINTS.filter((c) => spans.some((s) => s.from === c.key || s.to === c.key))
-    : CHECKPOINTS;
+    ? chain.checkpoints.filter((c) => spans.some((s) => s.from === c.key || s.to === c.key))
+    : chain.checkpoints;
 
   // Thirteen fixed columns, a day count per stage or span, the row total where
   // there is one, then the dates -- the same width the two header rows span
@@ -277,7 +291,7 @@ export default function TurnaroundView({
       {/* Above the table rather than up in the page toolbar: it configures this
           one report, and the toolbar's filters change which ROWS are shown,
           which is a different question from which columns measure them. */}
-      {onSpansChange && <SpanPicker spans={spans} onChange={onSpansChange} />}
+      {onSpansChange && <SpanPicker spans={spans} onChange={onSpansChange} checkpoints={chain.checkpoints} />}
 
       <div className="table-wrap table-wrap--sticky">
         <table className="table">
@@ -341,7 +355,7 @@ export default function TurnaroundView({
               {!custom && (
                 <th
                   className="table__num"
-                  title="PR to the furthest checkpoint this GRN has reached — including the CSD handover, not just the cheque."
+                  title={`${checkpointLabel(chain.start)} to the furthest checkpoint this GRN has reached — including the CSD handover, not just the cheque.`}
                 >
                   Total
                 </th>
@@ -410,7 +424,7 @@ export default function TurnaroundView({
                 ))}
                 {!custom && (
                   <td className="table__num">
-                    <Days value={totalDays(row)} />
+                    <Days value={totalDays(row, chain.start)} />
                   </td>
                 )}
                 {dateColumns.map((c) => {

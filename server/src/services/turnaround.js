@@ -77,7 +77,7 @@ export const STAGES = [
  * application and the clearance date is read off the bank statement; neither
  * can be corrected at source, because neither has one.
  */
-const SOURCE_STAGES = STAGES.filter((stage) => !stage.csd && !stage.derived);
+const sourceStages = (stages) => stages.filter((stage) => !stage.csd && !stage.derived);
 
 /**
  * The whole run, first checkpoint to last.
@@ -105,14 +105,44 @@ export const STAGE_DATES = [
 export const CSD_DATES = ['sentToCsd', 'csdReceived', 'csdApproved', 'csdRejected'];
 
 /**
+ * A chain: the stages a bill runs through, the figure that sums the run up, and
+ * the checkpoints the era check reads.
+ *
+ * The hospitals' is the three lists above, and it is what every function below
+ * measures unless it is handed another -- so a caller that names none gets
+ * exactly what it always did.
+ */
+export const HOSPITAL_CHAIN = { stages: STAGES, endToEnd: END_TO_END, stageDates: STAGE_DATES };
+
+/** The three stages ahead of the GRN, which a pharmacy purchase does not have. */
+const BEFORE_GRN = new Set(['prToPo', 'poToSecurity', 'securityToGrn']);
+
+/**
+ * The OP Pharmacies' chain: the hospitals' from the GRN onward.
+ *
+ * A pharmacy purchase has no purchase request, purchase order or security gate
+ * to date, so its run starts at the GRN -- and the headline figure with it, GRN
+ * to Cheque. The stages kept are the very objects above rather than copies, so
+ * the two chains cannot drift apart on what a stage measures between.
+ *
+ * Where each date comes from is routes/phResults.js's business (see
+ * TURNAROUND_DATES there); this only names the fields.
+ */
+export const PHARMACY_CHAIN = {
+  stages: STAGES.filter((stage) => !BEFORE_GRN.has(stage.key)),
+  endToEnd: { key: 'grnToCheque', from: 'grnDate', to: 'chqDate' },
+  stageDates: ['grnDate', 'billToAudit', 'billHandOverToAcc', 'chqDate'],
+};
+
+/**
  * Day count for every stage of one row: `{ prToPo: 1, poToSecurity: -9, ... }`.
  * Includes the three CSD stages, which are null until the GRN has been sent.
  * A stage whose start or end date is missing is null, not zero -- "we do not
  * know" and "it took no time" are different answers.
  */
-export function gapsFor(row) {
+export function gapsFor(row, chain = HOSPITAL_CHAIN) {
   const gaps = {};
-  for (const stage of STAGES) gaps[stage.key] = daysBetween(row[stage.from], row[stage.to]);
+  for (const stage of chain.stages) gaps[stage.key] = daysBetween(row[stage.from], row[stage.to]);
   return gaps;
 }
 
@@ -153,12 +183,13 @@ function describe(values, total) {
  * figure.
  *
  * @param {Array} rows parsed ageing rows (or DB rows with the same field names)
+ * @param {object} [chain] the chain they run through; the hospitals' unless said
  * @returns {{stages: Array, overall: object}}
  */
-export function summarise(rows) {
+export function summarise(rows, chain = HOSPITAL_CHAIN) {
   const total = rows.length;
 
-  const stages = STAGES.map((stage) => ({
+  const stages = chain.stages.map((stage) => ({
     key: stage.key,
     ...describe(
       rows.map((r) => daysBetween(r[stage.from], r[stage.to])).filter((v) => v !== null),
@@ -167,12 +198,12 @@ export function summarise(rows) {
   }));
 
   const endToEnd = rows
-    .map((r) => daysBetween(r[END_TO_END.from], r[END_TO_END.to]))
+    .map((r) => daysBetween(r[chain.endToEnd.from], r[chain.endToEnd.to]))
     .filter((v) => v !== null);
 
   return {
     stages,
-    overall: { key: END_TO_END.key, rows: total, ...describe(endToEnd, total) },
+    overall: { key: chain.endToEnd.key, rows: total, ...describe(endToEnd, total) },
   };
 }
 
@@ -191,9 +222,10 @@ const year = (iso) => (iso ? Number(String(iso).slice(0, 4)) : null);
  * date is the cause of the backwards stage it produces, so listing it twice
  * would double-count the same mistake.
  */
-export function dataQuality(rows, { tolerance = 2 } = {}) {
+export function dataQuality(rows, { tolerance = 2, chain = HOSPITAL_CHAIN } = {}) {
   const years = rows.map((r) => year(r.grnDate)).filter((y) => y !== null).sort((a, b) => a - b);
   const era = percentile(years, 0.5);
+  const checked = sourceStages(chain.stages);
 
   const impossible = [];
   const backwards = [];
@@ -201,7 +233,7 @@ export function dataQuality(rows, { tolerance = 2 } = {}) {
   for (const row of rows) {
     const outOfEra =
       era !== null &&
-      STAGE_DATES.some((f) => {
+      chain.stageDates.some((f) => {
         const y = year(row[f]);
         return y !== null && Math.abs(y - era) > tolerance;
       });
@@ -210,7 +242,7 @@ export function dataQuality(rows, { tolerance = 2 } = {}) {
     // CSD makes chequeToCsd negative, and that is an ordinary thing rather than
     // a mistake to go and correct -- the CSD stamps are recorded by this
     // application, not transcribed from a report, so there is no source to fix.
-    const runsBackwards = SOURCE_STAGES.some((stage) => {
+    const runsBackwards = checked.some((stage) => {
       const days = daysBetween(row[stage.from], row[stage.to]);
       return days !== null && days < 0;
     });
