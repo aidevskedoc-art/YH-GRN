@@ -9,21 +9,43 @@
  * A screen key is the route it guards, minus the slash. That is deliberate --
  * the client decides what to show from the same string the server decides what
  * to serve from, so a screen cannot be visible in the nav but closed at the API.
+ * An OP Pharmacy key is its hospital twin's under `ph-`, guarding that screen's
+ * address under /op-pharmacy; `ph-csd` guards no address of its own but the
+ * second queue at /csd.
  */
+
+/**
+ * The headings the Screen access tick boxes stand under on User management:
+ * the two sub-menus of the sidebar's GRN Reco, its Vendor Reco dropdown, and
+ * one for the two links that administer the tool, which the sidebar draws
+ * below those under no heading. Each queue of CS Department stands under the
+ * side it belongs to. Each screen below names one as its `group`, and a
+ * group's screens stand together in the list.
+ */
+const HOSPITALS = 'Hospitals';
+const OP_PHARMACY = 'OP Pharmacy';
+const VENDOR_RECO = 'Vendor Reco';
+const ADMINISTRATION = 'Administration';
+
 /*
  * In the sidebar's order and under the sidebar's names, so the Screen access
- * tick boxes on User management read as a list of the menu an account will see.
+ * tick boxes on User management read as a list of the menu an account will
+ * see: the Hospitals sub-menu's screens, then OP Pharmacy's, then the rest. CS
+ * Department is the one screen that is two entries here -- a tick box for each
+ * of its queues, named as the screen's own dropdown names them.
  */
 export const SCREENS = [
   {
     key: 'upload',
     label: 'New uploads',
     hint: 'Upload the monthly reports and run a reconciliation.',
+    group: HOSPITALS,
   },
   {
     key: 'results',
     label: 'Results',
     hint: 'Pending, Valid GRNs and the GRNS SPAN turnaround report.',
+    group: HOSPITALS,
   },
   {
     // The results screen narrowed to the two views Accounts works from: the
@@ -42,16 +64,73 @@ export const SCREENS = [
     key: 'accounts-department',
     label: 'Accounts Department',
     hint: 'Accounts and the PR-to-Bank ageing, without the pending half.',
+    group: HOSPITALS,
   },
   {
+    // The hospitals' queue on the CS Department screen. That screen shows two
+    // queues -- this one and OP Pharmacy's (`ph-csd` below) -- from separate
+    // tables behind separate endpoints, and each is its own grant: an account
+    // sees the screen if it holds either, and on it only the queues it holds.
+    // The key is the one the screen has always had, so every account that was
+    // given CS Department still holds this queue.
     key: 'csd',
-    label: 'CS Department',
-    hint: 'The handover queue and its stages.',
+    label: 'Hospital CSD',
+    hint: 'The hospital handover queue and its stages, on the CS Department screen.',
+    group: HOSPITALS,
   },
   {
     key: 'config',
     label: 'Configuration',
     hint: 'Branch codes, locations and bank accounts, and which branches are in scope.',
+    group: HOSPITALS,
+  },
+  /*
+   * OP Pharmacy's copy of the five screens above, each its own grant: the
+   * hospital screen's key under `ph-`, as the pharmacies' tables are the
+   * hospitals' under `ph_`. Their own keys rather than the hospital screens'
+   * doing for both, which is how they began -- so that an account can be given
+   * Pharmacy Results without Results, or the other way round. Every
+   * /api/op-pharmacy router asks for these and for none of the hospital keys.
+   *
+   * In the hospital screens' order and after all five, so the list above reads
+   * as the Hospitals sub-menu and this as OP Pharmacy's. Placed without moving
+   * a key that was already here: an account's screens are stored in this order
+   * (cleanScreens in routes/users.js) and the activity log compares them as
+   * stored, so moving one would show as a change to every account holding it.
+   *
+   * Accounts holding a hospital screen when these arrived were given its twin
+   * once, by `npm run migrate` -- see 'ph-screen-grants' in db/schema.sql,
+   * which lists the keys as this catalogue stood when it ran.
+   */
+  {
+    key: 'ph-upload',
+    label: 'Pharmacy Uploads',
+    hint: 'Upload the pharmacy reports and run their reconciliation.',
+    group: OP_PHARMACY,
+  },
+  {
+    key: 'ph-results',
+    label: 'Pharmacy Results',
+    hint: 'Total GRNS, BPAD, Accounts, Pending GRNS and the GRN age report.',
+    group: OP_PHARMACY,
+  },
+  {
+    key: 'ph-accounts-department',
+    label: 'Ph-Accounts',
+    hint: 'Accounts and the GRN age report, without the pending half.',
+    group: OP_PHARMACY,
+  },
+  {
+    key: 'ph-csd',
+    label: 'OP Pharmacy CSD',
+    hint: 'The OP Pharmacy handover queue and its stages, on the CS Department screen.',
+    group: OP_PHARMACY,
+  },
+  {
+    key: 'ph-config',
+    label: 'Ph-Configuration',
+    hint: 'Branch codes, unit names, BPAD locations and bank accounts, and which branches are in scope.',
+    group: OP_PHARMACY,
   },
   {
     // Every vendor the HIS vendor master -- the correct data -- has ever
@@ -62,6 +141,7 @@ export const SCREENS = [
     key: 'vendor-master',
     label: 'Vendor Master',
     hint: 'Every HIS vendor with its latest details, kept up to date by each HIS vs FOCUS Reco. Read-only.',
+    group: VENDOR_RECO,
   },
   {
     // The HIS vendor master against the Accounts vendor list. Its own grant
@@ -72,6 +152,7 @@ export const SCREENS = [
     key: 'msme-reco',
     label: 'HIS vs FOCUS Reco',
     hint: 'HIS vendor master against the FOCUS (Accounts) vendor list: PAN, GST, drug licence, MSME and bank details.',
+    group: VENDOR_RECO,
   },
   {
     // Account management. A standard user given this can create and edit
@@ -80,11 +161,13 @@ export const SCREENS = [
     key: 'users',
     label: 'User management',
     hint: 'Create and edit standard accounts. Administrator accounts stay with administrators.',
+    group: ADMINISTRATION,
   },
   {
     key: 'logs',
     label: 'Activity logs',
     hint: 'Who did what and when, including deletions. Read-only.',
+    group: ADMINISTRATION,
   },
 ];
 
@@ -118,6 +201,8 @@ export const ROLE_KEYS = ROLES.map((r) => r.key);
  * department nobody has stated should say so rather than be filed under a guess.
  */
 export const DEPARTMENTS = [
+  { key: 'HOSPITAL', label: 'Hospital' },
+  { key: 'OP_PHARMACY', label: 'OP Pharmacy' },
   { key: 'CSD', label: 'CSD' },
   { key: 'ACCOUNTS', label: 'Accounts' },
 ];

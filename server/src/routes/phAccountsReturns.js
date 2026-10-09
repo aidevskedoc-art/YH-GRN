@@ -25,7 +25,7 @@ import { logActivity } from '../services/activityLog.js';
 
 export const phAccountsReturnsRouter = express.Router();
 
-phAccountsReturnsRouter.use(requireAuth, requireScreen('results', 'accounts-department'));
+phAccountsReturnsRouter.use(requireAuth, requireScreen('ph-results', 'ph-accounts-department'));
 
 const POOL = { query };
 const refuse = (status, error) => ({ refused: { status, error } });

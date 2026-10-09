@@ -25,10 +25,14 @@ csdRouter.use(requireAuth);
  * Two audiences for this router, so the screen check is per route.
  *
  * The queue itself -- listing it, moving stages, correcting dates, deleting a
- * record -- is CSD's own work and needs the CS Department screen. Handing a GRN
- * over (and taking it back again) is Accounts' side of that handover: it is
- * done from the Results and Accounts tables, so anyone who can work either of
- * those may do it without being given CSD's queue as well.
+ * record -- is CSD's own work and needs the Hospital CSD grant (`csd`), the
+ * hospitals' queue on the CS Department screen. Handing a GRN over (and taking
+ * it back again) is Accounts' side of that handover: it is done from the
+ * Results and Accounts tables, so anyone who can work either of those may do
+ * it without being given CSD's queue as well.
+ *
+ * The hospitals' grants only: OP Pharmacy's queue is behind its own three --
+ * see routes/phCsd.js -- so neither queue's grant opens the other.
  */
 const CSD_QUEUE = requireScreen('csd');
 const CSD_HANDOVER = requireScreen('csd', 'results', 'accounts-department');

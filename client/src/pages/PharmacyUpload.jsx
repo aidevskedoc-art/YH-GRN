@@ -4,7 +4,7 @@ import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import FileDrop, { readableSize } from '../components/FileDrop.jsx';
 import { IconAlert, IconArrowRight, IconCheck } from '../components/icons.jsx';
-import { OP_PHARMACY_LABELS, opPharmacyPath } from '../services/screens.js';
+import { OP_PHARMACY_LABELS, opPharmacyGrant, opPharmacyPath } from '../services/screens.js';
 
 /** "GRN report" for one file, "3 GRN reports" for several. */
 function several(files, noun) {
@@ -359,7 +359,7 @@ export default function PharmacyUpload() {
             <IconCheck size={16} />
             <span>
               <strong>Stored.</strong> {storedLines(done).join(' ')}{' '}
-              {can('results') && (
+              {can(opPharmacyGrant('results')) && (
                 <button type="button" className="ghost ghost--sm" onClick={() => navigate(opPharmacyPath('results'))}>
                   Open {OP_PHARMACY_LABELS.results} <IconArrowRight size={13} />
                 </button>

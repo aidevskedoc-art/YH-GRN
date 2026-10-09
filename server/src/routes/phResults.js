@@ -87,9 +87,10 @@ import { summarise, dataQuality, gapsFor, PHARMACY_CHAIN } from '../services/tur
 
 export const phResultsRouter = express.Router();
 
-// Either grant, as on the hospital router: Ph-Accounts is this screen with
-// fewer views, reading the same rows.
-phResultsRouter.use(requireAuth, requireScreen('results', 'accounts-department'));
+// Either of the two pharmacy screens' own grants, as the hospital router takes
+// either of its two: Ph-Accounts is this screen with fewer views, reading the
+// same rows. No hospital grant opens these.
+phResultsRouter.use(requireAuth, requireScreen('ph-results', 'ph-accounts-department'));
 
 const VALID_STATUSES = new Set(Object.values(STATUS));
 const MAX_PAGE_SIZE = 200;

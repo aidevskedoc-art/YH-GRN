@@ -32,8 +32,16 @@ export const resultsRouter = express.Router();
  * rows from the same endpoints. What it leaves out is decided in the browser,
  * by offering no other view, so there is nothing here to narrow and no second
  * copy of these queries to keep in step. See config/screens.js.
+ *
+ * On this router's own addresses only -- every one of them is /:id/<view>.
+ * It shares its mount, /api/batches, with the upload routes and stands ahead
+ * of them (see index.js), so a gate on everything arriving here also stood in
+ * front of /limits and the upload itself, and an account given New uploads
+ * alone was turned away before either was reached. Anything that is not this
+ * router's passes through untouched, to be answered -- and gated -- by the
+ * router that owns it.
  */
-resultsRouter.use(requireAuth, requireScreen('results', 'accounts-department'));
+resultsRouter.use('/:id/:view', requireAuth, requireScreen('results', 'accounts-department'));
 
 const VALID_STATUSES = new Set(Object.values(STATUS));
 const MAX_PAGE_SIZE = 200;

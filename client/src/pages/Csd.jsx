@@ -15,10 +15,11 @@
  * in separate tables behind separate endpoints, and the Select View dropdown
  * at the top says which of the two this is showing -- see SOURCES below. They
  * are worked the same way, so everything under the dropdown is the one screen
- * driven through whichever queue is chosen.
+ * driven through whichever queue is chosen. Each queue is behind its own
+ * grant, so an account may be shown one and not the other.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Navigate, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { exportCsd } from '../services/exporter.js';
 import { singlePress } from '../services/press.js';
@@ -40,7 +41,7 @@ import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from '../components/VendorCells.jsx';
 import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, leadFigures, tabTitle } from '../services/resultsViews.js';
 import { csdChequeHandovers, expandCheques } from '../services/chequeGroups.js';
-import { OP_PHARMACY_LABELS, opPharmacyPath } from '../services/screens.js';
+import { OP_PHARMACY_LABELS, opPharmacyGrant, opPharmacyPath } from '../services/screens.js';
 
 
 /** Matches the results page's search box -- see the note there. */
@@ -57,6 +58,12 @@ const SEARCH_DELAY_MS = 300;
  *
  * What differs is named rather than tested for by key:
  *
+ *  - `grant`: the screen grant the queue is behind. Each its own (CSD_QUEUE in
+ *    the server's routes/csd.js and routes/phCsd.js), so an account can be
+ *    given one queue without the other.
+ *  - `resultsGrant`: the grant of the results screen the queue's GRNs are sent
+ *    from, which the empty queue's button leads to. An account holding a queue
+ *    need not hold that screen, and its twin on the other side is no stand-in.
  *  - `vendorMaster`: the MSME filter and the Vendor Master's four columns.
  *    Both queues have them: the master knows a pharmacy vendor by its Focus
  *    code, which the pharmacies' server looks it up with.
@@ -70,7 +77,8 @@ const SEARCH_DELAY_MS = 300;
  * The choice lives in the URL (`?source=pharmacy`) beside the stage, so a link
  * can open the pharmacy queue and Back returns to the one that was showing.
  * Anything unrecognised is the hospitals', which is what the screen has always
- * opened on.
+ * opened on, for an account that holds it; see Csd below for one that does
+ * not.
  */
 const HOSPITAL = 'hospital';
 const PHARMACY = 'pharmacy';
@@ -79,6 +87,7 @@ const SOURCES = {
   [HOSPITAL]: {
     key: HOSPITAL,
     label: 'Hospital CSD',
+    grant: 'csd',
     list: api.listCsd,
     setStage: api.setCsdStage,
     remove: api.removeFromCsd,
@@ -92,12 +101,14 @@ const SOURCES = {
     emptyText:
       'Open the Valid GRNS tab on the results page and press Send to CSD on a row. What you send appears here, with the GRN’s details as they stood at the time.',
     resultsPath: '/results',
+    resultsGrant: 'results',
     resultsLabel: 'Go to results',
     searchPlaceholder: 'Search vendor, vendor code, GRN or bill no.',
   },
   [PHARMACY]: {
     key: PHARMACY,
     label: 'OP Pharmacy CSD',
+    grant: opPharmacyGrant('csd'),
     list: api.phListCsd,
     setStage: api.phSetCsdStage,
     remove: api.phRemoveFromCsd,
@@ -110,12 +121,13 @@ const SOURCES = {
     sentFrom: OP_PHARMACY_LABELS.results,
     emptyText: `Open ${OP_PHARMACY_LABELS.results} and choose Send to CSD on a GRN that is in accounts with its cheque prepared. What you send appears here, with the GRN’s details as they stood at the time.`,
     resultsPath: opPharmacyPath('results'),
+    resultsGrant: opPharmacyGrant('results'),
     resultsLabel: `Go to ${OP_PHARMACY_LABELS.results}`,
     searchPlaceholder: 'Search vendor, vendor code, GRN, bill no. or unit',
   },
 };
 
-/** The dropdown's options, in the order it lists them. */
+/** Both queues, in the order the dropdown lists them -- an account is offered the ones it holds (see Csd below). */
 const SOURCE_OPTIONS = [SOURCES[HOSPITAL], SOURCES[PHARMACY]];
 
 /**
@@ -425,8 +437,17 @@ function RejectReasonDialog({ subject, busy, error, onSubmit, onClose }) {
 }
 
 /**
- * The screen: whichever queue the URL names, as its own instance of the page
- * below.
+ * The screen: whichever queue the URL names, of the queues this account holds,
+ * as its own instance of the page below.
+ *
+ * Each queue is its own grant (`grant` in SOURCES) and the route lets in an
+ * account holding either, so which of the two it may see is settled here. The
+ * dropdown is handed only the queues held. An address naming one that is not
+ * -- /csd itself for an account given only OP Pharmacy's, or ?source=pharmacy
+ * followed by one given only the hospitals' -- is put right to the one that
+ * is, rather than opened onto a queue the server would refuse: the answer
+ * ProtectedRoute gives for a screen. The stage does not ride along, being a
+ * stage of the other queue.
  *
  * Keyed on the queue, so that changing it -- by the dropdown, by the sidebar
  * link, by Back -- throws away everything the page was holding rather than
@@ -438,13 +459,24 @@ function RejectReasonDialog({ subject, busy, error, onSubmit, onClose }) {
  * than this one.
  */
 export default function Csd() {
+  const { can } = useAuth();
   const [params] = useSearchParams();
-  const key = String(params.get('source') || '').toLowerCase() === PHARMACY ? PHARMACY : HOSPITAL;
-  return <CsdQueue key={key} source={SOURCES[key]} />;
+  const held = SOURCE_OPTIONS.filter((option) => can(option.grant));
+  const named = String(params.get('source') || '').toLowerCase() === PHARMACY ? PHARMACY : HOSPITAL;
+  const source = held.find((option) => option.key === named) ?? held[0];
+  // Neither queue: the route's guard has already sent that account elsewhere.
+  if (!source) return null;
+  if (source.key !== named) {
+    return <Navigate to={{ search: source.key === HOSPITAL ? '' : `?source=${source.key}` }} replace />;
+  }
+  return <CsdQueue key={source.key} source={source} sources={held} />;
 }
 
-/** One queue's page. `source` is which -- see SOURCES -- and never changes under it. */
-function CsdQueue({ source }) {
+/**
+ * One queue's page. `source` is which -- see SOURCES -- and never changes
+ * under it; `sources` is every queue this account holds, for the dropdown.
+ */
+function CsdQueue({ source, sources }) {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
 
@@ -467,8 +499,9 @@ function CsdQueue({ source }) {
   const [busy, setBusy] = useState(() => new Set());
   const [confirm, confirmDialog] = useConfirm();
   // Deleting a handover CSD have ruled on is an administrator's, the same as
-  // deleting an upload -- see handleDeleteRecord below.
-  const { isAdmin } = useAuth();
+  // deleting an upload -- see handleDeleteRecord below. `can` is for the empty
+  // queue's button to the results screen, which not every account here holds.
+  const { isAdmin, can } = useAuth();
   // What a rejection is being written for, or null -- `{ row }` from a row's
   // own stage picker, `{ bulk: true }` from the toolbar's "Move n to…". Both
   // doors lead to the same dialog, because the server requires a reason on
@@ -973,6 +1006,9 @@ function CsdQueue({ source }) {
    * page too, and that is the reason it is its own piece: one queue being
    * empty says nothing about the other, and a dropdown that vanished with the
    * rows would leave no way across to it.
+   *
+   * Only the queues this account holds are listed; with one, it names the
+   * queue and offers nothing else.
    */
   const sourcePicker = (
     <label className="picker">
@@ -981,9 +1017,13 @@ function CsdQueue({ source }) {
         className="field__input picker__input"
         value={source.key}
         onChange={(e) => selectSource(e.target.value)}
-        title="Show the hospitals' CSD queue or OP Pharmacy's"
+        title={
+          sources.length > 1
+            ? "Show the hospitals' CSD queue or OP Pharmacy's"
+            : `${source.label} is the queue this account has been given`
+        }
       >
-        {SOURCE_OPTIONS.map((option) => (
+        {sources.map((option) => (
           <option key={option.key} value={option.key}>
             {option.label}
           </option>
@@ -1005,9 +1045,11 @@ function CsdQueue({ source }) {
         <div className="empty empty--page">
           <h2>Nothing sent to CSD yet</h2>
           <p>{source.emptyText}</p>
-          <button className="primary" type="button" onClick={() => navigate(source.resultsPath)}>
-            {source.resultsLabel}
-          </button>
+          {can(source.resultsGrant) && (
+            <button className="primary" type="button" onClick={() => navigate(source.resultsPath)}>
+              {source.resultsLabel}
+            </button>
+          )}
         </div>
       </>
     );

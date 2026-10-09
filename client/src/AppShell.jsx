@@ -23,7 +23,15 @@ import {
   IconUsers,
   IconVendorCard,
 } from './components/icons.jsx';
-import { OP_PHARMACY_BASE, OP_PHARMACY_LABELS, OP_PHARMACY_SCREENS, opPharmacyPath } from './services/screens.js';
+import {
+  CSD_GRANTS,
+  OP_PHARMACY_BASE,
+  OP_PHARMACY_LABELS,
+  OP_PHARMACY_SCREENS,
+  PHARMACY_CSD_PATH,
+  opPharmacyGrant,
+  opPharmacyPath,
+} from './services/screens.js';
 import { useTheme, initials } from './theme.js';
 
 const COLLAPSE_KEY = 'yh.grn.nav.collapsed';
@@ -97,29 +105,33 @@ const HOSPITAL_NAV = [
 /**
  * Every entry the sidebar can show, and what an account must hold to see it.
  *
- * `screen` is a grant handed out on the user management screen; `adminOnly` is
- * the role. An entry with neither is shown to anyone signed in. The list is
+ * `screen` is a grant handed out on the user management screen, or a list of
+ * them of which any one is enough; `adminOnly` is the role. An entry with
+ * neither is shown to anyone signed in. The list is
  * filtered per account below rather than rendered whole and greyed out -- a
  * link to a screen you cannot open is not information, it is a dead end.
  */
 const NAV = [
   ...HOSPITAL_NAV,
   // OP Pharmacy: the hospital entries one for one, each at its address under
-  // /op-pharmacy and behind the same grant, so an account sees the same
-  // screens in both sub-menus. Derived rather than written out, so the two
-  // cannot drift apart -- all but the label, which is OP Pharmacy's own (see
-  // OP_PHARMACY_LABELS in services/screens.js).
+  // /op-pharmacy and behind its own grant (opPharmacyGrant), so an account can
+  // be given a screen in one sub-menu without its twin in the other. Derived
+  // rather than written out, so the two cannot drift apart -- all but the
+  // label and the grant, which are OP Pharmacy's own (see OP_PHARMACY_LABELS
+  // in services/screens.js).
   ...HOSPITAL_NAV.filter((item) => OP_PHARMACY_SCREENS.includes(item.screen)).map((item) => ({
     ...item,
     label: OP_PHARMACY_LABELS[item.screen],
     to: opPharmacyPath(item.screen),
+    screen: opPharmacyGrant(item.screen),
     end: true,
     sub: 'op-pharmacy',
   })),
   // In GRN Reco itself, not in either sub-menu: no `sub`, so it stands in the
   // dropdown beside the two headings rather than under one of them, and there
-  // is one of it rather than a copy in each.
-  { to: '/csd', label: 'CS Department', icon: IconDepartment, end: true, screen: 'csd', group: 'grn' },
+  // is one of it rather than a copy in each. Shown to an account holding
+  // either queue's grant; the screen offers only the queues held.
+  { to: '/csd', label: 'CS Department', icon: IconDepartment, end: true, screen: CSD_GRANTS, group: 'grn' },
   // No Uploaded files entry: every GRN is shown once, from its latest upload,
   // so there are no uploads to manage one by one. Every entry below is its own
   // tick box on User management -- changing an administrator account stays
@@ -310,7 +322,12 @@ export default function AppShell() {
     if (item.adminOnly) return isAdmin;
     if (item.screen) return can(item.screen);
     return true;
-  });
+  })
+    // CS Department's link opens on the hospitals' queue. An account holding
+    // only OP Pharmacy's is given that queue's own address instead, so the
+    // link is where the screen rests: pressed again from the queue it goes
+    // nowhere, rather than to /csd and back with the page's filters lost.
+    .map((item) => (item.screen === CSD_GRANTS && !can('csd') ? { ...item, to: PHARMACY_CSD_PATH } : item));
   // A group this account holds nothing in is left out entirely, rather than
   // drawn as a control that opens onto nothing -- and a sub-menu likewise.
   const groups = NAV_GROUPS.map((g) => {

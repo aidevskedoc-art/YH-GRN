@@ -31,6 +31,8 @@ export const SCREEN_LABELS = {
   upload: 'New uploads',
   results: 'Results',
   'accounts-department': 'Accounts Department',
+  // The screen's own name, as the nav has it. On User management its two
+  // queues are a tick box each -- Hospital CSD and OP Pharmacy CSD.
   csd: 'CS Department',
   config: 'Configuration',
   'vendor-master': 'Vendor Master',
@@ -44,16 +46,19 @@ export const SCREEN_LABELS = {
  *
  * The GRN Reco dropdown is split into two sub-menus, Hospitals and OP
  * Pharmacy, and the second repeats the first screen for screen: each one at
- * the hospital screen's address under /op-pharmacy, behind the same grant.
- * One list, read by the router and the sidebar both, so a link cannot be drawn
- * for an address the router does not know.
+ * the hospital screen's address under /op-pharmacy, behind a grant of its own
+ * (opPharmacyGrant below). One list, read by the router and the sidebar both,
+ * so a link cannot be drawn for an address the router does not know.
  *
  * CS Department is in neither: it is a link of the GRN Reco dropdown itself,
- * so there is one of it and no OP Pharmacy twin.
+ * so there is one of it and no OP Pharmacy twin. It is one screen showing two
+ * queues, though, and each queue is its own grant -- see CSD_GRANTS below.
  *
- * Deliberately not in SCREEN_ROUTES: that is the list an account is forwarded
- * through when it lands somewhere it may not go, and it should arrive on a
- * hospital screen, not on its OP Pharmacy twin.
+ * Deliberately not in SCREEN_ROUTES: that list has no OP Pharmacy screen in
+ * it, and its GRN screens are what an account is forwarded through first when
+ * it lands somewhere it may not go -- holding a screen and its twin, it should
+ * arrive on the hospital one. An account holding only OP Pharmacy's is
+ * forwarded to those next: see firstScreenPath.
  */
 export const OP_PHARMACY_BASE = '/op-pharmacy';
 
@@ -80,13 +85,73 @@ export function opPharmacyPath(screen) {
 }
 
 /**
+ * The grant an OP Pharmacy screen is behind, from the hospital screen it is the
+ * twin of: the same key under `ph-`, as the server's catalogue has it.
+ *
+ * Its own grant, not the hospital screen's: Pharmacy Results and Results are
+ * two tick boxes on User management, and holding one says nothing of the
+ * other. Everything else here stays keyed on the hospital screen -- the label,
+ * the address, the page -- and this turns that key into what `can` is asked.
+ */
+export function opPharmacyGrant(screen) {
+  return `ph-${screen}`;
+}
+
+/**
+ * The CS Department screen's grants: one for each queue it shows, the
+ * hospitals' and OP Pharmacy's. One screen and one link in the sidebar, open to
+ * an account holding either; which queues it then offers is the page's to say
+ * (SOURCES in pages/Csd.jsx, whose two `grant`s these are).
+ */
+export const CSD_GRANTS = ['csd', opPharmacyGrant('csd')];
+
+/**
+ * The CS Department screen as it opens on OP Pharmacy's queue: its one address
+ * with the queue named, which is how the page keeps its choice (`?source=` in
+ * pages/Csd.jsx, whose PHARMACY this spells out). Bare, the address opens on
+ * the hospitals' queue -- so an account holding only OP Pharmacy's is sent
+ * here instead, by the sidebar's link and by firstScreenPath, and arrives on
+ * the address the screen rests on rather than being put right to it each time.
+ */
+export const PHARMACY_CSD_PATH = `${SCREEN_ROUTES.csd}?source=pharmacy`;
+
+/** The hospitals' GRN screens, CS Department among them, in SCREEN_ROUTES' order. */
+const HOSPITAL_GRN = Object.keys(SCREEN_ROUTES).filter(
+  (key) => key === 'csd' || OP_PHARMACY_SCREENS.includes(key),
+);
+
+/** The same screens, in the order OP Pharmacy's twins are forwarded through: Results leading. */
+const PHARMACY_GRN = ['results', ...HOSPITAL_GRN.filter((key) => key !== 'results')];
+
+/**
+ * Every grant with the address it opens, in the order an account is forwarded
+ * through them.
+ *
+ * The hospitals' GRN screens first, as SCREEN_ROUTES has them, so an account
+ * holding a screen and its OP Pharmacy twin arrives on the hospital one. Then
+ * OP Pharmacy's in the same order, so an account holding only those arrives
+ * on one of them rather than on /no-access -- but with Pharmacy Results
+ * leading, since Results is where signing in aims a hospital account -- and
+ * its CSD grant at the CS Department screen opened on OP Pharmacy's queue.
+ * Then the rest, as they follow the GRN screens in the sidebar.
+ */
+const FORWARD_ROUTES = [
+  ...HOSPITAL_GRN.map((key) => [key, SCREEN_ROUTES[key]]),
+  ...PHARMACY_GRN.map((key) => [
+    opPharmacyGrant(key),
+    key === 'csd' ? PHARMACY_CSD_PATH : opPharmacyPath(key),
+  ]),
+  ...Object.entries(SCREEN_ROUTES).filter(([key]) => !HOSPITAL_GRN.includes(key)),
+];
+
+/**
  * Where to send an account that has landed somewhere it may not go.
  *
- * The first screen it does have, in the order above; `/login` when it has none,
- * which is the honest destination for an account nobody has ticked anything for
- * yet -- there is no page it could usefully be shown.
+ * The first screen it does have, in FORWARD_ROUTES' order; /no-access when it
+ * has none, which is the honest destination for an account nobody has ticked
+ * anything for yet -- there is no page it could usefully be shown.
  */
 export function firstScreenPath(screens = []) {
-  const found = Object.keys(SCREEN_ROUTES).find((key) => screens.includes(key));
-  return found ? SCREEN_ROUTES[found] : '/no-access';
+  const found = FORWARD_ROUTES.find(([key]) => screens.includes(key));
+  return found ? found[1] : '/no-access';
 }

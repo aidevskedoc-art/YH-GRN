@@ -27,9 +27,10 @@
  *    GRN age report (phTurnaround in routes/phResults.js): the same seven
  *    stamps, and the same refusals.
  *
- * Behind the same grants as the hospital queue: the CS Department screen for
- * the queue itself, and that or either of the two results screens for handing
- * a GRN over and taking it back.
+ * Behind its own grants, as the hospital queue is behind its own: OP Pharmacy
+ * CSD (`ph-csd`) for the queue itself, and that or either of the two pharmacy
+ * results screens (`ph-results`, `ph-accounts-department`) for handing a GRN
+ * over and taking it back. No hospital grant opens anything here.
  *
  * Each answer is a function of something that can run a query -- the pool for
  * a request, or one connection for a check that has to see what it has only
@@ -75,8 +76,8 @@ export const phCsdRouter = express.Router();
 phCsdRouter.use(requireAuth);
 
 /** The queue is CSD's own work; handing over and taking back is Accounts' side of it. */
-const CSD_QUEUE = requireScreen('csd');
-const CSD_HANDOVER = requireScreen('csd', 'results', 'accounts-department');
+const CSD_QUEUE = requireScreen('ph-csd');
+const CSD_HANDOVER = requireScreen('ph-csd', 'ph-results', 'ph-accounts-department');
 
 /** The pool, in the shape the functions below take. */
 const POOL = { query };

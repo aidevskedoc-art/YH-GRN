@@ -106,7 +106,7 @@ export const api = {
   /** Every account, plus the screen and role catalogues the form is built from. */
   listUsers: () => request('/users'),
 
-  /** Create one. `screens` is an array of screen keys: upload, results, csd. */
+  /** Create one. `screens` is an array of screen keys, as the catalogue that comes with listUsers names them. */
   createUser: (body) => request('/users', { method: 'POST', body }),
 
   /**

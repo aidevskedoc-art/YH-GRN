@@ -92,15 +92,21 @@ out access can never be locked out of a screen by the list it edits.
 
 ### Screen access
 
-These screens can be granted, each keyed by the route it guards:
+These screens can be granted, each keyed by the route it guards (an OP Pharmacy screen by its
+hospital twin's key under `ph-`):
 
 | Key | Screen |
 | --- | --- |
 | `upload` | New uploads |
 | `results` | Results, including the GRNS SPAN tab |
 | `accounts-department` | Accounts Department |
-| `csd` | CS Department |
+| `csd` | Hospital CSD — the hospitals' queue on the CS Department screen |
 | `config` | Configuration |
+| `ph-upload` | Pharmacy Uploads |
+| `ph-results` | Pharmacy Results |
+| `ph-accounts-department` | Ph-Accounts |
+| `ph-csd` | OP Pharmacy CSD — OP Pharmacy's queue on the CS Department screen |
+| `ph-config` | Ph-Configuration |
 | `vendor-master` | Vendor Master (see [Vendor Master](#vendor-master)) |
 | `msme-reco` | HIS vs FOCUS Reco (see [HIS vs FOCUS Reco](#his-vs-focus-reco)) |
 | `users` | User management |
@@ -108,6 +114,22 @@ These screens can be granted, each keyed by the route it guards:
 
 The list lives in `server/src/config/screens.js` and is sent down with the accounts, so the tick
 boxes on the screen and the validation on the way back are one list rather than two that can drift.
+On the form they stand under four headings — Hospitals, OP Pharmacy, Vendor Reco and
+Administration — the first three being the sidebar's own, with each CSD queue under the side it
+belongs to.
+
+Each OP Pharmacy screen is granted apart from its hospital twin: an account can hold Pharmacy
+Results without Results, or the other way round. CS Department is one screen with a tick box for
+each of its two queues; it appears in the sidebar for an account holding either, and its Select
+View dropdown lists only the queues held.
+
+The pharmacy screens used to open on their hospital twin's grant. So that nobody lost a screen when
+they were split, `npm run migrate` gives every account holding a hospital screen its pharmacy twin
+— **once**: untick afterwards whoever should not have it, and a later migrate leaves that alone.
+When upgrading across that change, stop the server, run `npm run migrate`, rebuild the client
+(`npm run build`) and start it again, without editing an account in between. If `users` is ever
+restored from a backup taken before that migrate, run
+`DELETE FROM one_time_migrations WHERE name = 'ph-screen-grants'` and migrate once more.
 
 An account is refused a screen in three places, and the last of them is the one that matters:
 
@@ -119,7 +141,7 @@ An account is refused a screen in three places, and the last of them is the one 
 
 ### Creating and changing accounts
 
-Each account also carries a **Department** — `CSD` or `Accounts`, or left as *Not stated*. It is a
+Each account also carries a **Department** — `Hospital`, `OP Pharmacy`, `CSD` or `Accounts`, or left as *Not stated*. It is a
 label on the person and nothing more: what an account may open is decided by the role and the screen
 grants alone, so someone in the CSD department with only Results ticked still sees only Results.
 Keeping the two apart means a reorganisation is a relabelling rather than a re-grant.

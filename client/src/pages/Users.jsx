@@ -31,9 +31,9 @@ function formatCreated(value) {
 /**
  * The departments, held here rather than read off the API response.
  *
- * Two fixed labels that do not change with the data, so the dropdown should not
- * be able to come up empty because a payload was missing a key -- a select with
- * nothing in it gives no clue that anything is wrong.
+ * A few fixed labels that do not change with the data, so the dropdown should
+ * not be able to come up empty because a payload was missing a key -- a select
+ * with nothing in it gives no clue that anything is wrong.
  *
  * The server keeps its own copy in config/screens.js and validates every write
  * against it. That one is the authority: this list decides what is OFFERED, and
@@ -41,6 +41,8 @@ function formatCreated(value) {
  * rather than quietly stored.
  */
 const DEPARTMENTS = [
+  { key: 'HOSPITAL', label: 'Hospital' },
+  { key: 'OP_PHARMACY', label: 'OP Pharmacy' },
   { key: 'CSD', label: 'CSD' },
   { key: 'ACCOUNTS', label: 'Accounts' },
 ];
@@ -66,6 +68,26 @@ const BLANK = {
   branchLocation: '',
   isActive: true,
 };
+
+/**
+ * The screen catalogue as the form draws it: each run of screens under the
+ * heading they share (`group` on the server's list -- Hospitals, OP Pharmacy
+ * and Vendor Reco as the sidebar has them, and Administration for the two
+ * links it draws below those), in the catalogue's order.
+ *
+ * A screen with no group stands under no heading, so a catalogue that carries
+ * none draws as the one plain list it used to be.
+ */
+function screenGroups(screens) {
+  const groups = [];
+  for (const screen of screens) {
+    const label = screen.group ?? '';
+    const last = groups[groups.length - 1];
+    if (last && last.label === label) last.screens.push(screen);
+    else groups.push({ label, screens: [screen] });
+  }
+  return groups;
+}
 
 /**
  * The create/edit form, as a panel over the page.
@@ -262,32 +284,39 @@ function UserForm({
 
           <div className="field">
             <span className="field__label">Screen access</span>
-            <div className="choices">
-              {screens.map((s) => {
-                const on = isAdminRole || form.screens.includes(s.key);
-                return (
-                  <label
-                    key={s.key}
-                    className={`choice${on ? ' is-on' : ''}${isAdminRole ? ' is-locked' : ''}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={on}
-                      // An administrator holds every screen whatever is stored,
-                      // so the boxes are shown ticked and left alone. The ticks
-                      // underneath are kept, and come back if the account is
-                      // later made a standard user.
-                      disabled={isAdminRole}
-                      onChange={() => toggleScreen(s.key)}
-                    />
-                    <span className="choice__text">
-                      <span className="choice__label">{s.label}</span>
-                      <span className="choice__hint">{s.hint}</span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
+            {/* Under a heading each, so the hospitals' screens and OP
+                Pharmacy's twins of them are told apart at a glance. */}
+            {screenGroups(screens).map((group) => (
+              <div key={group.label} className="choices-group">
+                {group.label && <span className="choices-group__label">{group.label}</span>}
+                <div className="choices">
+                  {group.screens.map((s) => {
+                    const on = isAdminRole || form.screens.includes(s.key);
+                    return (
+                      <label
+                        key={s.key}
+                        className={`choice${on ? ' is-on' : ''}${isAdminRole ? ' is-locked' : ''}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={on}
+                          // An administrator holds every screen whatever is
+                          // stored, so the boxes are shown ticked and left
+                          // alone. The ticks underneath are kept, and come
+                          // back if the account is later made a standard user.
+                          disabled={isAdminRole}
+                          onChange={() => toggleScreen(s.key)}
+                        />
+                        <span className="choice__text">
+                          <span className="choice__label">{s.label}</span>
+                          <span className="choice__hint">{s.hint}</span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
             <span className="field__hint">
               {isAdminRole
                 ? 'An administrator reaches every screen, and is the only role that can correct a date on the GRNS SPAN tab.'

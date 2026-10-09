@@ -17,7 +17,13 @@ import PharmacyUpload from './pages/PharmacyUpload.jsx';
 import PharmacyConfig from './pages/PharmacyConfig.jsx';
 import PharmacyResults from './pages/PharmacyResults.jsx';
 import PharmacyAccounts from './pages/PharmacyAccounts.jsx';
-import { OP_PHARMACY_BASE, OP_PHARMACY_SCREENS, opPharmacyPath } from './services/screens.js';
+import {
+  CSD_GRANTS,
+  OP_PHARMACY_BASE,
+  OP_PHARMACY_SCREENS,
+  opPharmacyGrant,
+  opPharmacyPath,
+} from './services/screens.js';
 
 /**
  * The OP Pharmacy screens that are built, by the hospital screen each is the
@@ -85,11 +91,14 @@ export default function App() {
           }
         />
         {/* Not under /results/:batchId: the queue spans every upload, and
-            outlives any one of them. */}
+            outlives any one of them. One screen behind two grants -- the
+            hospitals' queue and OP Pharmacy's are each its own -- so either
+            opens it, and the page offers only the queues the account holds
+            (see pages/Csd.jsx). */}
         <Route
           path="/csd"
           element={
-            <ProtectedRoute screen="csd">
+            <ProtectedRoute screen={CSD_GRANTS}>
               <Csd />
             </ProtectedRoute>
           }
@@ -122,10 +131,12 @@ export default function App() {
           }
         />
         {/* The OP Pharmacy sub-menu: the GRN screens above over again, each at
-            its hospital address under /op-pharmacy and behind the same grant.
-            Each is its own page, against the pharmacies' own files and tables
-            -- see OP_PHARMACY_PAGES above. The bare address lands on its
-            Results, as the bare site does. */}
+            its hospital address under /op-pharmacy and behind a grant of its
+            own (opPharmacyGrant in services/screens.js), so an account can
+            hold a screen here without its hospital twin. Each is its own
+            page, against the pharmacies' own files and tables -- see
+            OP_PHARMACY_PAGES above. The bare address lands on its Results, as
+            the bare site does. */}
         <Route path={OP_PHARMACY_BASE} element={<Navigate to={opPharmacyPath('results')} replace />} />
         {OP_PHARMACY_SCREENS.map((screen) => {
           const Page = OP_PHARMACY_PAGES[screen];
@@ -134,7 +145,9 @@ export default function App() {
               key={screen}
               path={opPharmacyPath(screen)}
               element={
-                <ProtectedRoute screen={screen}>{Page ? <Page /> : <OpPharmacy screen={screen} />}</ProtectedRoute>
+                <ProtectedRoute screen={opPharmacyGrant(screen)}>
+                  {Page ? <Page /> : <OpPharmacy screen={screen} />}
+                </ProtectedRoute>
               }
             />
           );

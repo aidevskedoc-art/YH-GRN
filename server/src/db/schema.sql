@@ -10,12 +10,14 @@ CREATE TABLE IF NOT EXISTS users (
   -- allowed to correct a date on the GRNS SPAN tab. USER reaches exactly what
   -- `screens` lists and reads those dates without changing them.
   role          TEXT NOT NULL DEFAULT 'USER',
-  -- Which screens a USER may open, by route key: upload, results, csd. Empty
-  -- for a new account until an admin ticks something. Ignored for an ADMIN --
+  -- Which screens a USER may open, by screen key -- SCREENS in
+  -- config/screens.js is the list. Empty for a new account until an admin
+  -- ticks something. Ignored for an ADMIN --
   -- see screensFor() in config/screens.js -- so the administrator cannot be
   -- locked out of a screen by unticking it.
   screens       TEXT[] NOT NULL DEFAULT '{}',
-  -- Which department the person belongs to: CSD or ACCOUNTS. A label, not a
+  -- Which department the person belongs to: HOSPITAL, OP_PHARMACY, CSD or
+  -- ACCOUNTS (DEPARTMENTS in config/screens.js). A label, not a
   -- permission -- what an account may open is decided by role and screens above
   -- and nowhere else. Nullable, because an account whose department nobody has
   -- stated should read as unstated rather than be filed under a guess.
@@ -76,9 +78,17 @@ BEGIN
     SELECT 1 FROM pg_constraint WHERE conname = 'users_department_check'
   ) THEN
     ALTER TABLE users ADD CONSTRAINT users_department_check
-      CHECK (department IN ('CSD', 'ACCOUNTS'));
+      CHECK (department IN ('HOSPITAL', 'OP_PHARMACY', 'CSD', 'ACCOUNTS'));
   END IF;
 END $$;
+
+-- HOSPITAL and OP_PHARMACY joined CSD and ACCOUNTS later. A database that
+-- already has the check from before they did still has the narrower one, which
+-- the block above never revisits -- so it is dropped and put back with every
+-- department in it. Nothing stored can fail it: the list only grew.
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_department_check;
+ALTER TABLE users ADD CONSTRAINT users_department_check
+  CHECK (department IN ('HOSPITAL', 'OP_PHARMACY', 'CSD', 'ACCOUNTS'));
 
 -- Sign-in matches on lower(username), so uniqueness has to be measured the same
 -- way. The UNIQUE on the column itself is case-SENSITIVE, which would let
@@ -966,6 +976,78 @@ UPDATE users
 UPDATE users
    SET screens = array_remove(screens, 'uploads')
  WHERE 'uploads' = ANY(screens);
+
+-- --------------------------------------------------------------------------
+-- Changes to stored data that are made once and must not be made again.
+--
+-- Everything else in this file is safe to repeat because repeating it finds
+-- nothing left to do. A change an administrator may afterwards undo by hand is
+-- not like that: run again, it would put back what they took away. So each
+-- such change claims a name here, in the transaction that makes it, and is
+-- skipped wherever the name is already taken.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS one_time_migrations (
+  name       TEXT PRIMARY KEY,
+  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- --------------------------------------------------------------------------
+-- 'ph-screen-grants': the OP Pharmacy screens were given screen keys of their
+-- own -- each hospital key under ph- (SCREENS in config/screens.js). Until then
+-- a hospital screen's grant opened its OP Pharmacy twin as well, and the one
+-- CS Department grant both queues. So that nobody loses a screen by the split,
+-- every account holding a hospital screen is given its twin:
+--
+--   upload -> ph-upload     results -> ph-results     csd -> ph-csd
+--   accounts-department -> ph-accounts-department     config -> ph-config
+--
+-- Once. From then on the two are separate tick boxes on User management, and
+-- an administrator who unticks one must not find it ticked again by the next
+-- `npm run migrate`: the INSERT below finds the name taken on every later run
+-- and nothing after it happens.
+--
+-- After the two key changes above, so an account still carrying
+-- 'accounts-depot' is given Ph-Accounts through the key it was renamed to.
+--
+-- Each list is written back in the catalogue's order, which is how the users
+-- API stores one (cleanScreens in routes/users.js): the activity log compares
+-- the stored lists as they are, and would otherwise report "screens" changed
+-- the next time such an account was saved. `catalogue` is SCREENS' keys in
+-- SCREENS' order. A key it does not list is kept, after the rest.
+--
+-- Administrators and deactivated accounts are included: what is stored against
+-- them is what they come back to if demoted or reactivated.
+--
+-- The name is claimed for the database, not for the accounts in it. If `users`
+-- is ever restored from a backup taken before this ran, its accounts come back
+-- without their twins and nothing here gives them again: delete the name
+-- (DELETE FROM one_time_migrations WHERE name = 'ph-screen-grants') and run
+-- `npm run migrate` once more.
+-- --------------------------------------------------------------------------
+DO $$
+DECLARE
+  catalogue CONSTANT TEXT[] := ARRAY[
+    'upload', 'results', 'accounts-department', 'csd', 'config',
+    'ph-upload', 'ph-results', 'ph-accounts-department', 'ph-csd', 'ph-config',
+    'vendor-master', 'msme-reco', 'users', 'logs'];
+  twinned CONSTANT TEXT[] := ARRAY['upload', 'results', 'accounts-department', 'csd', 'config'];
+BEGIN
+  INSERT INTO one_time_migrations (name) VALUES ('ph-screen-grants')
+  ON CONFLICT (name) DO NOTHING;
+
+  IF FOUND THEN
+    UPDATE users u
+       SET screens = ARRAY(
+             SELECT t.k
+               FROM unnest(u.screens || ARRAY(
+                      SELECT 'ph-' || s.h FROM unnest(u.screens) AS s(h) WHERE s.h = ANY(twinned)
+                    )) AS t(k)
+              GROUP BY t.k
+              ORDER BY array_position(catalogue, t.k) NULLS LAST, t.k
+           )
+     WHERE u.screens && twinned;
+  END IF;
+END $$;
 
 -- --------------------------------------------------------------------------
 -- HIS vs FOCUS Reco (named msme_reco here, which is what it began as): the

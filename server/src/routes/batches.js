@@ -669,9 +669,17 @@ batchesRouter.post(
   }),
 );
 
-/** GET /api/batches - most recent first. */
+/**
+ * GET /api/batches - most recent first.
+ *
+ * The list the Results and Accounts Department screens read, so it is behind
+ * their two grants. Said here because nothing else says it: the results
+ * router's own gate, which stands ahead of this router on the same mount,
+ * covers only that router's addresses.
+ */
 batchesRouter.get(
   '/',
+  requireScreen('results', 'accounts-department'),
   asyncHandler(async (req, res) => {
     const { rows } = await query(
       `SELECT b.id, b.name, b.grn_file_name, b.ageing_file_name,

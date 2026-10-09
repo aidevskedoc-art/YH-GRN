@@ -54,7 +54,7 @@ import {
   bulkCsdEligible,
   bulkForwardEligible,
   bulkReceiveEligible,
-  canHandToCsd,
+  canHandToPhCsd,
   cardShown,
   csdCardFigures,
   deptLabel,
@@ -70,7 +70,7 @@ import {
   tabTitle,
   titledCards,
 } from '../services/resultsViews.js';
-import { OP_PHARMACY_LABELS, opPharmacyPath } from '../services/screens.js';
+import { OP_PHARMACY_LABELS, opPharmacyGrant, opPharmacyPath } from '../services/screens.js';
 
 /**
  * Pharmacy Results and Ph-Accounts: the hospital results page
@@ -909,8 +909,9 @@ export default function PharmacyResults({ desk = 'results' }) {
      forward (components/ResultsTable.jsx). ---- */
 
   // Handing over is Accounts' side of the handover, so this screen's own
-  // grant is enough -- see canHandToCsd, and CSD_HANDOVER on the server.
-  const canCsd = canHandToCsd(can);
+  // grant is enough -- see canHandToPhCsd, and CSD_HANDOVER in the server's
+  // routes/phCsd.js. OP Pharmacy's grants, not the hospital screens'.
+  const canCsd = canHandToPhCsd(can);
   // The rows in flight: the one chosen first, then every row of its cheque.
   const [busy, setBusy] = useState(() => new Set());
   const [confirm, confirmDialog] = useConfirm();
@@ -1241,7 +1242,7 @@ export default function PharmacyResults({ desk = 'results' }) {
           Purchase report, matched to the Vendor Age report, the BPAD bill status and the bank statement. Nothing has
           been uploaded yet.
         </p>
-        {can('upload') && (
+        {can(opPharmacyGrant('upload')) && (
           <button className="primary" type="button" onClick={() => navigate(opPharmacyPath('upload'))}>
             Go to {OP_PHARMACY_LABELS.upload}
           </button>

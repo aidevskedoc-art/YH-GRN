@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
-import { OP_PHARMACY_LABELS, opPharmacyPath } from '../services/screens.js';
+import { OP_PHARMACY_LABELS, opPharmacyGrant, opPharmacyPath } from '../services/screens.js';
 
 /**
  * An OP Pharmacy screen that has its place in the menu and is not built yet.
@@ -12,7 +12,9 @@ import { OP_PHARMACY_LABELS, opPharmacyPath } from '../services/screens.js';
  * the hospital screen again under a pharmacy heading: that would put the
  * hospitals' figures on a page titled for the pharmacies.
  *
- * `screen` is the grant key of the hospital screen this one is the twin of.
+ * `screen` is the key of the hospital screen this one is the twin of -- what
+ * the label and the address are keyed on, not the grant it is behind
+ * (opPharmacyGrant).
  */
 export default function OpPharmacy({ screen }) {
   const navigate = useNavigate();
@@ -28,12 +30,12 @@ export default function OpPharmacy({ screen }) {
       </p>
       {/* Side by side, centred by the page's own text alignment; the space
           between them is the gap. */}
-      {can('results') && (
+      {can(opPharmacyGrant('results')) && (
         <button className="primary" type="button" onClick={() => navigate(opPharmacyPath('results'))}>
           Go to {OP_PHARMACY_LABELS.results}
         </button>
       )}{' '}
-      {can('upload') && (
+      {can(opPharmacyGrant('upload')) && (
         <button className="ghost" type="button" onClick={() => navigate(opPharmacyPath('upload'))}>
           Go to {OP_PHARMACY_LABELS.upload}
         </button>

@@ -5,8 +5,9 @@
  * The "Handed to Records" section at the foot of routes/results.js, for the
  * pharmacies' own table (ph_record_dispatches). As there, it is a note and not
  * a queue -- one route to file a GRN and one to take it back -- and it is
- * gated on the results screens, not on a screen of its own: the control is on
- * the results table, and anyone who can work that table can use it.
+ * gated on Pharmacy Results and Ph-Accounts, by their own grants, not on a
+ * screen of its own: the control is on the results table, and anyone who can
+ * work that table can use it.
  *
  * What differs is the key: a pharmacy GRN is its number AND its unit (see
  * "What a pharmacy GRN is known by" in services/phIngest.js), so a filed GRN
@@ -27,7 +28,7 @@ import { PH_NOT_IN_ACCOUNTS, PH_WRONG_UNIT, phGrnStanding } from './phResults.js
 
 export const phRecordsRouter = express.Router();
 
-phRecordsRouter.use(requireAuth, requireScreen('results', 'accounts-department'));
+phRecordsRouter.use(requireAuth, requireScreen('ph-results', 'ph-accounts-department'));
 
 const POOL = { query };
 const refuse = (status, error) => ({ refused: { status, error } });

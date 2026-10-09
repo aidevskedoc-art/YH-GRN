@@ -53,8 +53,15 @@ export function AuthProvider({ children }) {
    * Answered from the list the server resolved at sign-in, which already has an
    * admin holding every screen -- so this file has no rule of its own to keep in
    * step with the middleware's.
+   *
+   * `screen` is one key, or a list of alternatives of which holding any one is
+   * enough -- as requireScreen on the server reads several. The CS Department
+   * screen is the case: one screen behind two grants, one for each queue.
    */
-  const can = useCallback((screen) => (user?.screens ?? []).includes(screen), [user]);
+  const can = useCallback(
+    (screen) => [].concat(screen).some((key) => (user?.screens ?? []).includes(key)),
+    [user],
+  );
 
   const value = useMemo(
     () => ({ user, loading, login, logout, isAdmin, can, screens: user?.screens ?? [] }),

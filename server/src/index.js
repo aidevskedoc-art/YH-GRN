@@ -41,7 +41,9 @@ app.use('/api/auth', authRouter);
 // Accounts and screen access. Administrator-only, enforced inside the router.
 app.use('/api/users', usersRouter);
 // resultsRouter is mounted first: its paths are more specific (/:id/summary,
-// /:id/results, /:id/export) and must not be shadowed by batchesRouter.
+// /:id/results, /:id/export) and must not be shadowed by batchesRouter. Its
+// screen gate covers those paths only, so the upload routes behind it are
+// reached by an account that holds New uploads and neither results screen.
 app.use('/api/batches', resultsRouter);
 // Correcting a stage date writes to one ageing row, which no batch owns
 // exclusively -- the same row is read by whichever uploads are in scope.

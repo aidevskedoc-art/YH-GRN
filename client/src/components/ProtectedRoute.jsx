@@ -12,7 +12,9 @@ import { firstScreenPath } from '../services/screens.js';
  * a screen it does have, rather than shown an error: an account that was never
  * given Uploads has not done anything wrong by following a bookmark there.
  *
- * `screen` names a grant (upload, results, csd); `adminOnly` asks for the role.
+ * `screen` names a grant (upload, results, ph-results) or a list of grants of
+ * which any one is enough -- the CS Department screen is behind either of its
+ * two queues'; `adminOnly` asks for the role.
  * Neither is a security boundary on its own -- the API refuses the same
  * requests -- this only keeps the browser from showing a screen it cannot fill.
  */

@@ -745,8 +745,8 @@ export function actionFilterOptions(counts) {
  * what ticking it, and the rows it drags in by cheque number, are allowed to
  * do.
  *
- * `canCsd` is the caller's `can('csd')`: handing a GRN over needs that screen,
- * and these are predicates rather than hooks.
+ * `canCsd` is the caller's canHandToCsd(can) -- canHandToPhCsd(can) on the
+ * pharmacy tables -- and these are predicates rather than hooks.
  */
 
 /**
@@ -756,9 +756,20 @@ export function actionFilterOptions(counts) {
  * handover, done from the Results and Accounts tables, so either of those
  * screens is enough. CSD's own queue (stage moves and the rest) still needs the
  * CSD screen. Mirrors CSD_HANDOVER in routes/csd.js. `can` is useAuth's.
+ *
+ * The hospitals' grants: the OP Pharmacy tables ask canHandToPhCsd below.
  */
 export function canHandToCsd(can) {
   return can('csd') || can('results') || can('accounts-department');
+}
+
+/**
+ * The same for OP Pharmacy's queue, asked from Pharmacy Results and Ph-Accounts:
+ * its own three grants, since each pharmacy screen is granted apart from its
+ * hospital twin. Mirrors CSD_HANDOVER in routes/phCsd.js.
+ */
+export function canHandToPhCsd(can) {
+  return can('ph-csd') || can('ph-results') || can('ph-accounts-department');
 }
 
 export function bulkCsdEligible(row, canCsd) {

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api/client.js';
+import { useAuth } from '../context/AuthContext.jsx';
 import FileDrop, { readableSize } from '../components/FileDrop.jsx';
-import { IconAlert, IconArrowRight } from '../components/icons.jsx';
+import { IconAlert, IconArrowRight, IconCheck } from '../components/icons.jsx';
 
 /** "GRN report" for one file, "3 GRN reports" for several. */
 function several(files, noun) {
@@ -11,6 +12,7 @@ function several(files, noun) {
 
 export default function Upload() {
   const navigate = useNavigate();
+  const { can } = useAuth();
 
   // All three optional, and every one works uploaded on its own: a GRN report
   // with no ageing report reconciles as every row PENDING, an ageing report
@@ -37,6 +39,11 @@ export default function Upload() {
   const [bpadFiles, setBpadFiles] = useState([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  // What the last upload came to, where it is said on this page: for an account
+  // given New uploads without Results, which has no results screen to be taken
+  // to -- see handleSubmit. Null until one is stored, and again once the next
+  // file is picked.
+  const [stored, setStored] = useState(null);
   // The server's caps (GET /api/batches/limits), so a file it would refuse is
   // refused as it is picked rather than after it has been sent. Null until
   // they arrive, or if they never do -- then nothing is checked here and the
@@ -75,6 +82,7 @@ export default function Upload() {
   function pick(setter) {
     return (files) => {
       setError('');
+      setStored(null);
       setter(files);
     };
   }
@@ -82,6 +90,7 @@ export default function Upload() {
   async function handleSubmit(event) {
     event.preventDefault();
     setError('');
+    setStored(null);
 
     if (total === 0) {
       setError('Please choose at least one file: the GRN report, the Vendor Ageing report, the bank statement, or the BPAD register.');
@@ -109,7 +118,19 @@ export default function Upload() {
       // have just changed from rejected to unsent and somebody has to send
       // them again, so the results page says so rather than leaving it to be
       // noticed.
-      navigate('/results', reopenedRejections ? { state: { reopenedRejections } } : undefined);
+      if (can('results')) {
+        navigate('/results', reopenedRejections ? { state: { reopenedRejections } } : undefined);
+        return;
+      }
+      // An account given New uploads without Results. Sent to /results it
+      // would be forwarded straight back here to an empty form, with nothing
+      // to say the files had gone in -- so the upload is reported in place,
+      // and the slots are emptied for the next one.
+      setStored({ files: total, reopenedRejections });
+      setGrnFiles([]);
+      setAgeingFiles([]);
+      setBankFiles([]);
+      setBpadFiles([]);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -203,6 +224,17 @@ export default function Upload() {
           <div className="alert alert--error alert--icon" role="alert">
             <IconAlert size={16} />
             <span>{shownError}</span>
+          </div>
+        )}
+
+        {stored && !shownError && (
+          <div className="alert alert--info alert--icon" role="status">
+            <IconCheck size={16} />
+            <span>
+              <strong>Stored.</strong> {stored.files} file{stored.files === 1 ? '' : 's'} uploaded and reconciled.
+              {stored.reopenedRejections > 0 &&
+                ` ${stored.reopenedRejections} GRN${stored.reopenedRejections === 1 ? '' : 's'} CSD had rejected came round again and read${stored.reopenedRejections === 1 ? 's' : ''} as unsent now.`}
+            </span>
           </div>
         )}
 

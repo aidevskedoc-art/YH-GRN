@@ -13,9 +13,10 @@
  * and what each branch is called -- is written again here against the ph_
  * tables.
  *
- * Behind the same `upload` grant as the hospital screen. An account that may
- * upload sees both New uploads and Pharmacy Uploads in the sidebar, and the
- * API should not disagree with the menu about what it may do.
+ * Behind its own grant, `ph-upload`, apart from the hospital screen's
+ * `upload`: an account can be given Pharmacy Uploads without New uploads, or
+ * the other way round. The sidebar draws the link from the same key, so the
+ * API and the menu cannot disagree about what it may do.
  */
 import express from 'express';
 import { config } from '../config/env.js';
@@ -45,7 +46,7 @@ export const phBatchesRouter = express.Router();
 phBatchesRouter.use(requireAuth);
 
 /** GET /api/op-pharmacy/batches/limits - the caps, for checking files as they are picked. */
-phBatchesRouter.get('/limits', requireScreen('upload'), (req, res) => {
+phBatchesRouter.get('/limits', requireScreen('ph-upload'), (req, res) => {
   res.json({
     maxFileBytes: config.maxUploadBytes,
     maxTotalBytes: config.maxUploadTotalBytes,
@@ -695,7 +696,7 @@ async function configuredBranches() {
  */
 phBatchesRouter.post(
   '/',
-  requireScreen('upload'),
+  requireScreen('ph-upload'),
   refuseOversizedUpload,
   upload.fields([
     { name: 'grnFile', maxCount: MAX_FILES_PER_SLOT },

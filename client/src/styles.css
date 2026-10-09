@@ -3866,6 +3866,21 @@ select.spans__select { width: auto; min-width: 150px; }
 
 .choices { display: grid; gap: 8px; }
 
+/* A run of choices under the heading they share -- the Screen access boxes,
+   grouped as Hospitals, OP Pharmacy and the rest. The heading is set in the
+   type the card groups' own are on the results pages (.card-group__title), so
+   a heading over a set of things looks like one wherever it stands. */
+.choices-group + .choices-group { margin-top: 14px; }
+.choices-group__label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
 /* A whole row is the target, not a 13px box: these are read as a list of
    things this account can do, and each entry carries a line of explanation
    that should be part of what you are clicking. */

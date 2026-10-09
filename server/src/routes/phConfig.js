@@ -23,8 +23,9 @@
  * them in the same transaction (relinkPhResults). The tick box, the account
  * number and the BPAD location change none of that, and re-match nothing.
  *
- * Reading is open to any signed-in account; writing needs the Configuration
- * grant, as on the hospital route.
+ * Reading is open to any signed-in account, as on the hospital route; writing
+ * needs the Ph-Configuration grant (`ph-config`), which is its own and not the
+ * hospital screen's `config`.
  */
 import express from 'express';
 import { query, withTransaction } from '../db/pool.js';
@@ -189,7 +190,7 @@ phConfigRouter.get(
  */
 phConfigRouter.post(
   '/branches',
-  requireScreen('config'),
+  requireScreen('ph-config'),
   asyncHandler(async (req, res) => {
     const branchCode = toText(req.body?.branchCode);
     const location = toText(req.body?.location);
@@ -256,7 +257,7 @@ phConfigRouter.post(
  */
 phConfigRouter.patch(
   '/branches/:id',
-  requireScreen('config'),
+  requireScreen('ph-config'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
@@ -328,7 +329,7 @@ phConfigRouter.patch(
  */
 phConfigRouter.delete(
   '/branches/:id',
-  requireScreen('config'),
+  requireScreen('ph-config'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
