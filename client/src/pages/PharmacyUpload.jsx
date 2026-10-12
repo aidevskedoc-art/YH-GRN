@@ -85,7 +85,7 @@ function storedLines(done) {
   if (unpaired.grnCount > 0) {
     const pairs = unpaired.pairs
       .slice(0, 3)
-      .map((p) => `DivisionCode ${p.divisionCode || '(blank)'} with Unit Name ${p.unitName || '(blank)'}`)
+      .map((p) => `DivisionCode ${p.divisionCode || '(blank)'} with MainLocation ${p.unitName || '(blank)'}`)
       .join('; ');
     lines.push(
       `${count(unpaired.grnCount)} of the pending GRNs have a Vendor Age row under their GRN number that no ` +
@@ -100,10 +100,10 @@ function storedLines(done) {
     const names = done.grnUnconfiguredUnits ?? [];
     const units = names.map((u) => u || '(blank)').join(', ');
     lines.push(
-      `${count(done.grnUnconfiguredCount)} GRNs have a Unit Name (${units}) with no branch on Ph-Configuration, ` +
+      `${count(done.grnUnconfiguredCount)} GRNs have a MainLocation (${units}) with no branch on Ph-Configuration, ` +
         'so they stay pending until one is added.' +
         // A branch cannot be given a blank unit, so that promise is not theirs.
-        (names.some((u) => !u) ? ' The ones with no Unit Name at all have no branch to be given, and stay pending.' : ''),
+        (names.some((u) => !u) ? ' The ones with no MainLocation at all have no branch to be given, and stay pending.' : ''),
     );
   }
   if (done.ageingUnconfiguredRowCount > 0) {
@@ -119,7 +119,7 @@ function storedLines(done) {
   if (done.bpadUnconfiguredGrnCount > 0) {
     const units = (done.bpadUnconfiguredUnits ?? []).map((u) => u || '(blank)').join(', ');
     lines.push(
-      `${count(done.bpadUnconfiguredGrnCount)} GRNs were not matched to the BPAD file: their Unit Name (${units}) ` +
+      `${count(done.bpadUnconfiguredGrnCount)} GRNs were not matched to the BPAD file: their MainLocation (${units}) ` +
         'has no branch with a Location (BPAD) on Ph-Configuration.',
     );
   }

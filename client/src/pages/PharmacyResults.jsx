@@ -1573,9 +1573,9 @@ export default function PharmacyResults({ desk = 'results' }) {
             <th className="table__pin table__pin--grn" title="FeedNo in the GRN Purchase report">GRN No</th>
             <th>GRN Date</th>
             <th title="Type in the GRN Purchase report">Purchase Type</th>
-            <th title="Unit Name">Unit</th>
+            <th title="MainLocation">Unit</th>
             <th>Vendor</th>
-            <th title="PM Code">Vendor Code</th>
+            <th title="Code">Vendor Code</th>
             {VENDOR_HEADS}
             <th title="InvNo and InvDate">Bill No</th>
             <th className="table__num" title="NetAmt in the GRN Purchase report">GRN Amount</th>
@@ -1668,9 +1668,9 @@ export default function PharmacyResults({ desk = 'results' }) {
             <th className="table__pin table__pin--grn" title="FeedNo in the GRN Purchase report">GRN No</th>
             <th>GRN Date</th>
             <th title="Type in the GRN Purchase report">Purchase Type</th>
-            <th title="Unit Name">Unit</th>
+            <th title="MainLocation">Unit</th>
             <th>Vendor</th>
-            <th title="PM Code">Vendor Code</th>
+            <th title="Code">Vendor Code</th>
             {VENDOR_HEADS}
             <th>Bill No</th>
             <th>Bill Date</th>
@@ -1716,12 +1716,12 @@ export default function PharmacyResults({ desk = 'results' }) {
             {/* On Cheque view the cheque is what a row is looked up by, so it
                 takes GRN No's pinned place. */}
             <th className="table__pin table__pin--grn">{byCheque ? 'Cheque No' : 'GRN No'}</th>
-            <th title="Unit Name">Unit</th>
+            <th title="MainLocation">Unit</th>
             {!byCheque && <th>GRN Date</th>}
             {!byCheque && <th>Bill No</th>}
             {!byCheque && <th>Bill Date</th>}
             <th>Vendor</th>
-            <th title="PM Code">Vendor Code</th>
+            <th title="Code">Vendor Code</th>
             {VENDOR_HEADS}
             {byCheque ? (
               <>

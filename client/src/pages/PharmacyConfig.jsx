@@ -14,7 +14,7 @@ import { OP_PHARMACY_LABELS } from '../services/screens.js';
  * FIELDS below says which column of which file:
  *
  *   Branch code (Focus)   the Vendor Age report's DivisionCode        PSE
- *   Unit name (HIS)       the GRN Purchase report's Unit Name          Secunderabad
+ *   Unit name (HIS)       the GRN Purchase report's MainLocation       Secunderabad
  *   Location (BPAD)       the BPAD current bill status's Location      SBD1
  *   Account number        the account its bank statement is for        99995542441111
  *
@@ -23,7 +23,7 @@ import { OP_PHARMACY_LABELS } from '../services/screens.js';
  *
  * The three names do more here than on the hospital screen: they are how the
  * three reports are tied to one another. A GRN is matched to a Vendor Age row
- * only when the row's DivisionCode and the GRN's Unit Name are one branch's
+ * only when the row's DivisionCode and the GRN's MainLocation are one branch's
  * Branch code and Unit name here, and to a BPAD row only when the row's
  * Location is that branch's Location (BPAD) too. A unit that is not listed
  * has its GRNs matched to neither report, and one listed without a Location
@@ -52,7 +52,7 @@ const FIELDS = {
   location: {
     label: 'Unit name (HIS)',
     placeholder: 'Secunderabad',
-    source: 'Unit Name in the GRN Purchase report',
+    source: 'MainLocation in the GRN Purchase report',
   },
   bpadLocation: {
     label: 'Location (BPAD)',

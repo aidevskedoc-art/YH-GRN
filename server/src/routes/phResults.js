@@ -46,10 +46,10 @@
  *
  * The Vendor Master's columns ride on a pharmacy row as they do on a hospital
  * one -- MSME No, MSME Status, Inter, Supply Type -- looked up by the vendor's
- * FOCUS CODE, not its PM Code. The master is HIS's vendor list keyed by the
- * code Focus knows a vendor by; the GRN Purchase report carries that code
- * beside the pharmacy system's own PM Code, and it is the one the master has
- * (VENDOR_CODE below). A vendor it has no row for reads as a dash in all four.
+ * CODE, the GRN Purchase report's Code column, and by its Focus code only
+ * where the master has no row for the Code (VENDOR_CODE below; phVendorCode
+ * in services/vendorMsme.js). A vendor it has no row for under either reads
+ * as a dash in all four.
  *
  * What the hospitals have and this does not: the Ageing columns and their "as
  * of" date. The GRN age view is here from the GRN onward -- a pharmacy purchase
@@ -76,6 +76,7 @@ import {
 import { branchFor } from '../config/screens.js';
 import {
   msmeFilter,
+  phVendorCode,
   supplyTypeFilter,
   vendorColumns,
   vendorFields,
@@ -162,11 +163,11 @@ const ACCOUNT_NO = phBranchAccountNo(ROW_KEYS);
 const BRANCH_DIVISION_CODE = phBranchDivisionCode(ROW_KEYS);
 
 /**
- * The code the Vendor Master knows a GRN's vendor by: its Focus code, off the
- * GRN Purchase report. Not g.vendor_code, which is the PM Code -- the pharmacy
- * system's own, and on no master. See services/vendorMsme.js.
+ * The code the Vendor Master knows a GRN's vendor by: its Code off the GRN
+ * Purchase report (g.vendor_code), or its Focus code where the master has no
+ * row for that. See phVendorCode in services/vendorMsme.js.
  */
-const VENDOR_CODE = 'g.focus_code';
+const VENDOR_CODE = phVendorCode('g.vendor_code', 'g.focus_code');
 
 /**
  * bankAccountScope: which statements count towards clearance.
@@ -297,7 +298,7 @@ const bpadRowIsGrns = (alias) =>
 /**
  * Why a bill needs no cheque at all, whatever it has left to pay --
  * chequeExemptSql in results.js, both halves: the vendor is Inter, as picked on
- * the Vendor Master screen (looked up by its Focus code), or the BPAD status
+ * the Vendor Master screen (looked up as VENDOR_CODE says), or the BPAD status
  * has the bill at Accounts with "cash" in Pending With User/Status -- a cash
  * bill. A vendor the master does not have is not Inter: the COALESCE keeps a
  * missing answer from turning NOT (...) into NULL.
@@ -632,7 +633,7 @@ export const PH_CASH_TO_RECORDS =
 
 /** And what both answer for a GRN number sent under a unit it is not on file under. */
 export const PH_WRONG_UNIT =
-  'This GRN is on file under a different Unit Name. Reload the page and send it from its own row.';
+  'This GRN is on file under a different MainLocation. Reload the page and send it from its own row.';
 
 /**
  * Where a GRN stands, by the rules every row here is read with -- for the two
@@ -775,7 +776,7 @@ function mapRow(r) {
     focusCode: r.focus_code,
     vendorName: r.vendor_name,
     // The vendor's MSME No, MSME Status, Inter and Supply Type, off the Vendor
-    // Master by its Focus code -- see VENDOR_CODE.
+    // Master by its Code -- see VENDOR_CODE.
     ...vendorFields(r),
     totalAmount: r.total_amount,
     // Unit Name, and the register's Type column -- shown as Purchase Type.
@@ -990,16 +991,21 @@ function bpadSearchFilter(term, params) {
 }
 
 /**
- * The Focus code of the GRN a status row was matched to -- the code the Vendor
- * Master knows its vendor by. The status itself carries the PM Code only, so
- * it is read off the GRN the row is stored under (number and unit; one row at
- * most). Null where that GRN is no longer on file.
+ * The code the Vendor Master knows a status row's vendor by: the row's own
+ * Vendor Code, which is the purchase register's Code -- a row is its GRN's by
+ * that code (bpadRowIsGrns) -- or the vendor's Focus code where the master has
+ * no row for it (phVendorCode). The status carries no Focus code, so that one
+ * is read off the GRN the row is stored under (number and unit; one row at
+ * most), and is null where that GRN is no longer on file.
  */
-const BPAD_VENDOR_CODE = `(
+const BPAD_VENDOR_CODE = phVendorCode(
+  'b.vendor_code',
+  `(
     SELECT bg.focus_code FROM ph_grn_transactions bg
      WHERE bg.dpr_no_key = b.grn_no_key AND bg.unit_key = b.unit_key
      LIMIT 1
-  )`;
+  )`,
+);
 
 /** The ticked branches, the account's grant, the Location dropdown and the MSME one, for the status's rows. */
 function bpadScopeClauses({ grant, location, msme }, params) {
@@ -1084,7 +1090,7 @@ function mapBpadRow(r) {
     warehouse: r.warehouse,
     vendorCode: r.vendor_code,
     vendorName: r.vendor_name,
-    // The Vendor Master's four, by the Focus code of the row's GRN.
+    // The Vendor Master's four, by the row's Vendor Code -- see BPAD_VENDOR_CODE.
     ...vendorFields(r),
     invNo: r.inv_no,
     invDate: r.inv_date,
@@ -1477,7 +1483,7 @@ async function chequeRows(
     // The vendor's Vendor Master details on the outer select, after the fold:
     // it is the representative bill's vendor, looked up once per cheque listed.
     db.query(
-      `SELECT z.*, ${vendorColumns('z.focus_code')} FROM (
+      `SELECT z.*, ${vendorColumns(phVendorCode('z.vendor_code', 'z.focus_code'))} FROM (
          SELECT q.*,
                 SUM(q.payable_amount) OVER (PARTITION BY q.unit_key, q.cheque_no) AS cheque_amount,
                 (COUNT(*) OVER (PARTITION BY q.unit_key, q.cheque_no))::int AS cheque_grn_count,

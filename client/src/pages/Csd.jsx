@@ -1278,7 +1278,7 @@ function CsdQueue({ source, sources }) {
                     {/* The unit, where a GRN is known by its number and its
                         unit -- the pharmacies' queue. Beside the number it
                         completes, on both views: a cheque is one unit's too. */}
-                    {source.unitColumn && <th title="Unit Name in the GRN Purchase report">Unit</th>}
+                    {source.unitColumn && <th title="MainLocation in the GRN Purchase report">Unit</th>}
                     {!byCheque && <th>GRN Date</th>}
                     {!byCheque && <th>Bill No</th>}
                     {!byCheque && <th>Bill Date</th>}

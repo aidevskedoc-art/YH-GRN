@@ -31,6 +31,27 @@ function codeKeyOf(vendorCodeSql) {
 }
 
 /**
+ * The code the Vendor Master has a pharmacy vendor under, as SQL -- what OP
+ * Pharmacy's routes hand every lookup below as `vendorCodeSql`.
+ *
+ * A pharmacy GRN carries two codes for its vendor: Code, the pharmacy system's
+ * own (`codeSql`), and FocusCode, the accounts system's (`focusCodeSql`). Code
+ * is the one a vendor is looked up by. The master does not have every vendor
+ * under it, though: of the 131 on the April-September 2026 purchase register
+ * it has 33 under their Code ("10100087") and nearly all the rest under their
+ * Focus code alone ("JAYA000009"), which is HIS's own code for them. So a
+ * vendor whose Code the master has no row for is looked up by its Focus code
+ * instead, rather than read as a vendor the master does not have. Where the
+ * master has both, Code answers.
+ *
+ * To look a vendor up by its Code and nothing else, return `codeSql` here.
+ */
+export function phVendorCode(codeSql, focusCodeSql) {
+  return `(CASE WHEN EXISTS (SELECT 1 FROM vendor_master vc WHERE vc.code_key = ${codeKeyOf(codeSql)})
+                THEN ${codeSql} ELSE ${focusCodeSql} END)`;
+}
+
+/**
  * The MSME lookup, as SQL, for the vendor code in `vendorCodeSql`.
  *
  * Three answers, and the empty string is what tells them apart: NULL when the

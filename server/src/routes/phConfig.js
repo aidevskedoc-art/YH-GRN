@@ -5,7 +5,7 @@
  * box, kept in ph_branch_configs. What each is matched against:
  *
  *   branchCode     Branch code (Focus)   the Vendor Age report's DivisionCode
- *   location       Unit name (HIS)       the GRN Purchase report's Unit Name
+ *   location       Unit name (HIS)       the GRN Purchase report's MainLocation
  *   bpadLocation   Location (BPAD)       the BPAD current bill status's Location
  *   accountNo      Account number        the account its bank statement is for
  *
@@ -15,7 +15,7 @@
  *
  * Where it differs from the hospital route is in what a branch does. Here a
  * branch is what ties the three reports together -- a GRN is matched to a
- * Vendor Age row only when the row's DivisionCode and the GRN's Unit Name are
+ * Vendor Age row only when the row's DivisionCode and the GRN's MainLocation are
  * one branch's Branch code and Unit name (services/phIngest.js), and to a BPAD
  * row only when the row's Location is that branch's too (routes/phBatches.js).
  * So adding, removing or correcting a branch changes which ageing rows the
@@ -202,7 +202,7 @@ phConfigRouter.post(
     }
     if (!location) {
       return res.status(400).json({
-        error: "A unit name is required — the GRN Purchase report's Unit Name, such as Secunderabad.",
+        error: "A unit name is required — the GRN Purchase report's MainLocation, such as Secunderabad.",
       });
     }
 

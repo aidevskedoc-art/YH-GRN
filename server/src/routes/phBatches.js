@@ -66,15 +66,17 @@ phBatchesRouter.get('/limits', requireScreen('ph-upload'), (req, res) => {
 
      GRN Purchase report      Vendor Age report         BPAD current bill status
      FeedNo                   GRN number (in GRNDoc)    GRN No
-     PM Code                                            Vendor Code
-     Unit Name                DivisionCode              Location
+     Code                                               Vendor Code
+     MainLocation             DivisionCode              Location
        = Unit name (HIS)        = Branch code (Focus)     = Location (BPAD)
                               ...of one and the same branch
 
    This is stricter than the hospitals', where a row nobody has configured a
-   branch for is matched on its numbers alone. Here a GRN whose Unit Name is
-   not configured is matched to neither report: without the configuration there
+   branch for is matched on its numbers alone. Here a GRN whose unit is not
+   configured is matched to neither report: without the configuration there
    is nothing to say a row carrying the right GRN number is not another unit's.
+   (The unit is the register's MainLocation column, headed Unit Name until
+   October 2026 -- the name the notes below still call it by.)
 
    And it may well be. The units number their FeedNos independently, so one
    number under two units is two GRNs (see "What a pharmacy GRN is known by" in
@@ -161,7 +163,7 @@ export function checkAgeingDivisions(ageingRows, branches) {
         `The Vendor Age report cannot be matched: its DivisionCode is ${listed(codes)}, and ` +
         `Ph-Configuration has no branch with ${divisions.length === 1 ? 'that' : 'any of those'} as its ` +
         `Branch code (Focus)${have.length > 0 ? ` -- the branches there are ${listed(have)}` : ''}. ` +
-        `A Vendor Age row is matched to a GRN only when the row's DivisionCode and the GRN's Unit Name ` +
+        `A Vendor Age row is matched to a GRN only when the row's DivisionCode and the GRN's MainLocation ` +
         `are one branch's Branch code (Focus) and Unit name (HIS). ` +
         'Add or correct the branch on the Ph-Configuration screen and upload again. ' +
         'Nothing from this upload was stored.',
@@ -233,7 +235,7 @@ export function bpadLocationsForUnit(unitName, branches) {
  * `bpadLocationKeys`: the Locations its status rows may carry, or null where
  * its unit is not configured.
  *
- * The vendor code is the purchase register's PM Code, which is the code the
+ * The vendor code is the purchase register's Code, which is the code the
  * status files a bill under: on the sample, every one of the status's 12,446
  * rows names a GRN in the register under exactly that code.
  *
@@ -342,7 +344,7 @@ function notConfiguredMessage(unconfigured, fileLocations) {
     .map(([key, n]) => `${key || '(blank)'} (${counted(n, 'row')})`);
   return (
     `The BPAD bill status cannot be matched: Ph-Configuration has no branch with a Location (BPAD) ` +
-    `for Unit Name ${listed(units)}. A BPAD row is matched to a GRN only when the GRN's Unit Name and ` +
+    `for MainLocation ${listed(units)}. A BPAD row is matched to a GRN only when the GRN's MainLocation and ` +
     `the row's Location are one branch's Unit name (HIS) and Location (BPAD). ` +
     `The BPAD file's Location column has ${listed(locations)}. ` +
     'Add the branch, or fill in its Location (BPAD), on the Ph-Configuration screen and upload again. ' +

@@ -7,7 +7,7 @@
  *
  *   GRN Purchase report   the pharmacy system's purchase register. A GRN is a
  *                         FeedNo ("HE00184") rather than a DPR.No, the bill is
- *                         InvNo, and the vendor arrives under two codes -- PM
+ *                         InvNo, and the vendor arrives under two codes --
  *                         Code, the pharmacy system's own, and FocusCode, the
  *                         accounts system's.
  *   Vendor Age report     FOCUS's ageing export for the pharmacy division. It
@@ -31,9 +31,9 @@ import { ExcelFormatError, readGrid, findHeaderRow, indexHeaders, makeGetter } f
 
 /* Column names that identify each report's header row. Every heading in all
    three reports is compared with its whitespace removed and in capitals, so a
-   column is found whether its heading is spaced or not: "PM Code" and "PMCode"
-   are one column, and so are "GRN No" and "GRNNo". Which is why every name a
-   reader below asks for is written closed up. */
+   column is found whether its heading is spaced or not: "Main Location" and
+   "MainLocation" are one column, and so are "GRN No" and "GRNNo". Which is why
+   every name a reader below asks for is written closed up. */
 const PH_GRN_SIGNATURE = ['FEEDNO', 'INVNO', 'NETAMT'];
 const PH_AGEING_SIGNATURE = ['GRNDOC', 'BILLNO', 'VENDORNAME'];
 const PH_BPAD_SIGNATURE = ['GRNNO', 'VENDORCODE', 'GRNAMOUNT'];
@@ -47,27 +47,35 @@ const PH_BPAD_SIGNATURE = ['GRNNO', 'VENDORCODE', 'GRNAMOUNT'];
  *               the column "Type", and that is the only heading taken. It is
  *               stored as purchase_type and shown on screen as Purchase Type:
  *               "Type" on its own says nothing once it is out of the report.
- *   PM Code     the vendor's code in the pharmacy system, which is what a GRN
- *               is matched to the BPAD status by. Without it no status row can
- *               match any of the report's GRNs.
- *   Unit Name   the branch, as Ph-Configuration's Unit name (HIS) finds it.
- *               Without it no GRN belongs to a branch.
+ *   Code           the vendor's code in the pharmacy system, which is what a
+ *                  GRN is matched to the BPAD status by and its vendor looked
+ *                  up on the Vendor Master by. Without it no status row can
+ *                  match any of the report's GRNs.
+ *   MainLocation   the branch, as Ph-Configuration's Unit name (HIS) finds
+ *                  it. Without it no GRN belongs to a branch.
+ *
+ * The report used to head those two "PM Code" and "Unit Name". Either heading
+ * is taken, the new one first, so a report exported before the change still
+ * reads as it did.
  *
  * Kept apart from the signature so that a report missing one is recognised as
  * the purchase register and told which column it lacks, instead of being
  * turned away as a file that is not the purchase register at all.
  */
+const PH_GRN_VENDOR_CODE = ['CODE', 'PMCODE'];
+const PH_GRN_UNIT = ['MAINLOCATION', 'UNITNAME'];
+
 const PH_GRN_REQUIRED = [
   { label: 'Type', tokens: ['TYPE'] },
-  { label: 'PM Code', tokens: ['PMCODE'] },
-  { label: 'Unit Name', tokens: ['UNITNAME'] },
+  { label: 'Code', tokens: PH_GRN_VENDOR_CODE },
+  { label: 'MainLocation', tokens: PH_GRN_UNIT },
 ];
 
 /*
  * The column the Vendor Age report must carry beyond the three its header row
  * is found by. DivisionCode is the report's name for the branch -- the Branch
  * code (Focus) on Ph-Configuration -- and a row is matched to a GRN only when
- * it and the GRN's Unit Name are one configured branch's (see verdictsFor in
+ * it and the GRN's MainLocation are one configured branch's (see verdictsFor in
  * services/phIngest.js). A report without the column could match nothing, so
  * it is refused rather than stored.
  */
@@ -102,12 +110,12 @@ function phDate(value) {
  * Parse the GRN Purchase report (file 01, "Purchase Register With
  * Percentages").
  *
- * Columns: Type, InvNo, InvDate, FeedNo, FeedDate, Name, GstIn, the taxable
- * value and tax at each GST rate, TotTaxable, CGst, SGst, IGSt, TcsAmt, NetAmt,
- * FocusCode, PM Code, Unit Name.
+ * Columns: MainLocation, Location, Type, InvNo, InvDate, FeedNo, FeedDate,
+ * Name, GstIn, the taxable value and tax at each GST rate, TotTaxable, CGst,
+ * SGst, IGSt, TcsAmt, NetAmt, FocusCode, Code.
  *
  * Six of them are required: FeedNo, InvNo and NetAmt, which the header row is
- * found by, and Type, PM Code and Unit Name (see PH_GRN_REQUIRED). The column
+ * found by, and Type, Code and MainLocation (see PH_GRN_REQUIRED). The column
  * has to be there; a row that leaves one of them blank is still stored.
  *
  * `purchaseType` is the Type column: Cash or Credit.
@@ -116,13 +124,16 @@ function phDate(value) {
  * TotTaxable and the three GST totals, which are kept, and nothing about
  * whether a GRN has reached accounts turns on the rate it was taxed at.
  *
- * `vendorCode` is PM Code, not FocusCode. It is the code the BPAD status files
- * a bill under, which is what a vendor code on a GRN is matched by (see
+ * `vendorCode` is Code, not FocusCode. It is the code the BPAD status files a
+ * bill under, which is what a vendor code on a GRN is matched by (see
  * grnMatchKeys in routes/phBatches.js) -- as the hospitals' GRN report's
- * Vendor Code is. FocusCode, the ageing report's VendorCode, is kept beside it.
+ * Vendor Code is -- and the code the vendor is looked up on the Vendor Master
+ * by. FocusCode, the ageing report's VendorCode, is kept beside it.
  *
- * `location` is Unit Name ("Secunderabad"): the stores side's name for the
- * branch, which is what the hospitals' GRN report's Location is.
+ * `location` is MainLocation ("SECUNDERABAD"): the stores side's name for the
+ * branch, which is what the hospitals' GRN report's Location is. The report's
+ * own Location column beside it ("SECUNDERABAD MAIN") is read past: it is
+ * MainLocation a GRN is filed under.
  */
 export function readPhGrnReport(buffer) {
   const { sheetName, grid } = readGrid(buffer);
@@ -141,7 +152,7 @@ export function readPhGrnReport(buffer) {
   if (missing.length > 0) {
     throw new ExcelFormatError(
       `Required column${missing.length === 1 ? '' : 's'} missing - ${listed(missing.map((c) => c.label))}. ` +
-        'The GRN Purchase report must have FeedNo, InvNo, NetAmt, Type, PM Code and Unit Name.',
+        'The GRN Purchase report must have FeedNo, InvNo, NetAmt, Type, Code and MainLocation.',
     );
   }
 
@@ -161,7 +172,7 @@ export function readPhGrnReport(buffer) {
       billNo: toText(get('INVNO')),
       billNoKey: normKey(get('INVNO')),
       billDate: phDate(get('INVDATE')),
-      vendorCode: toText(get('PMCODE')),
+      vendorCode: toText(get(...PH_GRN_VENDOR_CODE)),
       focusCode: toText(get('FOCUSCODE')),
       vendorName: toText(get('NAME')),
       vendorNameKey: normVendorName(get('NAME')),
@@ -172,11 +183,11 @@ export function readPhGrnReport(buffer) {
       igst: toNumber(get('IGST')),
       tcsAmt: toNumber(get('TCSAMT')),
       totalAmount: toNumber(get('NETAMT')),
-      location: toText(get('UNITNAME')),
+      location: toText(get(...PH_GRN_UNIT)),
       // The unit folded for comparison. With the GRN number it is what a
       // pharmacy GRN is known by: the units number their FeedNos separately,
       // so one number under two units is two GRNs.
-      unitKey: normKey(get('UNITNAME')),
+      unitKey: normKey(get(...PH_GRN_UNIT)),
     });
   }
 

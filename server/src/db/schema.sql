@@ -1405,12 +1405,14 @@ CREATE TABLE IF NOT EXISTS ph_upload_batches (
 --
 --   dpr_no / dpr_date     FeedNo / FeedDate -- the GRN, as the pharmacies number it
 --   bill_no / bill_date   InvNo / InvDate
---   vendor_code           PM Code, the pharmacy system's own code for the vendor:
---                         the one the BPAD status files a bill under
+--   vendor_code           Code (once headed PM Code), the pharmacy system's own
+--                         code for the vendor: the one the BPAD status files a
+--                         bill under, and the Vendor Master is asked for
 --   vendor_name           Name
 --   total_amount          NetAmt
---   location              Unit Name ("Secunderabad") -- the stores side's name
---                         for the branch, as the hospitals' Location is
+--   location              MainLocation (once headed Unit Name; "Secunderabad")
+--                         -- the stores side's name for the branch, as the
+--                         hospitals' Location is
 --
 -- The register has no serial number, warehouse, PO, DC or transport and
 -- add/deduct amounts, so those stay NULL.
@@ -1802,13 +1804,13 @@ CREATE TABLE IF NOT EXISTS ph_csd_dispatches (
   sent_at                TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- The vendor's Focus code, as the GRN Purchase report carries it beside the PM
--- Code. It is the code the Vendor Master knows a pharmacy vendor by -- the PM
--- Code is the pharmacy system's own, and is on no master -- so it is what the
--- queue's MSME, Inter and Supply Type columns are looked up with
--- (services/vendorMsme.js). Snapshotted like every other field here; filled
--- for a handover made before the column existed from the GRN it was made for,
--- where that GRN is still on file.
+-- The vendor's Focus code, as the GRN Purchase report carries it beside Code
+-- (vendor_code above). The queue's MSME, Inter and Supply Type columns are
+-- looked up on the Vendor Master with vendor_code, and with this where the
+-- master has no row for that -- it holds most pharmacy vendors under their
+-- Focus code alone (phVendorCode in services/vendorMsme.js). Snapshotted like
+-- every other field here; filled for a handover made before the column existed
+-- from the GRN it was made for, where that GRN is still on file.
 ALTER TABLE ph_csd_dispatches ADD COLUMN IF NOT EXISTS focus_code TEXT;
 
 UPDATE ph_csd_dispatches c

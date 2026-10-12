@@ -21,8 +21,8 @@
  *    Ph-Configuration's names, folded (services/phBranchScope.js), where the
  *    hospitals search the GRN's Location for the branch.
  *  - The Vendor Master's four columns and the MSME filter are looked up by the
- *    vendor's Focus code, which a handover keeps beside its PM Code: the
- *    master knows a pharmacy vendor by that code, not by the PM Code.
+ *    vendor's Code, and by its Focus code -- which a handover keeps beside
+ *    it -- where the master has no row for the Code (VENDOR_CODE below).
  *  - A stamp's date is corrected as the hospitals' is, from the pharmacies' own
  *    GRN age report (phTurnaround in routes/phResults.js): the same seven
  *    stamps, and the same refusals.
@@ -47,7 +47,7 @@ import { branchFor } from '../config/screens.js';
 import { folded } from '../services/phIngest.js';
 import { phBranchScope, phBranchPick, phBranchAccountNo } from '../services/phBranchScope.js';
 import { logActivity } from '../services/activityLog.js';
-import { msmeFilter, vendorColumns, vendorFields } from '../services/vendorMsme.js';
+import { msmeFilter, phVendorCode, vendorColumns, vendorFields } from '../services/vendorMsme.js';
 import { PH_CASH_TO_RECORDS, PH_NOT_IN_ACCOUNTS, PH_WRONG_UNIT, phGrnStanding } from './phResults.js';
 import {
   MAX_PAGE_SIZE,
@@ -141,6 +141,13 @@ const LOCATION_FILTER = phBranchPick(ROW_KEYS);
 const BRANCH_ACCOUNT_NO = phBranchAccountNo(ROW_KEYS);
 
 /**
+ * The code the Vendor Master knows a handover's vendor by, off its own
+ * snapshot: its Code, or its Focus code where the master has no row for that
+ * -- VENDOR_CODE in routes/phResults.js, against the queue's columns.
+ */
+const VENDOR_CODE = phVendorCode('c.vendor_code', 'c.focus_code');
+
+/**
  * The account's own branch grant, then the dropdown's choice within it. The
  * grant is read off the signed-in user by the route and cannot be widened by
  * anything the browser sends; it is null for an administrator.
@@ -150,7 +157,7 @@ function branchClauses({ grant, location, msme }, params) {
     LOCATION_FILTER(grant, params),
     LOCATION_FILTER(location, params),
     // The MSME dropdown, a scope the cards count inside, as on the hospitals'.
-    msmeFilter(msme, 'c.focus_code'),
+    msmeFilter(msme, VENDOR_CODE),
   ];
 }
 
@@ -175,7 +182,7 @@ const dispatchSelect = (extra = '') => `
          c.net_amt, c.adj_pur_return, c.adjusted_jv, c.tds_jv, c.payable_amount,
          c.cheque_no, c.chq_date, c.payment_doc_no,
          ${BRANCH_ACCOUNT_NO} AS account_no,
-         ${vendorColumns('c.focus_code')},
+         ${vendorColumns(VENDOR_CODE)},
          c.status, c.discrepancy_notes,
          c.batch_id, c.sent_at,
          c.stage, c.stage_at, c.received_at, c.approved_at, c.rejected_at,
@@ -498,7 +505,8 @@ export async function sendPhCsd(db, body = {}, userId = null) {
     toText(body.discrepancyNotes),
     Number.isInteger(Number(body.batchId)) && Number(body.batchId) > 0 ? Number(body.batchId) : null,
     userId,
-    // The code the Vendor Master knows the vendor by -- see focus_code in schema.sql.
+    // What the Vendor Master is asked for a vendor it has no row for under
+    // vendor_code -- see focus_code in schema.sql.
     toText(body.focusCode),
   ];
 
