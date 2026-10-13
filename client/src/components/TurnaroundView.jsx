@@ -5,15 +5,19 @@ import { formatAmount, formatAmountOrDash, formatDate } from './ResultsTable.jsx
 import SpanPicker from './SpanPicker.jsx';
 import {
   HOSPITAL_CHAIN,
+  chainFor,
   checkpointLabel,
   spanDays,
   spanId,
   spanLabel,
+  spansIn,
   stageLabel,
   totalDays,
 } from '../services/stages.js';
+import { stepsOnIn } from '../services/csdSteps.js';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
+import Loading from './Loading.jsx';
 
 const int = (n) => (n === null || n === undefined ? '' : Number(n).toLocaleString('en-IN'));
 
@@ -67,6 +71,11 @@ function Days({ value }) {
  * starts at the GRN. The day columns need no telling: they are drawn in the
  * order the server sends its stages, and it sends that chain's.
  *
+ * With that side's CSD steps switched off the server measures a shorter run,
+ * and says so on its answer (`csdStepsOff`). The checkpoints drawn then are
+ * that run's -- see chainFor -- read off the answer itself, so the dates under
+ * Reached are always the ones the day counts beside them run between.
+ *
  * `sourceDated` is whether the ageing report behind the rows carries the stage
  * dates. The hospitals' does, so rows with no stage measured at all are an
  * upload made before those dates were captured, and the view says so. The
@@ -85,9 +94,16 @@ export default function TurnaroundView({
   updateDates = api.updateCsdDates,
   sourceDated = true,
   chain = HOSPITAL_CHAIN,
+  // Whose report this is -- 'hospital' unless said, 'pharmacy' from Pharmacy
+  // Results -- which is to say whose CSD steps switch it is measured under.
+  side = 'hospital',
 }) {
-  const { isAdmin: administrator } = useAuth();
+  const { isAdmin: administrator, csdOn, noteCsdSteps } = useAuth();
   const isAdmin = administrator && Boolean(updateDates);
+  // The session's view of that switch. Not sent with the request -- the server
+  // reads its own -- but listed with what the rows are loaded by, so the report
+  // is read again when the session learns the switch was thrown.
+  const sessionStepsOn = csdOn[side];
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = usePageSize();
@@ -135,9 +151,17 @@ export default function TurnaroundView({
       .then((answer) => latest() && setData(answer))
       .catch((err) => latest() && setError(err.message))
       .finally(() => latest() && setLoading(false));
-  }, [batchId, page, pageSize, q, location, msme, loadRows]);
+  }, [batchId, page, pageSize, q, location, msme, loadRows, sessionStepsOn]);
 
   useEffect(load, [load]);
+
+  // What this answer says of the switch, passed on to the session -- see
+  // noteCsdSteps in context/AuthContext.jsx. The table goes by its own answer
+  // either way (chainFor, below); this is how the sidebar hears of a switch
+  // thrown while somebody was paging through the report.
+  useEffect(() => {
+    if (data) noteCsdSteps(side, stepsOnIn(data));
+  }, [data, side, noteCsdSteps]);
 
   /** Open one transaction for correction. Only one is open at a time. */
   function startEdit(row) {
@@ -202,7 +226,7 @@ export default function TurnaroundView({
   // Only a load failure replaces the table; a save failure is reported above it,
   // with the row and its unsaved draft still on screen to correct.
   if (error && !data) return <div className="alert alert--error">{error}</div>;
-  if (loading && !data) return <div className="loading">Loading…</div>;
+  if (loading && !data) return <Loading />;
   if (!data) return null;
 
   const { stages, overall, quality, rows } = data;
@@ -227,13 +251,18 @@ export default function TurnaroundView({
    * screen, and a total that no visible pair of dates accounts for is a number
    * a reader cannot check.
    */
-  const custom = spans.length > 0;
+  // The run this answer was measured over: `chain`, or its shorter form with
+  // the CSD steps off. And the spans that run can still measure -- one picked
+  // before the switch was thrown may end at a checkpoint it no longer has.
+  const shown = chainFor(chain, stepsOnIn(data));
+  const picked = spansIn(shown, spans);
+  const custom = picked.length > 0;
   const dayColumns = custom
-    ? spans.map((span) => ({ key: spanId(span), label: spanLabel(span), span }))
+    ? picked.map((span) => ({ key: spanId(span), label: spanLabel(span), span }))
     : stages.map((s) => ({ key: s.key, label: stageLabel(s.key) }));
   const dateColumns = custom
-    ? chain.checkpoints.filter((c) => spans.some((s) => s.from === c.key || s.to === c.key))
-    : chain.checkpoints;
+    ? shown.checkpoints.filter((c) => picked.some((s) => s.from === c.key || s.to === c.key))
+    : shown.checkpoints;
 
   // Thirteen fixed columns, a day count per stage or span, the row total where
   // there is one, then the dates -- the same width the two header rows span
@@ -291,7 +320,16 @@ export default function TurnaroundView({
       {/* Above the table rather than up in the page toolbar: it configures this
           one report, and the toolbar's filters change which ROWS are shown,
           which is a different question from which columns measure them. */}
-      {onSpansChange && <SpanPicker spans={spans} onChange={onSpansChange} checkpoints={chain.checkpoints} />}
+      {/* Keyed on the run, so a picker left resting on a checkpoint the
+          shorter run does not have starts again on ones it does. */}
+      {onSpansChange && (
+        <SpanPicker
+          key={shown.checkpoints.length}
+          spans={picked}
+          onChange={onSpansChange}
+          checkpoints={shown.checkpoints}
+        />
+      )}
 
       <div className="table-wrap table-wrap--sticky">
         <table className="table">
@@ -355,7 +393,7 @@ export default function TurnaroundView({
               {!custom && (
                 <th
                   className="table__num"
-                  title={`${checkpointLabel(chain.start)} to the furthest checkpoint this GRN has reached — including the CSD handover, not just the cheque.`}
+                  title={`${checkpointLabel(shown.start)} to the furthest checkpoint this GRN has reached — including the CSD handover, not just the cheque.`}
                 >
                   Total
                 </th>
@@ -424,7 +462,7 @@ export default function TurnaroundView({
                 ))}
                 {!custom && (
                   <td className="table__num">
-                    <Days value={totalDays(row, chain.start)} />
+                    <Days value={totalDays(row, shown.start, shown.end)} />
                   </td>
                 )}
                 {dateColumns.map((c) => {

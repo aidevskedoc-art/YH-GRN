@@ -4,6 +4,7 @@ import { query } from '../db/pool.js';
 import { requireAuth, signToken } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
 import { screensFor, branchFor } from '../config/screens.js';
+import { csdSteps, stepsOff } from '../services/csdSteps.js';
 
 export const authRouter = express.Router();
 
@@ -29,6 +30,20 @@ export function publicUser(user) {
     branchLocation: branchFor(user),
     isActive: user.is_active !== false,
   };
+}
+
+/**
+ * What the session is told about the installation, beside the account: the
+ * sides whose CSD steps are switched off (services/csdSteps.js), which is what
+ * the browser hides that side's CS Department queue by.
+ *
+ * Not part of publicUser -- that is the account, and this is the same for
+ * every account. And absent altogether while both sides are on, so a session
+ * then is told exactly what it always was.
+ */
+async function sessionSettings() {
+  const off = stepsOff(await csdSteps());
+  return off.length > 0 ? { csdStepsOff: off } : {};
 }
 
 authRouter.post(
@@ -70,10 +85,14 @@ authRouter.post(
         .json({ error: 'Login restricted. Please contact the administrator.' });
     }
 
-    return res.json({ token: signToken(user), user: publicUser(user) });
+    return res.json({ token: signToken(user), user: publicUser(user), ...(await sessionSettings()) });
   }),
 );
 
-authRouter.get('/me', requireAuth, (req, res) => {
-  res.json({ user: publicUser(req.user) });
-});
+authRouter.get(
+  '/me',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    res.json({ user: publicUser(req.user), ...(await sessionSettings()) });
+  }),
+);

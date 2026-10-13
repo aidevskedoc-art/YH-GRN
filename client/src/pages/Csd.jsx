@@ -37,6 +37,7 @@ import { useConfirm } from '../components/ConfirmDialog.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import Sheet from '../components/Sheet.jsx';
+import Loading from '../components/Loading.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from '../components/VendorCells.jsx';
 import { ACCOUNTS_CHEQUE_VIEW, ACCOUNTS_GRN_VIEW, leadFigures, tabTitle } from '../services/resultsViews.js';
@@ -1248,7 +1249,7 @@ function CsdQueue({ source, sources }) {
       {error && <div className="alert alert--error">{error}</div>}
 
       {loading && !data ? (
-        <div className="loading">Loading…</div>
+        <Loading />
       ) : (
         data && (
           <>

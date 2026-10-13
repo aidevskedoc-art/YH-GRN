@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
 import { nextAgeSort, todayIso } from '../services/ageing.js';
 import { singlePress } from '../services/press.js';
+import { stepsOnIn } from '../services/csdSteps.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
   ACCOUNTS_GRN_VIEW,
@@ -32,6 +33,7 @@ import {
   VALID,
   bulkCategory as bulkCategoryOf,
   cardShown,
+  csdCardShown,
   isAccountsSection,
   supplyCardFigure,
   tabFigure,
@@ -62,6 +64,7 @@ import MsmeFilter from '../components/MsmeFilter.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import { IconArrowRight, IconX } from '../components/icons.jsx';
 import BackButton, { useSectionTrail } from '../components/BackButton.jsx';
+import Loading from '../components/Loading.jsx';
 
 /** How long the search box waits for the typing to stop before it asks. */
 const SEARCH_DELAY_MS = 300;
@@ -297,7 +300,7 @@ const CARD_BY_ID = Object.fromEntries([
 const ALL = 'all';
 
 export default function Results() {
-  const { can } = useAuth();
+  const { can, csdOn, noteCsdSteps } = useAuth();
   const navigate = useNavigate();
   // `routerLocation`, not `location` -- that name is already this page's branch
   // filter, a few lines down.
@@ -464,13 +467,66 @@ export default function Results() {
       });
   }, []);
 
+  // `csdOn.hospital` is the session's view of the hospitals' CSD steps switch.
+  // The request does not send it, but the summary is counted under that switch
+  // -- the Accounts Queue is a wider population with the steps off -- so when
+  // the session learns it was thrown, the cards are read again.
+  //
+  // Only the latest request may answer. A switch thrown while an earlier
+  // summary was still on its way would otherwise let that one land last, and
+  // leave the cards counted under the setting that had just been left.
   useEffect(() => {
-    if (!batchId) return;
+    if (!batchId) return undefined;
+    let superseded = false;
     api
       .summary(batchId, { q, location, msme })
-      .then(({ summary: s }) => setSummary(s))
-      .catch((err) => setError(err.message));
-  }, [batchId, q, location, msme]);
+      .then(({ summary: s }) => {
+        if (!superseded) setSummary(s);
+      })
+      .catch((err) => {
+        if (!superseded) setError(err.message);
+      });
+    return () => {
+      superseded = true;
+    };
+  }, [batchId, q, location, msme, csdOn.hospital]);
+
+  // The hospitals' CSD steps switch, as the answers on hand were worked out
+  // under it. Each answer says so itself (`csdStepsOff` -- see
+  // services/csdSteps.js), and that is what is read here rather than the
+  // session's view of the switch: rows have to be drawn, and acted on, by the
+  // rule they came back under, and the session can be a request behind.
+  //
+  // Two, because the cards and the rows are separate requests. `cardsStepsOn`
+  // is the summary's. `rowsStepsOn` is the rows' -- what the table, the Action
+  // dropdown and the bulk actions go by -- and until any rows are on hand the
+  // summary's stands in for it. `data` only ever holds a rows answer: BPAD and
+  // the ageing view fetch their own, in their own components.
+  //
+  // Before the summary has arrived the session's view stands in for it, so the
+  // row of cards -- and the workbook taken off it -- is right from the first
+  // draw rather than from the first answer.
+  const cardsStepsOn = summary ? stepsOnIn(summary) : csdOn.hospital;
+  // On BPAD and the ageing view no rows are read here, so `data` is whatever
+  // the view before them left behind -- answered, perhaps, before the switch
+  // was thrown. There the summary's word stands instead: it is read again
+  // whenever the session learns of a change, on every view.
+  const rowsOnHand = Boolean(data) && status !== TURNAROUND && status !== BPAD;
+  const rowsStepsOn = rowsOnHand ? stepsOnIn(data) : cardsStepsOn;
+
+  // What each of those answers said, passed on to the session -- see
+  // noteCsdSteps in context/AuthContext.jsx. The sidebar's CS Department link
+  // goes by the session, and this is how it hears of a switch thrown while the
+  // tab stayed in front. Nothing is asked of the server unless an answer
+  // disagrees with what the session already holds.
+  useEffect(() => {
+    if (summary) noteCsdSteps('hospital', stepsOnIn(summary));
+  }, [summary, noteCsdSteps]);
+  // Only rows that are on hand for the view showing: an answer left behind by
+  // an earlier view says what was true then, not now.
+  useEffect(() => {
+    if (rowsOnHand) noteCsdSteps('hospital', stepsOnIn(data));
+  }, [data, rowsOnHand, noteCsdSteps]);
 
   // Which rows to ask for, as against which tab is showing. The two are the
   // same everywhere except Total GRNS with its filter set, where the tab decides
@@ -592,6 +648,11 @@ export default function Results() {
     ageSortKey,
     ageSortDir,
     ageSortAsOf,
+    // Not sent with the request: the rows are answered under the hospitals'
+    // CSD steps switch, so when the session learns it was thrown they are read
+    // again, as the summary is -- and the table follows the switch at once
+    // rather than at the next filter.
+    csdOn.hospital,
   ]);
 
   useEffect(loadRows, [loadRows]);
@@ -625,11 +686,17 @@ export default function Results() {
    * journey -- see the predicates in services/resultsViews.js, which the
    * Accounts Department applies to the same rows. Only the CSD one asks anything of
    * this account, so only it takes the grant.
+   *
+   * The receive one takes the CSD steps switch the rows were answered under
+   * (rowsStepsOn): off, a GRN sent to CSD is Accounts' to receive without
+   * waiting for CSD to hand it back. Wrapped, here and in bulkCategory, rather
+   * than handed over bare -- every() and filter() pass a row's index second,
+   * which is where that switch goes.
    */
   const canBulkCsd = (row) => bulkCsdEligible(row, canHandToCsd(can));
-  const canBulkReceive = bulkReceiveEligible;
+  const canBulkReceive = (row) => bulkReceiveEligible(row, rowsStepsOn);
   const canBulkForward = bulkForwardEligible;
-  const bulkCategory = (row) => bulkCategoryOf(row, canHandToCsd(can));
+  const bulkCategory = (row) => bulkCategoryOf(row, canHandToCsd(can), rowsStepsOn);
 
   /**
    * Ticking one row also ticks every other row on the page still eligible for
@@ -714,7 +781,10 @@ export default function Results() {
     }
   }
 
-  /** Acknowledge every ticked row CSD has handed back, in one go. */
+  /**
+   * Acknowledge every ticked row CSD has handed back, in one go -- or, with the
+   * CSD steps off, every ticked row sent to CSD: see canBulkReceive.
+   */
   async function receiveSelected() {
     if (selectedRows.length === 0) return;
     setBulkSending(true);
@@ -726,6 +796,10 @@ export default function Results() {
       loadRows();
     } catch (err) {
       setError(err.message);
+      // Drawn with the CSD steps off, a refusal may mean they have been
+      // switched back on since: the rows are read again, which brings the
+      // switch they are now answered under.
+      if (!rowsStepsOn) loadRows();
     } finally {
       setBulkSending(false);
     }
@@ -1011,7 +1085,18 @@ export default function Results() {
   // The Action dropdown's options, with the counts the rows came back with --
   // how many each leaves inside the card as it stands. Only the Accounts
   // view's rows carry them; anywhere else the rows on hand are another view's.
-  const actionFilters = actionFilterOptions(isAccountsSection(status) ? data?.actionCounts : null);
+  //
+  // Under the CSD steps switch those rows were answered with: off, the stages
+  // only CSD could move a GRN through are not offered. The Action already
+  // chosen is handed over too, so it stays on the list while it is what
+  // narrows the table -- and the summary's count of GRNs CSD rejected, which
+  // is what keeps CSD rejected on offer then, as it keeps its card on the row.
+  // See actionFilterOptions.
+  const actionFilters = actionFilterOptions(isAccountsSection(status) ? data?.actionCounts : null, {
+    stepsOn: rowsStepsOn,
+    selected: action,
+    rejected: summary?.csd?.REJECTED?.count ?? 0,
+  });
 
   /**
    * The BPAD row's desk cards with Not Integrated in Accounts added last,
@@ -1050,7 +1135,12 @@ export default function Results() {
       .filter((card) => card.kind !== 'missing' || registerOnFile)
       // The Cheque Not Prepared section's "Not in Vendor Master" card, only
       // while there are such GRNs -- see SUPPLY_TYPE_CARDS.
-      .filter((card) => cardShown(card, summary, supplyType)),
+      .filter((card) => cardShown(card, summary, supplyType))
+      // The CSD stage cards, only while the hospitals' CSD steps are on -- the
+      // summary says once they are off. CSD Rejected stays while it still
+      // counts a GRN, and so does whichever of the four is narrowing the table
+      // (`progress`). See csdCardShown.
+      .filter((card) => csdCardShown(card, summary, progress, cardsStepsOn)),
     // The BPAD view's whole row, built here rather than in CARDS_FOR because
     // it is the register's own data: whatever desks the uploaded file happens
     // to name.
@@ -2104,14 +2194,16 @@ export default function Results() {
           onSpansChange={setSpans}
         />
       ) : loading && !data ? (
-        <div className="loading">Loading…</div>
+        <Loading />
       ) : (
         data && (
           <>
             {/* The Cheque Not Prepared section is Accounts rows, laid out as the
                 Accounts table's GRN view -- the cheque columns would be empty
                 on every one of them. `status`, not apiStatus: Total GRNS
-                narrowed to a half keeps its own wide layout. */}
+                narrowed to a half keeps its own wide layout. `csdSteps` is the
+                CSD steps switch these rows themselves were answered under --
+                see rowsStepsOn. */}
             <ResultsTable
               rows={data.rows}
               status={inChequeNotPrepared ? VALID : status}
@@ -2126,6 +2218,7 @@ export default function Results() {
               showGrnStoreAge={showGrnStoreAge}
               ageSort={activeAgeSort}
               onAgeSort={selectAgeSort}
+              csdSteps={rowsStepsOn}
             />
             <div className="pager">
               <span className="pager__info">

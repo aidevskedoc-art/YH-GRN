@@ -16,6 +16,7 @@ import { branchFor } from '../config/screens.js';
 import { branchScope, branchPick, branchAccountNo } from '../services/branchScope.js';
 import { logActivity } from '../services/activityLog.js';
 import { msmeFilter, vendorColumns, vendorFields } from '../services/vendorMsme.js';
+import { csdSteps, stepsOffRefusal, TAKE_BACK_WITH_ACCOUNTS } from '../services/csdSteps.js';
 
 export const csdRouter = express.Router();
 
@@ -737,6 +738,16 @@ csdRouter.patch(
   '/:id/stage',
   CSD_QUEUE,
   asyncHandler(async (req, res) => {
+    // With the hospitals' CSD steps switched off there are no stages to move
+    // through: Accounts receive a handover straight from QUEUED (see
+    // services/csdSteps.js). Refused here rather than only by hiding the queue
+    // -- a page left open from before the switch was thrown could otherwise
+    // still reject a bill, and a rejection is the one thing Accounts cannot
+    // receive past.
+    if (!(await csdSteps()).hospital) {
+      return res.status(409).json({ error: stepsOffRefusal('hospital') });
+    }
+
     const id = Number(req.params.id);
     if (!Number.isInteger(id)) {
       return res.status(400).json({ error: 'Unknown row.' });
@@ -1033,11 +1044,13 @@ csdRouter.delete(
 
     const { dpr_no: dprNo, stage } = rows[0];
     if (!TAKE_BACK_STAGES.includes(stage)) {
-      return res.status(409).json({
-        error: `GRN ${dprNo} cannot be taken back: ${
-          NO_TAKE_BACK_REASON[stage] || 'CSD have already acted on it'
-        }.`,
-      });
+      // One reason reads differently with the CSD steps switched off -- see
+      // TAKE_BACK_WITH_ACCOUNTS. Asked for only here, on the way to a refusal.
+      const reason =
+        stage === 'MOVED_TO_ACCOUNTS' && !(await csdSteps()).hospital
+          ? TAKE_BACK_WITH_ACCOUNTS
+          : NO_TAKE_BACK_REASON[stage] || 'CSD have already acted on it';
+      return res.status(409).json({ error: `GRN ${dprNo} cannot be taken back: ${reason}.` });
     }
 
     const { rowCount } = await query(

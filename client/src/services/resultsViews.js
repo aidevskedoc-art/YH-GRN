@@ -14,6 +14,7 @@
  * where the two genuinely differ.
  */
 import { chequePrepared } from './cheque.js';
+import { awaitsAccounts, stepsOnIn } from './csdSteps.js';
 import { titleForStatus } from './exporter.js';
 
 /**
@@ -440,6 +441,11 @@ export const NOT_REQUIRED_PAIR = {
  * once CSD are done with it, so it is the Accounts group's, after the cheque
  * cards (see ACCOUNTS_ROW_GROUPS).
  *
+ * With a side's CSD steps switched off there is no hand-back to wait for, and
+ * the server counts under this same key every GRN sent to CSD that Accounts
+ * have not received yet (FILTERS_OFF in routes/results.js) -- still the rows
+ * whose Action column reads Queued, so the card needs no other name.
+ *
  * A `progress` card like the cheque pair, reading RETURNED_BY_CSD (see PROGRESS
  * in routes/results.js) -- the same clause as the Action dropdown's "Accounts
  * queue" option. Cheques and GRNs swap with the view, as on Cheque Prepared.
@@ -495,6 +501,34 @@ export function csdCardFigures(card, summary, byCheque) {
   const bucket = summary?.csd?.[card.stage] ?? {};
   const { value, sub } = leadFigures({ grns: bucket.count ?? 0, cheques: bucket.cheques ?? 0 }, byCheque);
   return { value, hint: `${sub} ${card.note}` };
+}
+
+/**
+ * Whether a card stands on the Accounts row, as far as the CSD steps switch
+ * goes (services/csdSteps.js) -- every card but the CSD four, always.
+ *
+ * Those four are the stages CSD move a handover through. With the steps on
+ * they all stand, as they always have. Once the summary says the steps are off
+ * (`csdStepsOff`), nothing moves through them any more: the GRNs that were at
+ * them are all in the Accounts Queue, which counts everything awaiting
+ * Received, and four cards of a ladder nobody climbs would only be in the way.
+ *
+ * Two are kept even then. CSD Rejected, while any GRN is still rejected: those
+ * are waiting on somebody to act and nothing else on the row counts them. And
+ * whichever card is the one selected -- a table it is narrowing must not be
+ * left with nothing on the row to say what narrowed it.
+ *
+ * The export reads the same cards, so a card left off the row is a sheet left
+ * out of the workbook.
+ *
+ * `stepsOn` is the switch as the page has it: the summary's own word unless
+ * said. A page passes its own where it knows better than a summary that has
+ * not arrived yet -- the session's -- so the row is right from the first draw.
+ */
+export function csdCardShown(card, summary, selected = '', stepsOn = stepsOnIn(summary)) {
+  if (card.kind !== 'csd' || stepsOn) return true;
+  if (card.stage === selected) return true;
+  return card.stage === 'REJECTED' && (summary?.csd?.REJECTED?.count ?? 0) > 0;
 }
 
 /**
@@ -650,6 +684,30 @@ export const PROGRESS_LABELS = {
 const PROGRESS_ORDER = Object.keys(PROGRESS_LABELS);
 
 /**
+ * The Action values that are CSD's own steps -- kept in step by hand with
+ * CSD_STEP_ACTIONS in the server's services/csdSteps.js -- which the Action
+ * dropdown does not offer once the CSD steps are switched off.
+ */
+const CSD_STEP_ACTIONS = ['QUEUED', 'RECEIVED', 'APPROVED'];
+
+/**
+ * What an Action is called with the CSD steps off, where that differs. Only the
+ * Accounts queue: it is then every GRN sent to CSD and awaiting Received, so
+ * the pill wording beside its name is the one those rows wear -- "Sent to CSD"
+ * -- rather than "Handover by CSD", which no row reads any more.
+ */
+const STEPS_OFF_LABELS = { RETURNED_BY_CSD: 'Accounts queue (Sent to CSD)' };
+
+/**
+ * What one Action is called under the CSD steps switch as it stands -- for a
+ * page that has to name the Action in force before any counts have arrived to
+ * build the whole list from. Undefined for a key this file has no wording for.
+ */
+export function actionLabel(key, stepsOn = true) {
+  return (!stepsOn && STEPS_OFF_LABELS[key]) || PROGRESS_LABELS[key];
+}
+
+/**
  * A status key this list has no wording for yet -- a new value the server
  * started sending -- spelled out on the fly ("IN_TRANSIT" -> "In transit")
  * rather than left off the dropdown until someone edits this file to name it.
@@ -720,14 +778,37 @@ export function progressFilterOptions(summary, selected = '') {
  * picking it shows. Its keys are the options, so a value added on the server
  * shows up with no edit here; until it arrives, the ones this file knows are
  * offered without a count.
+ *
+ * `stepsOn` is the CSD steps switch the rows were answered under (stepsOnIn in
+ * services/csdSteps.js), on unless said. Off, the three stages only CSD could
+ * move a GRN through are not offered -- the server leaves them out of its
+ * counts, and this leaves them out of the list offered before any counts have
+ * arrived -- CSD rejected is offered only while any GRN is still rejected, and
+ * the Accounts queue is named for what it now holds. `selected` is the Action
+ * in force, which stays on the list whatever the switch says: a dropdown
+ * reading "All actions" over a table an Action is narrowing would be saying the
+ * wrong thing.
+ *
+ * `rejected` is how many GRNs CSD have rejected in the page's scope -- the
+ * summary's figure (summary.csd.REJECTED.count), the one the CSD Rejected card
+ * stays on the row by (csdCardShown), so the card and the option come and go
+ * together. Without it the option goes by its own count, which is taken inside
+ * the selected card and is not there at all on a view with no counts.
  */
-export function actionFilterOptions(counts) {
-  const keys = counts ? Object.keys(counts) : PROGRESS_ORDER.filter((key) => !CHEQUE_PROGRESS.has(key));
+export function actionFilterOptions(counts, { stepsOn = true, selected = '', rejected } = {}) {
+  const known = counts ? Object.keys(counts) : PROGRESS_ORDER.filter((key) => !CHEQUE_PROGRESS.has(key));
+  const rejectedLeft = rejected ?? counts?.REJECTED ?? 0;
+  const keys = stepsOn
+    ? known
+    : known
+        .filter((key) => !CSD_STEP_ACTIONS.includes(key))
+        .filter((key) => key !== 'REJECTED' || rejectedLeft > 0);
+  if (!stepsOn && selected && !keys.includes(selected)) keys.push(selected);
   return keys
     .sort(byProgressOrder)
     .map((key) => ({
       value: key,
-      label: PROGRESS_LABELS[key] || fallbackProgressLabel(key),
+      label: (!stepsOn && STEPS_OFF_LABELS[key]) || PROGRESS_LABELS[key] || fallbackProgressLabel(key),
       count: counts?.[key] ?? null,
     }));
 }
@@ -786,8 +867,12 @@ export function bulkCsdEligible(row, canCsd) {
   );
 }
 
-export function bulkReceiveEligible(row) {
-  return row.csdStage === 'MOVED_TO_ACCOUNTS' && (row.csdAccountsStage || 'QUEUED') === 'QUEUED';
+/**
+ * `stepsOn` is the CSD steps switch the row was answered under, on unless
+ * said: off, a GRN can be received straight from CSD -- see awaitsAccounts.
+ */
+export function bulkReceiveEligible(row, stepsOn = true) {
+  return awaitsAccounts(row, stepsOn);
 }
 
 export function bulkForwardEligible(row) {
@@ -797,9 +882,9 @@ export function bulkForwardEligible(row) {
 }
 
 /** Which of the three above a row currently qualifies for, or null for none. */
-export function bulkCategory(row, canCsd) {
+export function bulkCategory(row, canCsd, stepsOn = true) {
   if (bulkCsdEligible(row, canCsd)) return 'CSD';
-  if (bulkReceiveEligible(row)) return 'RECEIVE';
+  if (bulkReceiveEligible(row, stepsOn)) return 'RECEIVE';
   if (bulkForwardEligible(row)) return 'FORWARD';
   return null;
 }

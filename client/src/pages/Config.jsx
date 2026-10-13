@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
 import Sheet from '../components/Sheet.jsx';
+import Loading from '../components/Loading.jsx';
 import { IconPencil, IconPlus, IconTrash } from '../components/icons.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
+import { useAuth } from '../context/AuthContext.jsx';
 
 /**
  * Branches, as configured.
@@ -33,6 +35,13 @@ import { useConfirm } from '../components/ConfirmDialog.jsx';
  * looking at the same figures are looking at the same rows. The lead paragraph
  * says so, because a tick box that quietly changes somebody else's screen is
  * one worth warning about.
+ *
+ * One setting here is not about a branch: the CSD steps switch in the page
+ * head. It says whether a GRN the hospitals send to CSD still goes through the
+ * CSD department's own stages before Accounts can mark it Received. Like the
+ * ticks it is a setting for the installation rather than for one screen, and
+ * it is the hospitals' alone -- OP Pharmacy has its own, on its own screen.
+ * What it changes is the server's to say: services/csdSteps.js there.
  */
 
 const BLANK = {
@@ -43,6 +52,81 @@ const BLANK = {
   accountNo: '',
   isSelected: false,
 };
+
+/** 12542 -> "12,542". */
+function count(n) {
+  return Number(n ?? 0).toLocaleString('en-IN');
+}
+
+/** 1 -> "1 GRN", 12542 -> "12,542 GRNs". */
+function grns(n) {
+  return `${count(n)} GRN${n === 1 ? '' : 's'}`;
+}
+
+/**
+ * The CSD steps switch on this screen is the hospitals'. What that comes to in
+ * names: the side as the session knows it (csdOn in context/AuthContext.jsx),
+ * their queue as the CS Department screen lists it, and the two screens
+ * Accounts mark a GRN Received on.
+ */
+const CSD_SIDE = 'hospital';
+const CSD_QUEUE = 'Hospital CSD';
+const ACCOUNTS_SCREENS = 'Results and Accounts';
+
+/**
+ * What is asked before the CSD steps are switched off, as useConfirm takes it.
+ *
+ * `inFlight` is the server's count of the handovers standing at each point,
+ * read as the question is put. Two figures get a paragraph each, and each is
+ * left out when it would be about no GRN at all: the ones still with CSD --
+ * sent, and not yet handed back, wherever CSD had got to with them -- which
+ * Accounts can receive as they stand once the steps are off, and the ones CSD
+ * turned down, which switching off does not hand to Accounts. A GRN CSD have
+ * already handed back is in neither: Accounts can receive that one today.
+ */
+function switchOffQuestion({ queued, received, approved, rejected }) {
+  const partWay = queued + received + approved;
+  return {
+    title: 'Switch the CSD steps off?',
+    message: [
+      'This applies to everyone using this installation, not only to this screen. ' +
+        `The ${CSD_QUEUE} queue will be hidden, and CSD stages can no longer be recorded.`,
+      partWay > 0 &&
+        `${grns(partWay)} ${partWay === 1 ? 'is' : 'are'} with CSD right now. ` +
+          `Accounts will be able to mark ${partWay === 1 ? 'it' : 'them'} Received directly.`,
+      rejected > 0 &&
+        `${grns(rejected)} that CSD rejected ${rejected === 1 ? 'stays' : 'stay'} rejected until an ` +
+          `upload carries ${rejected === 1 ? 'it' : 'them'} again.`,
+      'Nothing is deleted, and the steps can be switched on again.',
+    ].filter(Boolean),
+    confirmLabel: 'Switch off',
+  };
+}
+
+/**
+ * What is asked before the CSD steps are switched back on.
+ *
+ * The one figure here is the handovers CSD have not finished with: sent, not
+ * rejected, not yet moved to accounts. Off, Accounts could receive those as
+ * they stood; on, they wait in the queue for CSD's stages again. A GRN CSD
+ * have already handed back is not among them -- it waits on Accounts either
+ * way.
+ */
+function switchOnQuestion({ queued, received, approved }) {
+  const waiting = queued + received + approved;
+  return {
+    title: 'Switch the CSD steps on?',
+    message: [
+      'This applies to everyone using this installation, not only to this screen. ' +
+        `The ${CSD_QUEUE} queue comes back, and a GRN sent to CSD must again be Received, Approved ` +
+        'and Moved to accounts by CSD before Accounts can receive it.',
+      waiting > 0 &&
+        `${grns(waiting)} sent to CSD and not yet received by Accounts will be waiting in the CSD queue.`,
+      'GRNs already received by Accounts are unaffected.',
+    ].filter(Boolean),
+    confirmLabel: 'Switch on',
+  };
+}
 
 /**
  * The add/edit panel.
@@ -168,7 +252,16 @@ export default function Config() {
   const [saving, setSaving] = useState(false);
   // Which branch's tick box is in flight, so only its own row goes quiet.
   const [busy, setBusy] = useState(null);
+  // The CSD steps switch as the server last said it -- `{ enabled, inFlight }`,
+  // null until it has answered -- and whether a change to it is in flight.
+  const [csdSteps, setCsdSteps] = useState(null);
+  const [csdBusy, setCsdBusy] = useState(false);
+  // Whether a reading of the switch has failed. Until one succeeds the box is
+  // left pressable for that reason alone: pressing it asks again, and switches
+  // nothing -- see switchCsdSteps.
+  const [csdUnread, setCsdUnread] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
+  const { csdOn, refresh, noteCsdSteps } = useAuth();
 
   const load = useCallback(() => {
     setLoading(true);
@@ -180,6 +273,42 @@ export default function Config() {
   }, []);
 
   useEffect(load, [load]);
+
+  /**
+   * Read the switch from the server: whether the steps are on, and how many
+   * handovers stand where. The page opens with this, and asks again before a
+   * change is put to the user, so the counts in that question are current.
+   *
+   * The session is told what came back -- see noteCsdSteps in
+   * context/AuthContext.jsx. The sidebar goes by the session, and this is how
+   * it hears of a switch somebody else threw while this tab stayed open. The
+   * session is only asked for again where the two disagree.
+   */
+  async function readCsdSteps() {
+    const answer = await api.csdSteps();
+    setCsdSteps(answer);
+    noteCsdSteps(CSD_SIDE, answer.enabled);
+    return answer;
+  }
+
+  // As the page opens -- and on its own rather than with the branches: if the
+  // switch cannot be read, the page's error says why, the rest of the page
+  // works as it did, and pressing the box asks for it again.
+  //
+  // And again whenever the session's view of the switch changes. Somebody else
+  // may throw it while this page is open; the session hears of that when the
+  // tab is next looked at, and the box and the sentence under it should not go
+  // on saying what was true before. It costs one more read after a change made
+  // here, which brings the same answer.
+  const sessionStepsOn = csdOn[CSD_SIDE];
+  useEffect(() => {
+    readCsdSteps()
+      .then(() => setCsdUnread(false))
+      .catch((err) => {
+        setError(err.message);
+        setCsdUnread(true);
+      });
+  }, [sessionStepsOn]);
 
   /**
    * Tick or untick one branch.
@@ -246,7 +375,65 @@ export default function Config() {
     }
   }
 
+  /**
+   * Switch the CSD steps on or off.
+   *
+   * Asked first, in both directions. A branch tick changes what people see;
+   * this changes what they can do with a GRN, on other screens and for
+   * everyone, so it is not something to throw with a stray click.
+   *
+   * The box is never ahead of the server: it shows what was last answered, so
+   * a refusal, or a change of mind at the question, leaves it where it was.
+   */
+  async function switchCsdSteps() {
+    // Not read yet: the reading failed, and the box was left pressable so it
+    // could be asked for again. That is all this press does -- nothing is
+    // switched by somebody who has not been shown how it stands.
+    if (!csdSteps) {
+      setCsdBusy(true);
+      setError('');
+      try {
+        await readCsdSteps();
+        setCsdUnread(false);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setCsdBusy(false);
+      }
+      return;
+    }
+
+    // The other way from how the box stood when it was pressed. Worked out
+    // before the switch is read again, because that reading may differ.
+    const enabled = !csdSteps.enabled;
+    setCsdBusy(true);
+    setError('');
+    try {
+      const current = await readCsdSteps();
+      // Somebody else has thrown it since this page last read it. The box says
+      // so now, and there is nothing left to ask.
+      if (current.enabled === enabled) return;
+
+      const ok = await confirm(
+        enabled ? switchOnQuestion(current.inFlight) : switchOffQuestion(current.inFlight),
+      );
+      if (!ok) return;
+
+      setCsdSteps(await api.setCsdSteps(enabled));
+      // The session again, so the sidebar's CS Department link follows now
+      // rather than when the tab is next looked at.
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setCsdBusy(false);
+    }
+  }
+
   const selected = branches.filter((b) => b.isSelected);
+  // What the switch's box shows: the switch as read, and until it has been,
+  // the session's word for it -- which is what the sidebar is going by.
+  const stepsOn = csdSteps ? csdSteps.enabled : csdOn[CSD_SIDE];
 
   return (
     <>
@@ -254,13 +441,35 @@ export default function Config() {
       <div className="page__head page__head--row">
         <div>
           <h2 className="page__title">Configuration</h2>
-          <p className="page__lead">
+        {/*  <p className="page__lead">
             What each branch is called in each report, and which branches the figures are
             narrowed to. These ticks apply to everyone — they are settings for this installation,
             not for your own screen.
-          </p>
+          </p> */}
         </div>
         <div className="page__actions">
+          {/* The CSD steps switch: ticked is on. The box shows what the server
+              last said -- pressing it asks first and waits for the answer, see
+              switchCsdSteps -- and is quiet until the switch has been read and
+              while a change to it is in flight. Where the reading failed it is
+              left pressable, and pressing it reads again. */}
+          <label
+            className="tick"
+            title={
+              !csdSteps && csdUnread
+                ? 'The CSD steps switch could not be read — press to try again'
+                : `Whether a GRN sent to CSD goes through the ${CSD_QUEUE} queue before Accounts can mark it ` +
+                  'Received — applies to everyone, and asks before it changes'
+            }
+          >
+            <input
+              type="checkbox"
+              checked={stepsOn}
+              disabled={csdBusy || (!csdSteps && !csdUnread)}
+              onChange={switchCsdSteps}
+            />
+            <span className="tick__text">{stepsOn ? 'CSD steps on' : 'CSD steps off'}</span>
+          </label>
           <button className="primary" type="button" onClick={() => setForm(BLANK)}>
             <span className="csd__icon">
               <IconPlus size={15} />
@@ -271,6 +480,28 @@ export default function Config() {
       </div>
 
       {error && <div className="alert alert--error">{error}</div>}
+
+      {/* What the CSD steps switch means as it stands, said in words -- once it
+          has been read. As with the ticks below: the box is the setting, and
+          this is its effect. */}
+      {csdSteps && (
+        <div className="alert alert--info">
+          {csdSteps.enabled ? (
+            <>
+              <strong>CSD steps are on.</strong> A GRN sent to CSD goes through the CS Department
+              queue — Received, Approved or Rejected, Moved to accounts — before Accounts can mark it
+              Received.
+            </>
+          ) : (
+            <>
+              <strong>CSD steps are off.</strong> The {CSD_QUEUE} queue is hidden and CSD stages are
+              not recorded. After Send to CSD, Accounts mark a GRN Received directly on the{' '}
+              {ACCOUNTS_SCREENS} screens. Nothing has been deleted — switch the steps on to bring the
+              queue back.
+            </>
+          )}
+        </div>
+      )}
 
       {/* What the ticks currently mean, said in words. A row of tick boxes is
           the setting; this is its effect, which is the part worth reading. */}
@@ -298,7 +529,7 @@ export default function Config() {
       </div>
 
       {loading && branches.length === 0 ? (
-        <div className="loading">Loading…</div>
+        <Loading />
       ) : (
         <div className="table-wrap table-wrap--sticky">
           <table className="table">

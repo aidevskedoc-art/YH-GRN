@@ -29,6 +29,9 @@ export const CATEGORIES = [
 /**
  * Every action the log records, with the wording the screen shows and the
  * category it is filed under. The one list both the writer and the screen read.
+ *
+ * `pharmacy` marks OP Pharmacy's own actions, which the screen's Select View
+ * shows as a log of their own -- see PHARMACY_ACTIONS below.
  */
 export const ACTIONS = {
   UPLOAD: { label: 'Uploaded reports', category: 'UPLOAD' },
@@ -53,27 +56,32 @@ export const ACTIONS = {
   BRANCH_CREATE: { label: 'Added branch', category: 'CONFIG' },
   BRANCH_UPDATE: { label: 'Updated branch', category: 'CONFIG' },
   BRANCH_DELETE: { label: 'Deleted branch', category: 'CONFIG' },
+  // The CSD steps switch on the Configuration screen -- services/csdSteps.js.
+  CSD_STEPS_UPDATE: { label: 'Switched CSD steps', category: 'CONFIG' },
   // OP Pharmacy's own upload and branches -- routes/phBatches.js and
   // routes/phConfig.js. Filed under the same two categories as the hospitals',
-  // and told apart by their wording.
-  PH_UPLOAD: { label: 'Uploaded pharmacy reports', category: 'UPLOAD' },
-  PH_BRANCH_CREATE: { label: 'Added pharmacy branch', category: 'CONFIG' },
-  PH_BRANCH_UPDATE: { label: 'Updated pharmacy branch', category: 'CONFIG' },
-  PH_BRANCH_DELETE: { label: 'Deleted pharmacy branch', category: 'CONFIG' },
+  // told apart by their wording, and marked `pharmacy` so the screen can show
+  // them as OP Pharmacy's log.
+  PH_UPLOAD: { label: 'Uploaded pharmacy reports', category: 'UPLOAD', pharmacy: true },
+  PH_BRANCH_CREATE: { label: 'Added pharmacy branch', category: 'CONFIG', pharmacy: true },
+  PH_BRANCH_UPDATE: { label: 'Updated pharmacy branch', category: 'CONFIG', pharmacy: true },
+  PH_BRANCH_DELETE: { label: 'Deleted pharmacy branch', category: 'CONFIG', pharmacy: true },
+  // ...and OP Pharmacy's own CSD steps switch, on Ph-Configuration.
+  PH_CSD_STEPS_UPDATE: { label: 'Switched pharmacy CSD steps', category: 'CONFIG', pharmacy: true },
   // OP Pharmacy's own CSD queue -- routes/phCsd.js. Filed under CSD with the
   // hospitals', and told apart by their wording.
-  PH_CSD_SEND: { label: 'Sent pharmacy GRN to CSD', category: 'CSD' },
-  PH_CSD_STAGE: { label: 'Moved pharmacy CSD stage', category: 'CSD' },
-  PH_CSD_TAKE_BACK: { label: 'Took pharmacy GRN back from CSD', category: 'CSD' },
-  PH_CSD_DELETE: { label: 'Deleted pharmacy CSD record', category: 'CSD' },
+  PH_CSD_SEND: { label: 'Sent pharmacy GRN to CSD', category: 'CSD', pharmacy: true },
+  PH_CSD_STAGE: { label: 'Moved pharmacy CSD stage', category: 'CSD', pharmacy: true },
+  PH_CSD_TAKE_BACK: { label: 'Took pharmacy GRN back from CSD', category: 'CSD', pharmacy: true },
+  PH_CSD_DELETE: { label: 'Deleted pharmacy CSD record', category: 'CSD', pharmacy: true },
   // ...and a stamp's day put right from the pharmacy GRN age report.
-  PH_CSD_DATES: { label: 'Corrected pharmacy CSD dates', category: 'DATES' },
+  PH_CSD_DATES: { label: 'Corrected pharmacy CSD dates', category: 'DATES', pharmacy: true },
   // ...and its Records filing -- routes/phRecords.js.
-  PH_RECORDS_SEND: { label: 'Sent pharmacy GRN to Records', category: 'RECORDS' },
-  PH_RECORDS_TAKE_BACK: { label: 'Took pharmacy GRN back from Records', category: 'RECORDS' },
+  PH_RECORDS_SEND: { label: 'Sent pharmacy GRN to Records', category: 'RECORDS', pharmacy: true },
+  PH_RECORDS_TAKE_BACK: { label: 'Took pharmacy GRN back from Records', category: 'RECORDS', pharmacy: true },
   // ...and Accounts' two moves once CSD hand one back -- routes/phAccountsReturns.js.
-  PH_ACCOUNTS_RECEIVE: { label: 'Accounts received pharmacy GRN', category: 'ACCOUNTS' },
-  PH_ACCOUNTS_FORWARD: { label: 'Accounts forwarded pharmacy GRN', category: 'ACCOUNTS' },
+  PH_ACCOUNTS_RECEIVE: { label: 'Accounts received pharmacy GRN', category: 'ACCOUNTS', pharmacy: true },
+  PH_ACCOUNTS_FORWARD: { label: 'Accounts forwarded pharmacy GRN', category: 'ACCOUNTS', pharmacy: true },
   MSME_RECO_RUN: { label: 'Ran HIS vs FOCUS reco', category: 'MSME' },
   // One file uploaded with nothing on file for the other side to reconcile it
   // against: kept for when it comes, and an HIS file applied to the Vendor Master.
@@ -102,6 +110,19 @@ export const DELETE_ACTIONS = [
   'BRANCH_DELETE',
   'PH_BRANCH_DELETE',
 ];
+
+/**
+ * OP Pharmacy's own actions: every entry of ACTIONS marked `pharmacy`. What
+ * the Activity logs screen's Select View divides the log by -- these are its
+ * Pharmacy logs, and every other entry is its Hospital logs: the hospitals'
+ * GRN work, and with it the entries that belong to neither side (accounts,
+ * the vendor screens), which is where they have always been read.
+ *
+ * Read off the action rather than stored on the row, so the entries written
+ * before the screen had two views fall into the right one with nothing to
+ * migrate.
+ */
+export const PHARMACY_ACTIONS = Object.keys(ACTIONS).filter((key) => ACTIONS[key].pharmacy);
 
 /**
  * Record one action by the signed-in user on `req`.

@@ -1,6 +1,7 @@
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { firstScreenPath } from '../services/screens.js';
+import Loading from './Loading.jsx';
 
 /**
  * The gate in front of every signed-in route.
@@ -25,7 +26,7 @@ export default function ProtectedRoute({ children, screen, adminOnly = false }) 
   // Wait for the stored token to be validated before deciding, otherwise a
   // reload would bounce a signed-in user to the login screen.
   if (loading) {
-    return <div className="loading">Loading…</div>;
+    return <Loading />;
   }
 
   if (!user) {

@@ -100,12 +100,12 @@ hospital twin's key under `ph-`):
 | `upload` | New uploads |
 | `results` | Results, including the GRNS SPAN tab |
 | `accounts-department` | Accounts Department |
-| `csd` | Hospital CSD — the hospitals' queue on the CS Department screen |
+| `csd` | Hospital CSD — the hospitals' queue on the CS Department screen, hidden while the hospitals' CSD steps are switched off (see [Switching the CSD steps off](#switching-the-csd-steps-off)) |
 | `config` | Configuration |
 | `ph-upload` | Pharmacy Uploads |
 | `ph-results` | Pharmacy Results |
 | `ph-accounts-department` | Ph-Accounts |
-| `ph-csd` | OP Pharmacy CSD — OP Pharmacy's queue on the CS Department screen |
+| `ph-csd` | OP Pharmacy CSD — OP Pharmacy's queue on the CS Department screen, hidden while OP Pharmacy's CSD steps are switched off (see [Switching the CSD steps off](#switching-the-csd-steps-off)) |
 | `ph-config` | Ph-Configuration |
 | `vendor-master` | Vendor Master (see [Vendor Master](#vendor-master)) |
 | `msme-reco` | HIS vs FOCUS Reco (see [HIS vs FOCUS Reco](#his-vs-focus-reco)) |
@@ -122,6 +122,12 @@ Each OP Pharmacy screen is granted apart from its hospital twin: an account can 
 Results without Results, or the other way round. CS Department is one screen with a tick box for
 each of its two queues; it appears in the sidebar for an account holding either, and its Select
 View dropdown lists only the queues held.
+
+Activity logs is one screen behind one grant, and its Select View dropdown switches between two
+logs: **Pharmacy logs** holds OP Pharmacy's own actions (its uploads, CSD queue, Accounts, Records,
+date corrections and Ph-Configuration), and **Hospital logs** holds everything else — the
+hospitals' GRN work, and with it User management, HIS vs FOCUS Reco and Vendor Master, which belong
+to neither side. An account holding the screen sees both.
 
 The pharmacy screens used to open on their hospital twin's grant. So that nobody lost a screen when
 they were split, `npm run migrate` gives every account holding a hospital screen its pharmacy twin
@@ -165,6 +171,79 @@ Three things are refused, by the server rather than only by the screen: you cann
 deactivate or delete the account you are signed in as, and the last active administrator cannot be
 demoted or deactivated by anyone — either would leave the installation with no way to manage
 accounts short of a database edit.
+
+---
+
+## Switching the CSD steps off
+
+A GRN handed to CSD normally waits there for three answers — Received, Approved or Rejected, Moved
+to accounts — before Accounts can mark it Received. Where the CSD department no longer records
+those, the steps can be switched off, and Accounts mark a GRN Received straight after sending it.
+
+The hospitals and OP Pharmacy each have their own switch: on **Configuration** for the hospitals,
+on **Ph-Configuration** for OP Pharmacy. It is the **CSD steps** tick box beside **New branch**, and
+one side can be off while the other is on. Like the branch ticks on the same screen, it is a setting
+for the installation, so it applies to everyone. Changing it needs that screen's grant (`config` or
+`ph-config`), asks for confirmation, and is recorded in the activity log under **Configuration**.
+
+**On** is the default, and it is what an installation that has never touched the switch does. A
+handover runs as it always has: **Send to CSD**, then CSD's **Received**, **Approved** or
+**Rejected**, and **Moved to accounts** on the CS Department screen, then Accounts' **Received**,
+then **Send to Bank**, **Vendor** or **Courier**.
+
+**Off**, for that side, CSD's own steps are gone and Accounts mark a GRN Received on the results
+screens:
+
+| Where | With the steps off |
+| --- | --- |
+| CS Department screen | That side's queue is hidden. The sidebar link goes when an account has no queue left, and an account holding nothing but that queue is told it is switched off. |
+| A row's Action | Straight after **Send to CSD** it reads **Queued** and offers **Received**. That click records **Accounts received**. **Take back** stands under it while the GRN can still be recalled. |
+| A row's Status | Reads **Sent to CSD** until that click. |
+| Accounts Queue | The **Accounts Queue** card and the Action filter's **Accounts queue (Sent to CSD)** count every GRN awaiting that click. |
+| CSD stage cards | Not shown, and the Action filter no longer offers **Sent to CSD**, **CSD received** or **CSD approved**. The **CSD Rejected** card stays while any GRN is still rejected. |
+| Select multiple | **Receive** works on any GRN sent to CSD and awaiting that click, not only on the ones CSD handed back. |
+| Delete | An administrator gets a **Delete** under the Action control for a handover that can no longer be taken back, while the table is shown by GRNs. The CS Department screen is where that button otherwise lives. |
+| CSD stage moves | Refused by the server, so a CS Department page left open from before the switch cannot move a GRN. |
+
+Forwarding to Bank, Vendor or Courier, and everything after it, is unchanged.
+
+**The GRN age report** — the turnaround view, **GRN age from PR to Bank** for the hospitals and
+**GRN age from GRN to Bank** for OP Pharmacy — measures a shorter run for a side whose steps are
+off:
+
+- The **CSD Received**, **CSD Approved** and **Moved To Accounts** columns are not shown.
+- **Accounts Received** days are counted from **Sent to CSD**. With the steps on they are counted
+  from **Moved To Accounts**.
+- **Cheque Clearance** days are counted from **Accounts Received**. With the steps on they are
+  counted from **CSD Approved**.
+
+**Switching writes nothing to any handover.** It changes what may be done with one next:
+
+- GRNs part-way through CSD when the steps are switched off can be marked Received by Accounts
+  directly, from whichever stage CSD had reached.
+- GRNs CSD rejected stay rejected. The next upload that carries one reopens it, as before.
+
+**Switching back on loses nothing:**
+
+- A GRN received directly reads **Accounts received**. Its three CSD dates (CSD Received, CSD
+  Approved, Moved To Accounts) are blank, apart from any CSD had recorded before the switch-off.
+- A GRN sent and not yet received is in the CS Department queue as **Queued**, or at the stage CSD
+  had reached with it before the switch-off.
+
+**Screen grants are untouched.** The **Hospital CSD** and **OP Pharmacy CSD** tick boxes on User
+management stay as they are, so the queue is back for everyone who held it when the switch is
+turned on again.
+
+**To upgrade:** the switch is kept in a new `app_settings` table, which `npm run migrate` adds.
+Stop the server, run `npm run migrate`, rebuild the client (`npm run build`) and start it again.
+Until the migration has been run the app behaves as if both switches were on, and trying to change
+one says the migration is needed.
+
+**For developers:** the rule lives in `server/src/services/csdSteps.js`. The endpoints are `GET`
+and `PATCH` on `/api/config/csd-steps` for the hospitals and `/api/op-pharmacy/config/csd-steps`
+for OP Pharmacy, and the `PATCH` body is `{ enabled }`, a boolean. The session (`/api/auth/me`)
+lists the sides that are off as `csdStepsOff`, and results answers carry `csdStepsOff: true` only
+when off. With the steps on, every response is what it was before.
 
 ---
 

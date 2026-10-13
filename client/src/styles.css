@@ -362,6 +362,7 @@ code, .mono {
 .stat,
 .table-wrap,
 .empty--page,
+.loading,
 .drop,
 .topbar,
 .sidebar,
@@ -977,15 +978,64 @@ input[type="date"].field__input::-webkit-calendar-picker-indicator:hover { opaci
   border: 1px solid var(--danger-line);
 }
 
-.loading, .empty { padding: 44px; text-align: center; color: var(--muted); }
-/* A spinner over the words: a gradient ring turning, so a slow request reads
+.empty { padding: 44px; text-align: center; color: var(--muted); }
+
+/* Loading: a small pill in the middle of the window's height, whatever the
+   screen holds above it -- see Loading.jsx, which draws it in document.body so
+   that `fixed` means the window. Centred by auto margins inside the inset box
+   rather than by a transform, so the box can be narrowed (below) and the pill
+   stays in the middle of what is left.
+
+   One line high, and on a ground of its own, because the middle of the window
+   is not always empty: a results screen has its cards and filters up while the
+   rows are fetched, and the pill lands on them. So it hides as little of them
+   as it can, and can still be read over them. It takes no clicks: what it
+   covers is still the page's. Above the page and its top bar (.app-main, 1);
+   below the drawer's scrim (35), the rail (40) and a dialog (60). */
+.loading {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  height: fit-content;
+  margin: auto;
+  padding: 9px 20px 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background-color: var(--surface);
+  -webkit-backdrop-filter: var(--glass);
+  backdrop-filter: var(--glass);
+  box-shadow: var(--lip), var(--shadow-2);
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: none;
+  /* Held back a beat, so an answer that arrives at once does not flash it. */
+  animation: fade-in 0.3s ease 0.12s backwards;
+  /* In step with the rail's own collapse -- see .app-shell. */
+  transition: left 0.32s var(--ease-out);
+}
+/* Inside the shell, the middle of the page's column rather than of the window:
+   the docked rail takes its width off the left. Below the drawer breakpoint the
+   rail is an overlay and takes none -- written as that breakpoint's exact
+   complement, so a window 940.5px wide (display scaling gives fractional
+   widths) is not left with a docked rail and an uncorrected spinner. A browser
+   without :has() centres on the window, which is where the sign-in screens
+   have it anyway. */
+@media (width > 940px) {
+  body:has(.app-shell) > .loading { left: var(--sidebar-w); }
+  body:has(.app-shell.collapsed) > .loading { left: var(--sidebar-w-collapsed); }
+}
+/* A spinner beside the word: a gradient ring turning, so a slow request reads
    as work in progress rather than a page that has stopped. */
 .loading::before {
   content: "";
-  display: block;
-  width: 30px;
-  height: 30px;
-  margin: 0 auto 14px;
+  flex: none;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   background: conic-gradient(from 0deg, transparent 0 15%, var(--brand) 70%, var(--accent) 100%);
   -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
@@ -1452,6 +1502,17 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 /* A From / To date pair in the toolbar: the caption sits beside its input
    rather than above it, to keep the toolbar one row high. */
 .log-date { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+/* The log's own table. Everywhere else a row is figures with one capped
+   Remarks cell, so .table is nowrap and .table__wrap stops at 260px. Here two
+   columns are prose: Target can be a pair of file names, Details is a
+   sentence. Left nowrap, a long Target took the whole width and Details --
+   which may break anywhere -- was squeezed to a letter a line. So both wrap,
+   each with a floor it cannot be squeezed under and a cap it cannot push past;
+   the four short columns keep their natural width and these two share what is
+   left. No margin-top: the summary is the first line of its cell here, not a
+   note under a pill, and sits on the row's line with the rest. */
+.log-table .table__wrap { min-width: 210px; max-width: 620px; margin-top: 0; }
+.log-table .log-target { min-width: 140px; max-width: 280px; }
 /* An entry's details, opened under its summary. */
 .log-details {
   margin: 6px 0 0;
@@ -3128,6 +3189,11 @@ button.th-sort:focus-visible { outline: 2px solid var(--brand); outline-offset: 
 .tick input:disabled, .tick:has(input:disabled) { cursor: progress; opacity: 0.6; }
 .tick__text { font-size: 12px; font-weight: 650; color: var(--muted); }
 .tick input:checked + .tick__text { color: var(--brand-700); }
+/* The CSD steps switch in a configuration screen's page head, beside New
+   branch. .page__actions sits its controls on their bottom edge, which suits a
+   picker with a caption over it; a bare tick box there would hang below the
+   button's text, so it is centred on the button instead. */
+.page__actions > .tick { align-self: center; }
 
 /* A branch that is in scope, marked the way the row being edited is: it is the
    row currently doing something to the rest of the app. */

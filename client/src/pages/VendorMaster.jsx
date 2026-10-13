@@ -21,6 +21,7 @@ import { api } from '../api/client.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import Sheet from '../components/Sheet.jsx';
+import Loading from '../components/Loading.jsx';
 import {
   VENDOR_PICKED,
   exportVendorMaster,
@@ -431,7 +432,7 @@ export default function VendorMaster() {
 
       {error && <div className="alert alert--error">{error}</div>}
 
-      {loading && !data && <div className="loading">Loading…</div>}
+      {loading && !data && <Loading />}
 
       {ready && (
         <>

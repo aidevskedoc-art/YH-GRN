@@ -134,6 +134,53 @@ export const PHARMACY_CHAIN = {
   stageDates: ['grnDate', 'billToAudit', 'billHandOverToAcc', 'chqDate'],
 };
 
+/** CSD's own three steps, which a chain has none of once they are switched off. */
+const CSD_OWN_STAGES = new Set(['receivedToApproved', 'approvedToMovedToAccounts', 'movedToAccountsToReceived']);
+
+/**
+ * What stands in their place: the two stages either side of them, measured to
+ * and from the one stamp that is left between sending a GRN to CSD and sending
+ * it on -- Accounts receiving it.
+ *
+ * sentToAccountsReceived is the whole of what CSD's steps used to divide: from
+ * the day it was sent to the day Accounts had it back. And the clearance leg
+ * starts at that same acknowledgement, since there is no approval to start it
+ * from: it is the one thing that now says the cheque is released. Not the
+ * cheque date and not forwardedAt, for the reasons approvedToClearance gives
+ * above -- neither answers how long the vendor waited once it was cleared to go.
+ */
+const DIRECT_STAGES = {
+  csdToReceived: { key: 'sentToAccountsReceived', from: 'sentToCsd', to: 'accountsReceivedAt', csd: true },
+  approvedToClearance: {
+    key: 'accountsReceivedToClearance',
+    from: 'accountsReceivedAt',
+    to: 'chequeClearanceDate',
+    derived: true,
+  },
+};
+
+/**
+ * A chain with the CSD steps switched off (services/csdSteps.js): the same run,
+ * without the three stages only CSD's own answers could measure, and with the
+ * two beside them re-anchored -- each in the place of the stage it replaces, so
+ * the report's columns keep their order.
+ *
+ * A GRN that did go through CSD before the switch was thrown still has those
+ * stamps on it; this chain simply does not measure between them. Mirrored in
+ * the client's services/stages.js (chainFor), which draws the checkpoints.
+ */
+export function withoutCsdSteps(chain) {
+  return {
+    ...chain,
+    stages: chain.stages
+      .filter((stage) => !CSD_OWN_STAGES.has(stage.key))
+      .map((stage) => DIRECT_STAGES[stage.key] ?? stage),
+  };
+}
+
+export const HOSPITAL_DIRECT_CHAIN = withoutCsdSteps(HOSPITAL_CHAIN);
+export const PHARMACY_DIRECT_CHAIN = withoutCsdSteps(PHARMACY_CHAIN);
+
 /**
  * Day count for every stage of one row: `{ prToPo: 1, poToSecurity: -9, ... }`.
  * Includes the three CSD stages, which are null until the GRN has been sent.

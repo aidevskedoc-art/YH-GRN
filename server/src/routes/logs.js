@@ -5,12 +5,21 @@
  * and can tick for anyone on User management. Read-only. Entries are written by
  * services/activityLog.js from the routes that change something; this router
  * only reads them.
+ *
+ * Two logs behind the one grant: the hospitals' and OP Pharmacy's, which the
+ * screen's Select View dropdown chooses between -- see sourceFilter below.
  */
 import express from 'express';
 import { query } from '../db/pool.js';
 import { requireAuth, requireScreen } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
-import { ACTIONS, CATEGORIES, DELETE_ACTIONS, RETENTION_DAYS } from '../services/activityLog.js';
+import {
+  ACTIONS,
+  CATEGORIES,
+  DELETE_ACTIONS,
+  PHARMACY_ACTIONS,
+  RETENTION_DAYS,
+} from '../services/activityLog.js';
 
 export const logsRouter = express.Router();
 
@@ -30,11 +39,55 @@ function whereFrom(clauses) {
 }
 
 /**
+ * The log `?source=` names: OP Pharmacy's for `pharmacy`, and the hospitals'
+ * for anything else -- which is what the screen has always opened on.
+ */
+const PHARMACY = 'pharmacy';
+
+function isPharmacy(req) {
+  return String(req.query.source || '').toLowerCase() === PHARMACY;
+}
+
+/**
+ * The categories each log can hold an entry under: those at least one of its
+ * actions is filed in, in CATEGORIES' order. The hospitals' is all of them.
+ * OP Pharmacy has no action under Users or the vendor screens, and a card
+ * that can only ever read 0 is not worth its place in the row.
+ */
+function categoriesFor(pharmacy) {
+  const used = new Set(
+    Object.values(ACTIONS)
+      .filter((action) => Boolean(action.pharmacy) === pharmacy)
+      .map((action) => action.category),
+  );
+  return CATEGORIES.filter((c) => used.has(c.key));
+}
+
+const HOSPITAL_CATEGORIES = categoriesFor(false);
+const PHARMACY_CATEGORIES = categoriesFor(true);
+
+/**
+ * Which of the two logs: OP Pharmacy's own actions, or everything else.
+ *
+ * "Everything else" rather than a list of the hospitals' actions, so an entry
+ * under an action the catalogue no longer names stays where it was read, and
+ * the entries that belong to neither side -- accounts, the vendor screens --
+ * stay in the hospitals' log with it.
+ */
+function sourceFilter(req, params) {
+  params.push(PHARMACY_ACTIONS);
+  const pharmacy = `l.action = ANY($${params.length})`;
+  return isPharmacy(req) ? pharmacy : `NOT (${pharmacy})`;
+}
+
+/**
  * Every filter except the category, as SQL clauses bound into `params`. The
- * category is left to the caller because the cards count across it.
+ * category is left to the caller because the cards count across it. Which log
+ * it is comes first and is always there: the cards describe the log being
+ * looked at, not the two together.
  */
 function baseFilters(req, params) {
-  const clauses = [];
+  const clauses = [sourceFilter(req, params)];
 
   const q = String(req.query.q || '').trim();
   if (q) {
@@ -105,12 +158,14 @@ function mapLog(r) {
 }
 
 /**
- * GET /api/logs?page=&pageSize=&q=&category=&action=&userId=&from=&to=&all=
+ * GET /api/logs?source=&page=&pageSize=&q=&category=&action=&userId=&from=&to=&deleted=&all=
  *
- * The log, newest first, plus what the screen's cards and filters need: counts
- * for today, the last seven days and each category (every filter applied but
- * the category, so a card's figure does not vanish the moment it is pressed),
- * the action catalogue, and the people who appear in the log.
+ * One of the two logs -- OP Pharmacy's for `source=pharmacy`, otherwise the
+ * hospitals' -- newest first, plus what the screen's cards and filters need:
+ * counts for today, the last seven days and each category (every filter
+ * applied but the category, so a card's figure does not vanish the moment it
+ * is pressed), the categories that log is filed under, the action catalogue,
+ * and the people who appear in the log.
  *
  * `all=1` drops the pagination, for the export, up to MAX_EXPORT_ROWS.
  */
@@ -133,7 +188,8 @@ logsRouter.get(
       countParams,
     );
 
-    const categories = Object.fromEntries(CATEGORIES.map((c) => [c.key, 0]));
+    const offered = isPharmacy(req) ? PHARMACY_CATEGORIES : HOSPITAL_CATEGORIES;
+    const categories = Object.fromEntries(offered.map((c) => [c.key, 0]));
     let today = 0;
     let week = 0;
     let all = 0;
@@ -159,6 +215,9 @@ logsRouter.get(
     );
     const total = totalRows[0].total;
 
+    // Everyone in either log, whichever is showing: the person chosen on the
+    // screen stays chosen when the view is switched, and "what did this
+    // account do today" is asked of both.
     const { rows: users } = await query(
       `SELECT DISTINCT ON (l.user_id) l.user_id, l.username, l.user_name
          FROM activity_logs l
@@ -187,7 +246,7 @@ logsRouter.get(
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
       truncated: wantsAll && total > MAX_EXPORT_ROWS,
       counts: { all, today, week, deleted, categories },
-      categories: CATEGORIES,
+      categories: offered,
       actions: Object.entries(ACTIONS).map(([key, a]) => ({ key, ...a })),
       users: users
         .map((u) => ({ id: u.user_id, username: u.username, userName: u.user_name }))

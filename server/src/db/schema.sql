@@ -927,6 +927,31 @@ CREATE INDEX IF NOT EXISTS idx_branch_selected ON branch_configs (is_selected);
 ALTER TABLE branch_configs ADD COLUMN IF NOT EXISTS bpad_location TEXT;
 
 -- --------------------------------------------------------------------------
+-- Settings for the installation as a whole, one row per setting.
+--
+-- Where branch_configs holds what is true of a branch, this holds what is true
+-- of the installation and has no branch to hang on. Keyed by name with the
+-- value as JSON, so the next setting is a row rather than a table.
+--
+-- The two it holds today are the CSD steps switches, one per side:
+--
+--   csd_steps.hospital   false while the hospitals' CSD steps are switched off
+--   csd_steps.pharmacy   false while OP Pharmacy's are
+--
+-- on the Configuration and Ph-Configuration screens. A switch with no row is
+-- on, which is why nothing is seeded here: an installation that has never
+-- touched one runs a handover exactly as it always did. Switched off, a GRN
+-- sent to CSD is marked Received by Accounts directly and CSD's own stages are
+-- not offered -- see services/csdSteps.js, which is all that reads this.
+-- --------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS app_settings (
+  key        TEXT PRIMARY KEY,
+  value      JSONB NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- --------------------------------------------------------------------------
 -- activity_logs: who did what, and when -- the Activity logs screen.
 --
 -- One row per user action that changes something: an upload, a GRN sent to

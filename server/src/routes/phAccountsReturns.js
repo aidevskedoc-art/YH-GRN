@@ -9,6 +9,11 @@
  * where it went on from there -- Bank, Vendor (the vendor itself or the
  * purchase department), Others or Courier -- and who or what took it.
  *
+ * With OP Pharmacy's CSD steps switched off (services/csdSteps.js) there is no
+ * hand-back to wait for: /receive takes a handover straight from CSD, at
+ * whatever stage short of a rejection, and leaves it where the full flow
+ * would -- so /forward is unchanged.
+ *
  * No listing of its own, as there: Pharmacy Results and Ph-Accounts already
  * show every such row (routes/phResults.js carries the columns), and these are
  * only the writes their Action column makes. Gated on those two screens.
@@ -22,6 +27,7 @@ import { query } from '../db/pool.js';
 import { requireAuth, requireScreen } from '../middleware/auth.js';
 import { asyncHandler, tablesNotMigrated } from '../middleware/error.js';
 import { logActivity } from '../services/activityLog.js';
+import { csdSteps, receiveDirectSql, RECEIVE_REJECTED } from '../services/csdSteps.js';
 
 export const phAccountsReturnsRouter = express.Router();
 
@@ -81,21 +87,44 @@ function isCalendarDate(value) {
  * Accounts' first move: acknowledge a hand-back. Only from QUEUED, and only on
  * a dispatch CSD have actually handed back -- in one guarded statement, so two
  * people acknowledging the same row at once cannot both succeed.
+ *
+ * `stepsOn` is OP Pharmacy's CSD steps switch (services/csdSteps.js), on unless
+ * said. Off, there is no hand-back to wait for: the same move takes a handover
+ * straight from wherever it stands at CSD, short of one they rejected, and
+ * leaves it where this one does -- receiveDirectSql there.
+ *
+ * @returns `{ accountsReturn }`, and with the steps off `direct` -- whether CSD
+ *   never handed it back -- and `from`, the stage it was taken from, for the log
  */
-export async function receivePhReturn(db, id, userId = null) {
+export async function receivePhReturn(db, id, userId = null, stepsOn = true) {
   if (!Number.isInteger(id)) return refuse(400, 'Unknown row.');
 
   const { rows } = await db.query(
-    `UPDATE ph_csd_dispatches
+    stepsOn
+      ? `UPDATE ph_csd_dispatches
      SET accounts_stage = 'RECEIVED', accounts_received_at = NOW(), accounts_received_by = $1
      WHERE id = $2 AND stage = 'MOVED_TO_ACCOUNTS' AND accounts_stage = 'QUEUED'
-     RETURNING id`,
+     RETURNING id`
+      : receiveDirectSql('ph_csd_dispatches'),
     [userId, id],
   );
-  if (rows.length > 0) return { accountsReturn: await returnById(db, id) };
+  if (rows.length > 0) {
+    return {
+      accountsReturn: await returnById(db, id),
+      ...(stepsOn ? {} : { direct: rows[0].direct === true, from: rows[0].was_stage }),
+    };
+  }
 
   const { rows: current } = await db.query('SELECT stage FROM ph_csd_dispatches WHERE id = $1', [id]);
   if (current.length === 0) return refuse(404, GONE);
+  // Steps off, the move turns away only a handover CSD rejected and one already
+  // received: being moved to accounts is what the click itself now does.
+  if (!stepsOn) {
+    return refuse(
+      409,
+      current[0].stage === 'REJECTED' ? RECEIVE_REJECTED : 'This GRN has already been received by accounts.',
+    );
+  }
   if (current[0].stage !== 'MOVED_TO_ACCOUNTS') return refuse(409, 'This GRN has not been moved to accounts.');
   return refuse(409, 'This GRN has already been received by accounts.');
 }
@@ -200,17 +229,26 @@ phAccountsReturnsRouter.patch(
   '/:id/receive',
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    const answer = await receivePhReturn(POOL, id, req.user.id);
+    // Which of the two moves it is is read off the switch, never off the request.
+    const stepsOn = (await csdSteps()).pharmacy;
+    const answer = await receivePhReturn(POOL, id, req.user.id, stepsOn);
     if (refused(res, answer)) return undefined;
 
-    const { accountsReturn } = answer;
+    const { accountsReturn, direct, from } = answer;
     logActivity(req, {
       action: 'PH_ACCOUNTS_RECEIVE',
       target: accountsReturn.dprNo,
       summary:
-        `Accounts received pharmacy GRN ${accountsReturn.dprNo} back from CSD` +
+        (direct
+          ? `Accounts received pharmacy GRN ${accountsReturn.dprNo} directly — CSD steps off`
+          : `Accounts received pharmacy GRN ${accountsReturn.dprNo} back from CSD`) +
         (accountsReturn.chequeNo ? ` (cheque ${accountsReturn.chequeNo})` : ''),
-      details: { dispatchId: id, unitName: accountsReturn.location, chequeNo: accountsReturn.chequeNo },
+      details: {
+        dispatchId: id,
+        unitName: accountsReturn.location,
+        chequeNo: accountsReturn.chequeNo,
+        ...(direct ? { direct: true, from } : {}),
+      },
     });
     return res.json({ accountsReturn });
   }),

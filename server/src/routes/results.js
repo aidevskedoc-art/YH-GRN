@@ -3,7 +3,21 @@ import { query } from '../db/pool.js';
 import { requireAuth, requireAdmin, requireScreen } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/error.js';
 import { STATUS } from '../services/reconcile.js';
-import { gapsFor, summarise, dataQuality } from '../services/turnaround.js';
+import {
+  gapsFor,
+  summarise,
+  dataQuality,
+  HOSPITAL_CHAIN,
+  HOSPITAL_DIRECT_CHAIN,
+} from '../services/turnaround.js';
+import {
+  csdSteps,
+  stepsEcho,
+  awaitingAccountsSql,
+  receiveDirectSql,
+  CSD_STEP_ACTIONS,
+  RECEIVE_REJECTED,
+} from '../services/csdSteps.js';
 import { normKey } from '../services/normalize.js';
 import {
   branchScope,
@@ -489,9 +503,12 @@ const ACTIONS = {
 const ACTION_KEYS = Object.keys(ACTIONS);
 const ACTION_SET = new Set(ACTION_KEYS);
 
-/** A row of `<key>` count columns, as `{ KEY: n }` over ACTION_KEYS. */
-function actionCountsFrom(row) {
-  return Object.fromEntries(ACTION_KEYS.map((key) => [key, row?.[key.toLowerCase()] ?? 0]));
+/**
+ * A row of `<key>` count columns, as `{ KEY: n }` over ACTION_KEYS -- or over
+ * the keys the Action dropdown offers with the CSD steps off (see FILTERS_OFF).
+ */
+function actionCountsFrom(row, keys = ACTION_KEYS) {
+  return Object.fromEntries(keys.map((key) => [key, row?.[key.toLowerCase()] ?? 0]));
 }
 
 /*
@@ -525,6 +542,49 @@ const ACTIONS_WHERE = {
   ...ACTIONS,
   SEND_TO_CSD: `(${NOT_SENT_WHERE}) AND (${PROGRESS.CHEQUE_PREPARED})`,
 };
+
+/*
+ * The four maps above and the keys the Action dropdown offers, as the queries
+ * below take them: one set while the hospitals' CSD steps are on, another once
+ * they are switched off (services/csdSteps.js).
+ *
+ * FILTERS_ON is the constants above and nothing else -- the same objects, so
+ * with the steps on every query here is, to the character, the query it has
+ * always been.
+ *
+ * FILTERS_OFF differs in two things. RETURNED_BY_CSD -- the Accounts queue --
+ * is everything awaiting Accounts' Received, wherever CSD had got to with it,
+ * since with no steps of CSD's left that queue starts the moment a GRN is
+ * sent. And the three stages only CSD could move a GRN through are not offered
+ * as Actions: their rows are all in the queue now, and an option that could
+ * never move again is not one worth choosing.
+ *
+ * Every key stays a valid `progress` and `action` either way -- PROGRESS and
+ * ACTION_SET are what the routes check against, not these. A page opened
+ * before the switch was thrown still asks for "CSD received" and is answered
+ * with the rows at that stage, rather than turned away.
+ */
+const AWAITING_ACCOUNTS = awaitingAccountsSql('c');
+const withStepsOff = (clauses) => ({ ...clauses, RETURNED_BY_CSD: AWAITING_ACCOUNTS });
+const FILTERS_ON = {
+  progress: PROGRESS,
+  progressWhere: PROGRESS_WHERE,
+  actions: ACTIONS,
+  actionsWhere: ACTIONS_WHERE,
+  actionKeys: ACTION_KEYS,
+};
+const FILTERS_OFF = {
+  progress: withStepsOff(PROGRESS),
+  progressWhere: withStepsOff(PROGRESS_WHERE),
+  actions: withStepsOff(ACTIONS),
+  actionsWhere: withStepsOff(ACTIONS_WHERE),
+  actionKeys: ACTION_KEYS.filter((key) => !CSD_STEP_ACTIONS.includes(key)),
+};
+
+/** The set for the hospitals' switch as it stands: `on` is csdSteps().hospital. */
+function filtersFor(on) {
+  return on ? FILTERS_ON : FILTERS_OFF;
+}
 
 /**
  * The SQL for one Action value, or null for any -- see ACTIONS. No parameters.
@@ -1260,6 +1320,9 @@ async function chequeRows(
     // the Ageing each row shows -- its representative bill's, which is the
     // one the table reads -- rather than by the GRN report's serial number.
     sort = null,
+    // The Status and Action clauses for the CSD steps switch as it stands --
+    // see filtersFor. As they have always been, unless said.
+    filters = FILTERS_ON,
   },
 ) {
   const params = [];
@@ -1275,11 +1338,11 @@ async function chequeRows(
   // kept apart so the Action filter's own counts can be taken over it.
   const scopeHitClauses = [
     searchFilter(req.query.q, params),
-    progressFilter(progress),
+    progressFilter(progress, filters.progress),
     pendingDeptFilter(dept, params),
     supplyTypeFilter(supplyType, 'g.vendor_code'),
   ].filter(Boolean);
-  const hitClauses = [...scopeHitClauses, actionFilter(action)].filter(Boolean);
+  const hitClauses = [...scopeHitClauses, actionFilter(action, filters.actions)].filter(Boolean);
   // COALESCE because an ILIKE over a null column is null, not false, and a
   // null would sort ahead of true when picking the representative bill.
   const hit = `COALESCE((${hitClauses.length > 0 ? hitClauses.join(' AND ') : 'TRUE'}), FALSE)`;
@@ -1339,12 +1402,12 @@ async function chequeRows(
   if (withActionCounts) {
     const scopeHit = scopeHitClauses.length > 0 ? scopeHitClauses.join(' AND ') : 'TRUE';
     countedQuery = query(
-      `SELECT ${ACTION_KEYS.map(
+      `SELECT ${filters.actionKeys.map(
         (key) => `(COUNT(*) FILTER (WHERE t.${key.toLowerCase()}))::int AS ${key.toLowerCase()}`,
       ).join(', ')}
        FROM (
-         SELECT ${ACTION_KEYS.map(
-           (key) => `BOOL_OR(COALESCE((${scopeHit} AND (${ACTIONS[key]})), FALSE)) AS ${key.toLowerCase()}`,
+         SELECT ${filters.actionKeys.map(
+           (key) => `BOOL_OR(COALESCE((${scopeHit} AND (${filters.actions[key]})), FALSE)) AS ${key.toLowerCase()}`,
          ).join(', ')}
          ${resultJoins(scope)} ${deptJoin} ${baseWhere}
          GROUP BY a.cheque_no
@@ -1356,7 +1419,7 @@ async function chequeRows(
   // All three together -- see countQuery above.
   const [{ rows: countRows }, { rows }, counted] = await Promise.all([countQuery, rowsQuery, countedQuery]);
   const total = countRows[0].total;
-  const actionCounts = counted ? actionCountsFrom(counted.rows[0]) : undefined;
+  const actionCounts = counted ? actionCountsFrom(counted.rows[0], filters.actionKeys) : undefined;
 
   return {
     page,
@@ -1377,7 +1440,10 @@ async function chequeRows(
 resultsRouter.get(
   '/:id/summary',
   asyncHandler(async (req, res) => {
-    const scope = await resolveScope(req.params.id);
+    // The upload in scope and the CSD steps switch, asked for together: neither
+    // reads the other's answer.
+    const [scope, steps] = await Promise.all([resolveScope(req.params.id), csdSteps()]);
+    const filters = filtersFor(steps.hospital);
 
     const params = [];
     const where = whereFrom([
@@ -1472,21 +1538,24 @@ resultsRouter.get(
       ...branchClauses(req, progressParams),
     ]);
 
+    // From `filters` rather than PROGRESS itself, so that with the CSD steps
+    // off the Accounts queue's count, amount and cheque figure are all of the
+    // same widened queue -- see FILTERS_OFF.
     const progressQuery = query(
       `SELECT ${PROGRESS_KEYS.map(
         (key) =>
-          `(COUNT(*) FILTER (WHERE ${PROGRESS[key]}))::int AS ${key.toLowerCase()}_count,
-           COALESCE(SUM(g.total_amount) FILTER (WHERE ${PROGRESS[key]}), 0) AS ${key.toLowerCase()}_amount`,
+          `(COUNT(*) FILTER (WHERE ${filters.progress[key]}))::int AS ${key.toLowerCase()}_count,
+           COALESCE(SUM(g.total_amount) FILTER (WHERE ${filters.progress[key]}), 0) AS ${key.toLowerCase()}_amount`,
       ).join(', ')},
        -- How many cheques the Accounts queue's GRNs are spread across, for its
        -- card: a cheque is handed back from CSD as one thing.
        (COUNT(DISTINCT a.cheque_no) FILTER (
-          WHERE ${PROGRESS.RETURNED_BY_CSD} AND COALESCE(a.cheque_no, '') <> ''
+          WHERE ${filters.progress.RETURNED_BY_CSD} AND COALESCE(a.cheque_no, '') <> ''
        ))::int AS accounts_queue_cheques,
        -- The same, for the ones Accounts has received and not yet forwarded
        -- on: the Accounts Received card beside it.
        (COUNT(DISTINCT a.cheque_no) FILTER (
-          WHERE ${PROGRESS.ACCOUNTS_RECEIVED} AND COALESCE(a.cheque_no, '') <> ''
+          WHERE ${filters.progress.ACCOUNTS_RECEIVED} AND COALESCE(a.cheque_no, '') <> ''
        ))::int AS accounts_received_cheques
        ${resultJoins(scope)}
        ${progressWhere}`,
@@ -1633,6 +1702,9 @@ resultsRouter.get(
     // The Cheque Not Prepared section's Stents / Regular cards. Sums to
     // summary.progress.CHEQUE_NOT_PREPARED -- see chequeNotPreparedSupply.
     summary.chequeNotPreparedSupply = chequeNotPreparedSupplyFigures;
+    // Said only once the CSD steps are off: the Accounts queue above then counts
+    // every GRN awaiting Received, and the cards read that off this.
+    Object.assign(summary, stepsEcho(steps.hospital));
 
     res.json({ batchId: scope.id, name: scope.name, summary });
   }),
@@ -1648,7 +1720,10 @@ resultsRouter.get(
 resultsRouter.get(
   '/:id/results',
   asyncHandler(async (req, res) => {
-    const scope = await resolveScope(req.params.id);
+    // With the CSD steps switch, which decides what the Accounts queue is and
+    // which Actions are offered -- see filtersFor.
+    const [scope, steps] = await Promise.all([resolveScope(req.params.id), csdSteps()]);
+    const filters = filtersFor(steps.hospital);
 
     const status = req.query.status;
     if (status && !isKnownStatus(status)) {
@@ -1708,21 +1783,21 @@ resultsRouter.get(
 
     // The Accounts Department's Cheque view: one row per cheque rather than per GRN.
     if (chequeView) {
-      return res.json(
-        await chequeRows(req, scope, {
-          status,
-          progress,
-          action,
-          dept,
-          deptJoin,
-          supplyType,
-          chequeNo,
-          page,
-          pageSize,
-          withActionCounts,
-          sort,
-        }),
-      );
+      const cheques = await chequeRows(req, scope, {
+        status,
+        progress,
+        action,
+        dept,
+        deptJoin,
+        supplyType,
+        chequeNo,
+        page,
+        pageSize,
+        withActionCounts,
+        sort,
+        filters,
+      });
+      return res.json({ ...cheques, ...stepsEcho(steps.hospital) });
     }
 
     const params = [];
@@ -1732,14 +1807,14 @@ resultsRouter.get(
       batchFilter(scope, params),
       statusFilter(status, params),
       searchFilter(req.query.q, params),
-      progressFilter(progress, PROGRESS_WHERE),
+      progressFilter(progress, filters.progressWhere),
       pendingDeptFilter(dept, params),
       supplyTypeFilter(supplyType, 'g.vendor_code'),
       chequeFilter(chequeNo, params),
       BRANCH_SCOPE,
       ...branchClauses(req, params),
     ];
-    const where = whereFrom([...scopeClauses, actionFilter(action, ACTIONS_WHERE)]);
+    const where = whereFrom([...scopeClauses, actionFilter(action, filters.actionsWhere)]);
     // The sort's date is bound for the page of rows alone -- the counts do not
     // read it, and a query handed a parameter it does not use is refused.
     const rowParams = [...params];
@@ -1760,8 +1835,8 @@ resultsRouter.get(
       // inside whichever card is selected.
       withActionCounts
         ? query(
-            `SELECT ${ACTION_KEYS.map(
-              (key) => `(COUNT(*) FILTER (WHERE ${ACTIONS[key]}))::int AS ${key.toLowerCase()}`,
+            `SELECT ${filters.actionKeys.map(
+              (key) => `(COUNT(*) FILTER (WHERE ${filters.actions[key]}))::int AS ${key.toLowerCase()}`,
             ).join(', ')}
              ${resultJoins(scope)} ${deptJoin} ${whereFrom(scopeClauses)}`,
             params,
@@ -1769,7 +1844,7 @@ resultsRouter.get(
         : null,
     ]);
     const total = countRows[0].total;
-    const actionCounts = counted ? actionCountsFrom(counted.rows[0]) : undefined;
+    const actionCounts = counted ? actionCountsFrom(counted.rows[0], filters.actionKeys) : undefined;
 
     return res.json({
       page,
@@ -1778,6 +1853,9 @@ resultsRouter.get(
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
       ...(actionCounts ? { actionCounts } : {}),
       rows: rows.map(mapRow),
+      // Said only once the CSD steps are off, which is what tells the table to
+      // offer Received on a GRN still at CSD.
+      ...stepsEcho(steps.hospital),
     });
   }),
 );
@@ -1800,7 +1878,10 @@ resultsRouter.get(
 resultsRouter.get(
   '/:id/export',
   asyncHandler(async (req, res) => {
-    const scope = await resolveScope(req.params.id);
+    // With the CSD steps switch, so a sheet holds the rows its card counts and
+    // the ageing sheet the stages its table shows -- see filtersFor.
+    const [scope, steps] = await Promise.all([resolveScope(req.params.id), csdSteps()]);
+    const filters = filtersFor(steps.hospital);
 
     const status = req.query.status;
 
@@ -1818,11 +1899,13 @@ resultsRouter.get(
         `${turnaroundSelect(scope)} ${turnaroundWhere} ${rowOrder(scope)}`,
         turnaroundParams,
       );
+      const chain = turnaroundChain(steps.hospital);
       return res.json({
         batchId: scope.id,
         name: scope.name,
         status,
-        rows: turnaroundRows.map(mapTurnaroundRow),
+        rows: turnaroundRows.map((r) => mapTurnaroundRow(r, chain)),
+        ...stepsEcho(steps.hospital),
       });
     }
 
@@ -1868,8 +1951,15 @@ resultsRouter.get(
         deptJoin,
         supplyType,
         all: true,
+        filters,
       });
-      return res.json({ batchId: scope.id, name: scope.name, status: status || null, rows: cheques });
+      return res.json({
+        batchId: scope.id,
+        name: scope.name,
+        status: status || null,
+        rows: cheques,
+        ...stepsEcho(steps.hospital),
+      });
     }
 
     const params = [];
@@ -1877,7 +1967,7 @@ resultsRouter.get(
       batchFilter(scope, params),
       statusFilter(status, params),
       searchFilter(req.query.q, params),
-      progressFilter(progress, PROGRESS_WHERE),
+      progressFilter(progress, filters.progressWhere),
       pendingDeptFilter(dept, params),
       supplyTypeFilter(supplyType, 'g.vendor_code'),
       BRANCH_SCOPE,
@@ -1894,6 +1984,7 @@ resultsRouter.get(
       name: scope.name,
       status: status || null,
       rows: rows.map(mapRow),
+      ...stepsEcho(steps.hospital),
     });
   }),
 );
@@ -2657,8 +2748,10 @@ const turnaroundJoins = (scope) => `
  * STAGES -- `gapsFor` reads them straight off this object. Note the capital `O`
  * in billHandOverToAcc, which follows the source column and the parser rather
  * than mapRow's spelling above.
+ *
+ * `chain` is the run the gaps are measured over -- see turnaroundChain.
  */
-function mapTurnaroundRow(r) {
+function mapTurnaroundRow(r, chain = HOSPITAL_CHAIN) {
   const row = {
     status: r.status,
     // The row the dates are stored on, so a correction knows what to write to.
@@ -2724,7 +2817,17 @@ function mapTurnaroundRow(r) {
     forwardedAt: r.forwarded_action_date,
     csdStage: r.csd_stage,
   };
-  return { ...row, gaps: gapsFor(row) };
+  return { ...row, gaps: gapsFor(row, chain) };
+}
+
+/**
+ * The chain the hospitals' ageing report measures: every stage, or -- with
+ * their CSD steps switched off -- the run without the three only CSD could
+ * record (HOSPITAL_DIRECT_CHAIN in services/turnaround.js). `on` is
+ * csdSteps().hospital.
+ */
+function turnaroundChain(on) {
+  return on ? HOSPITAL_CHAIN : HOSPITAL_DIRECT_CHAIN;
 }
 
 /**
@@ -2781,7 +2884,9 @@ async function turnaroundPopulation(req, scope, search) {
 resultsRouter.get(
   '/:id/turnaround',
   asyncHandler(async (req, res) => {
-    const scope = await resolveScope(req.params.id);
+    // With the CSD steps switch, which decides the stages measured.
+    const [scope, steps] = await Promise.all([resolveScope(req.params.id), csdSteps()]);
+    const chain = turnaroundChain(steps.hospital);
 
     const page = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(req.query.pageSize) || 50));
@@ -2803,8 +2908,8 @@ resultsRouter.get(
         [...params, pageSize, (page - 1) * pageSize],
       ),
     ]);
-    const { stages, overall } = summarise(population);
-    const { era, impossible, backwards } = dataQuality(population);
+    const { stages, overall } = summarise(population, chain);
+    const { era, impossible, backwards } = dataQuality(population, { chain });
 
     const total = population.length;
 
@@ -2823,7 +2928,10 @@ resultsRouter.get(
       pageSize,
       total,
       totalPages: Math.max(1, Math.ceil(total / pageSize)),
-      rows: rows.map(mapTurnaroundRow),
+      rows: rows.map((r) => mapTurnaroundRow(r, chain)),
+      // Said only once the CSD steps are off: the table then draws the
+      // checkpoints of the shorter run, to match the stages above.
+      ...stepsEcho(steps.hospital),
     });
   }),
 );
@@ -3131,6 +3239,11 @@ recordsRouter.delete(
    back; /receive moves it to RECEIVED; /forward then records where it went on
    from there (Bank, Vendor, or Others) and, for Vendor, who took it.
 
+   With the hospitals' CSD steps switched off (services/csdSteps.js) there is
+   no hand-back to wait for: /receive takes a handover straight from CSD, at
+   whatever stage short of a rejection, and leaves it exactly where the full
+   flow would -- so /forward, and everything below, is unchanged.
+
    No listing of its own -- the results table already shows every such row
    (Action column offers Received then the forwarding choice, Status column
    reads the answer; see csdAccountsStage/csdForwardedTo in mapRow above and
@@ -3213,6 +3326,12 @@ accountsReturnsRouter.use(requireAuth, requireScreen('results', 'accounts-depart
  * dispatch CSD has actually handed back -- the same guarded, one-statement
  * update pattern as the CSD stage move, so two people acknowledging the same
  * row at once cannot both succeed.
+ *
+ * With the hospitals' CSD steps switched off there is no hand-back to wait for:
+ * the same move then takes a handover straight from wherever it stands at CSD,
+ * short of one they rejected, and leaves it where this one does -- see
+ * receiveDirectSql in services/csdSteps.js. Which of the two it is is read off
+ * the switch here, never off the request.
  */
 accountsReturnsRouter.patch(
   '/:id/receive',
@@ -3222,24 +3341,36 @@ accountsReturnsRouter.patch(
       return res.status(400).json({ error: 'Unknown row.' });
     }
 
+    const stepsOn = (await csdSteps()).hospital;
     const { rows } = await query(
-      `UPDATE csd_dispatches
+      stepsOn
+        ? `UPDATE csd_dispatches
        SET accounts_stage = 'RECEIVED', accounts_received_at = NOW(), accounts_received_by = $1
        WHERE id = $2 AND stage = 'MOVED_TO_ACCOUNTS' AND accounts_stage = 'QUEUED'
-       RETURNING id`,
+       RETURNING id`
+        : receiveDirectSql('csd_dispatches'),
       [req.user.id, id],
     );
 
     if (rows.length > 0) {
       const { rows: full } = await query(`${ACCOUNTS_RETURN_COLUMNS} WHERE c.id = $1`, [id]);
       const accountsReturn = mapAccountsReturn(full[0]);
+      // Received without CSD ever handing it back: said in the log, with the
+      // stage it was taken from, since the handover's own stamps will not say.
+      const direct = !stepsOn && rows[0].direct === true;
       logActivity(req, {
         action: 'ACCOUNTS_RECEIVE',
         target: accountsReturn.dprNo,
         summary:
-          `Accounts received GRN ${accountsReturn.dprNo} back from CSD` +
+          (direct
+            ? `Accounts received GRN ${accountsReturn.dprNo} directly — CSD steps off`
+            : `Accounts received GRN ${accountsReturn.dprNo} back from CSD`) +
           (accountsReturn.chequeNo ? ` (cheque ${accountsReturn.chequeNo})` : ''),
-        details: { dispatchId: id, chequeNo: accountsReturn.chequeNo },
+        details: {
+          dispatchId: id,
+          chequeNo: accountsReturn.chequeNo,
+          ...(direct ? { direct: true, from: rows[0].was_stage } : {}),
+        },
       });
       return res.json({ accountsReturn });
     }
@@ -3250,6 +3381,17 @@ accountsReturnsRouter.patch(
     );
     if (current.length === 0) {
       return res.status(404).json({ error: 'That GRN is no longer in the CSD queue.' });
+    }
+    // Steps off, the only handovers the move turns away are one CSD rejected
+    // and one already received -- "not moved to accounts" is no longer a
+    // reason, since being moved there is what the click itself now does.
+    if (!stepsOn) {
+      return res.status(409).json({
+        error:
+          current[0].stage === 'REJECTED'
+            ? RECEIVE_REJECTED
+            : 'This GRN has already been received by accounts.',
+      });
     }
     if (current[0].stage !== 'MOVED_TO_ACCOUNTS') {
       return res.status(409).json({ error: 'This GRN has not been moved to accounts.' });

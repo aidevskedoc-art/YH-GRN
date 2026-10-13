@@ -34,6 +34,7 @@ import { asyncHandler, tablesNotMigrated } from '../middleware/error.js';
 import { changedFields, logActivity } from '../services/activityLog.js';
 import { normKey } from '../services/normalize.js';
 import { relinkPhResults } from '../services/phIngest.js';
+import { csdSteps, saveCsdSteps, inFlight } from '../services/csdSteps.js';
 
 export const phConfigRouter = express.Router();
 
@@ -372,5 +373,59 @@ phConfigRouter.delete(
   }),
 );
 
-// The ph_ tables are added by a migration. Until it has been run, say so.
+/* --------------------------------------------------------------------------
+   OP Pharmacy's own CSD steps switch -- /api/config/csd-steps for the
+   pharmacies' queue, route for route. Its own switch, as its queue is its own:
+   the hospitals' can be off while this is on, or the other way round. See
+   services/csdSteps.js for what switching it off changes.
+   -------------------------------------------------------------------------- */
+
+/** The pharmacies' queue, for the counts the screen puts in the question it asks before the switch is thrown. */
+const HANDOVERS = 'ph_csd_dispatches';
+
+/** GET /api/op-pharmacy/config/csd-steps -- whether they are on, and how many handovers stand where. */
+phConfigRouter.get(
+  '/csd-steps',
+  requireScreen('ph-config'),
+  asyncHandler(async (req, res) => {
+    const [steps, counts] = await Promise.all([csdSteps(), inFlight(HANDOVERS)]);
+    res.json({ enabled: steps.pharmacy, inFlight: counts });
+  }),
+);
+
+/**
+ * PATCH /api/op-pharmacy/config/csd-steps -- body { enabled }, a real boolean.
+ * Nothing is written to a handover either way.
+ */
+phConfigRouter.patch(
+  '/csd-steps',
+  requireScreen('ph-config'),
+  asyncHandler(async (req, res) => {
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'Say whether the CSD steps are to be on or off.' });
+    }
+
+    // Both before anything is saved, as on the hospital route: nothing after
+    // the save can then fail, so a switch that was thrown is always answered
+    // as thrown and always logged.
+    const [steps, counts] = await Promise.all([csdSteps(), inFlight(HANDOVERS)]);
+    const before = steps.pharmacy;
+    await saveCsdSteps('pharmacy', enabled, req.user.id);
+
+    // Only a switch that moved: saving it where it already stood changed nothing.
+    if (before !== enabled) {
+      logActivity(req, {
+        action: 'PH_CSD_STEPS_UPDATE',
+        target: 'OP Pharmacy',
+        summary: `Switched the CSD steps ${enabled ? 'on' : 'off'} for OP Pharmacy`,
+        details: { from: before, to: enabled, inFlight: counts },
+      });
+    }
+    return res.json({ enabled, inFlight: counts });
+  }),
+);
+
+// The ph_ tables are added by a migration, and so is the settings table the
+// switch above is kept in. Until it has been run, say so.
 phConfigRouter.use(tablesNotMigrated('The OP Pharmacy tables'));

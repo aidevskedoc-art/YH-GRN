@@ -19,7 +19,17 @@
  * the same sheet they sent, annotated.
  */
 import { api } from '../api/client.js';
-import { HOSPITAL_CHAIN, spanDays, spanId, spanLabel, stageLabel, totalDays } from './stages.js';
+import {
+  HOSPITAL_CHAIN,
+  chainFor,
+  spanDays,
+  spanId,
+  spanLabel,
+  spansIn,
+  stageLabel,
+  totalDays,
+} from './stages.js';
+import { awaitsAccounts, stepsOnIn } from './csdSteps.js';
 import { chequeNotRequired, chequePrepared, paymentNotRequired } from './cheque.js';
 import { ageingDays, asBpadAgeRow, bpadAgeDays, grnStoreAgeDays, todayIso } from './ageing.js';
 
@@ -431,7 +441,7 @@ export function turnaroundSheetRows(rows, spans = [], chain = HOSPITAL_CHAIN) {
   return rows.map((r) => ({
     ...r,
     ...r.gaps,
-    totalDays: totalDays(r, chain.start),
+    totalDays: totalDays(r, chain.start, chain.end),
     ...Object.fromEntries(spans.map((span) => [spanId(span), spanDays(r, span)])),
   }));
 }
@@ -605,14 +615,21 @@ function slug(text) {
  * card's sheet (`grnStore`, see isGrnStoreSheet) gets GRN_STORE_COLUMNS
  * instead: those plus Age from GRN Date.
  */
-export function columnsForStatus(status, spans = [], view, { pendingBpad = false, grnStore = false } = {}) {
+export function columnsForStatus(
+  status,
+  spans = [],
+  view,
+  { pendingBpad = false, grnStore = false, chain = HOSPITAL_CHAIN } = {},
+) {
   // With the register's columns where the sheet is Pending GRNs at BPAD rows
   // -- see isPendingBpadSheet.
   if (status === 'PENDING') return pendingBpad ? PENDING_BPAD_COLUMNS : GRN_COLUMNS;
   // With Age from GRN Date where it is the GRN Store card's -- see
   // isGrnStoreSheet.
   if (status === 'ALL' && grnStore) return GRN_STORE_COLUMNS;
-  if (status === 'TURNAROUND') return turnaroundColumns(spans);
+  // Over the run the rows were measured on (`chain`), with the spans it can
+  // still measure -- the same two things the table itself goes by.
+  if (status === 'TURNAROUND') return turnaroundColumns(spansIn(chain, spans), chain);
   // `view` is the GRNs / Cheques switch, where the screen has one; without it
   // a sheet carries every column, as before.
   if (status === 'VALID') {
@@ -664,6 +681,10 @@ function toCell(row, column) {
     if (row.csdStage === 'MOVED_TO_ACCOUNTS' && row.csdAccountsStage === 'RECEIVED') {
       return 'Accounts received';
     }
+    // With the CSD steps switched off (the row says so -- see sheetRows) a GRN
+    // awaiting Accounts' Received reads "Sent to CSD" wherever CSD had got to
+    // with it, as its Status pill does on screen.
+    if (row.csdStepsOff && awaitsAccounts(row, false)) return CSD_STAGE_LABELS.QUEUED;
     return CSD_STAGE_LABELS[row.csdStage] || 'Not sent';
   }
   if (column.key === 'chequeStatus') return CHEQUE_STATUS_LABELS[row.chequeStatus] ?? null;
@@ -1012,9 +1033,14 @@ function save(blob, fileName) {
  * Turnaround rows carry their day counts under `gaps`; lifted to the top
  * level here so the column keys resolve like every other column's, the same
  * way the table itself reads them.
+ *
+ * `stepsOn` comes back with them: whether the answer was worked out with the
+ * CSD steps on (see services/csdSteps.js). Off, the ageing sheet is laid out
+ * over the shorter run its rows were measured on, and every other row is told
+ * so (`csdStepsOff`) for its CSD Status to read as the screen's does.
  */
 async function sheetRows(batchId, spec, { q, location, msme, spans, view, ageingAsOf }) {
-  const { name, rows: raw } = await api.exportRows(batchId, spec.status, {
+  const answer = await api.exportRows(batchId, spec.status, {
     q,
     location,
     msme,
@@ -1025,9 +1051,13 @@ async function sheetRows(batchId, spec, { q, location, msme, spans, view, ageing
     accountsFrom: spec.accountsFrom,
     view,
   });
+  const { name } = answer;
+  const stepsOn = stepsOnIn(answer);
+  const raw = stepsOn ? answer.rows : answer.rows.map((r) => ({ ...r, csdStepsOff: true }));
+  const chain = chainFor(HOSPITAL_CHAIN, stepsOn);
   const rows =
     spec.status === 'TURNAROUND'
-      ? turnaroundSheetRows(raw, spans)
+      ? turnaroundSheetRows(raw, spansIn(chain, spans), chain)
       : spec.status === 'BPAD'
         ? // Age from GRN Date, as the tab shows it: a bill still at Stores
           // counts to the "as of" date picked on screen -- see
@@ -1045,7 +1075,7 @@ async function sheetRows(batchId, spec, { q, location, msme, spans, view, ageing
             : // The Ageing, as the table shows it: to the cheque date, or to
               // the "as of" date picked on screen -- see services/ageing.js.
               raw.map((r) => ({ ...r, ageingDays: ageingDays(r, ageingAsOf), ageingAsOf }));
-  return { name, rows };
+  return { name, rows, stepsOn };
 }
 
 /**
@@ -1133,6 +1163,8 @@ export async function exportSection(
     columns: columnsForStatus(s.status, spans, viewFor(s), {
       pendingBpad: isPendingBpadSheet(s),
       grnStore: isGrnStoreSheet(s),
+      // The run this sheet's rows were measured over -- see sheetRows.
+      chain: chainFor(HOSPITAL_CHAIN, fetched[i].stepsOn),
     }),
     // A card's sheet says which card it is above its headers; a section's own
     // sheet is just the report.
@@ -1145,6 +1177,13 @@ export async function exportSection(
 
   // Strip characters Windows rejects in a filename.
   const safeName = String(name).replace(/[^A-Za-z0-9._-]+/g, '_');
+  // The spans the ageing sheet actually measures: the ones its own run still
+  // has (see spansIn). A span picked before the CSD steps were switched off, to
+  // a checkpoint that run no longer draws, heads no column in the sheet -- and
+  // so must not name the file either.
+  const ageingSheet = sheets.findIndex((s) => s.status === 'TURNAROUND');
+  const measured =
+    ageingSheet >= 0 ? spansIn(chainFor(HOSPITAL_CHAIN, fetched[ageingSheet].stepsOn), spans) : [];
   const fileName = `${[
     report,
     // An ageing sheet narrowed to PR-to-PO is not the same report as the full
@@ -1152,9 +1191,7 @@ export async function exportSection(
     // actually carries that sheet: the span picker belongs to that one view,
     // and a Total GRNS file is not about PR-to-PO whatever the picker was left
     // set to.
-    spans.length > 0 &&
-      sheets.some((s) => s.status === 'TURNAROUND') &&
-      slug(spans.map(spanLabel).join(' ')),
+    measured.length > 0 && slug(measured.map(spanLabel).join(' ')),
     // A cheque-per-row file is a different report from a GRN-per-row one.
     accountsView === ACCOUNTS_CHEQUE_VIEW && sheets.some((s) => s.status === 'VALID') && 'Cheque_View',
     msmeSlug(msme),
@@ -1184,8 +1221,13 @@ const LOG_COLUMNS = [
  *
  * `describe` turns one entry's details into readable text -- passed in by the
  * screen so the file and the page word them identically.
+ *
+ * `pharmacy` is the screen's other view, OP Pharmacy's log. Which entries the
+ * file holds is the filters' to say (`source`); this only names it for what
+ * it is, as the two CSD queues' files are, so the two logs cannot be mistaken
+ * for one another in a Downloads folder.
  */
-export async function exportLogs(filters, describe) {
+export async function exportLogs(filters, describe, { pharmacy = false } = {}) {
   const data = await api.listLogs({ ...filters, all: true });
   const categoryLabels = Object.fromEntries((data.categories ?? []).map((c) => [c.key, c.label]));
   const stamp = (value) => {
@@ -1202,7 +1244,7 @@ export async function exportLogs(filters, describe) {
     detailText: describe(r.details).join('\n') || null,
   }));
 
-  const report = 'Activity Logs';
+  const report = pharmacy ? 'OP Pharmacy Activity Logs' : 'Activity Logs';
   const blob = await buildXlsx(rows, { sheetName: report, columns: LOG_COLUMNS, title: report });
   save(blob, `${slug(report)}_${new Date().toISOString().slice(0, 10)}.xlsx`);
   return { count: rows.length, truncated: Boolean(data.truncated), total: data.total };
@@ -1308,18 +1350,22 @@ function pharmacyCsdColumns(view) {
  * workbook and names the file after the section. Every sheet goes through the
  * same toCell as every other export, so a status or a CSD stage is spelled
  * here as it is in those.
+ *
+ * The rows first and the columns after them: the GRN age sheet's columns
+ * depend on the run its rows came back measured over, which the page only
+ * learns from the answer (see chainFor in services/stages.js). The file's
+ * name can wait on the same thing: `fileName` is the name, or a function
+ * answering with it once every sheet's rows are in.
  */
 export async function exportPharmacySection(sheets, { fileName, loadSheet, columnsFor }) {
   const built = await Promise.all(
-    sheets.map(async (sheet) => ({
-      sheetName: sheet.sheetName,
-      title: sheet.title,
-      columns: columnsFor(sheet),
-      rows: await loadSheet(sheet),
-    })),
+    sheets.map(async (sheet) => {
+      const rows = await loadSheet(sheet);
+      return { sheetName: sheet.sheetName, title: sheet.title, columns: columnsFor(sheet), rows };
+    }),
   );
   const blob = await buildWorkbook(built);
-  save(blob, `${slug(fileName)}.xlsx`);
+  save(blob, `${slug(typeof fileName === 'function' ? fileName() : fileName)}.xlsx`);
 }
 
 /* -------------------------------------------------------------------------

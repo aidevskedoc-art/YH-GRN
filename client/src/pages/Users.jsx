@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client.js';
 import Sheet from '../components/Sheet.jsx';
+import Loading from '../components/Loading.jsx';
 import PasswordField from '../components/PasswordField.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import { IconKey, IconPencil, IconPlus, IconShield, IconTrash, IconUsers } from '../components/icons.jsx';
@@ -554,7 +555,7 @@ export default function Users() {
     }
   }
 
-  if (loading && !data) return <div className="loading">Loading…</div>;
+  if (loading && !data) return <Loading />;
 
   return (
     <>

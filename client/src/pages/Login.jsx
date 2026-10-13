@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { LogoMark } from '../components/Brand.jsx';
 import PasswordField from '../components/PasswordField.jsx';
+import Loading from '../components/Loading.jsx';
 
 /**
  * The stage: a glass cube turning above a cast-concrete plinth, lit by the
@@ -71,7 +72,7 @@ export default function Login() {
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  if (loading) return <div className="loading">Loading…</div>;
+  if (loading) return <Loading />;
   if (user) return <Navigate to={location.state?.from || '/results'} replace />;
 
   async function handleSubmit(event) {

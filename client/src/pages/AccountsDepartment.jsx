@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext.jsx';
 import { exportSection } from '../services/exporter.js';
 import { nextAgeSort, todayIso } from '../services/ageing.js';
 import { singlePress } from '../services/press.js';
+import { stepsOnIn } from '../services/csdSteps.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
   ACCOUNTS_GRN_VIEW,
@@ -34,6 +35,7 @@ import {
   bulkForwardEligible,
   bulkReceiveEligible,
   csdCardFigures,
+  csdCardShown,
   progressCardFigures,
   actionFilterOptions,
   progressFilterOptions,
@@ -50,6 +52,7 @@ import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
 import { IconArrowRight, IconX } from '../components/icons.jsx';
 import BackButton, { useSectionTrail } from '../components/BackButton.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
+import Loading from '../components/Loading.jsx';
 import { expandCheques, resultsChequeBills } from '../services/chequeGroups.js';
 
 /**
@@ -149,7 +152,7 @@ const CARD_BY_ID = Object.fromEntries([
 const ALL = 'all';
 
 export default function AccountsDepartment() {
-  const { can } = useAuth();
+  const { can, csdOn, noteCsdSteps } = useAuth();
   const navigate = useNavigate();
 
   // Every upload, always. A GRN number that repeats across uploads is counted
@@ -219,6 +222,23 @@ export default function AccountsDepartment() {
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
+  // The hospitals' CSD steps switch (services/csdSteps.js), read off the
+  // answers on screen rather than off the session: the server says which it
+  // answered under, so what is drawn always agrees with the figures and rows
+  // it is drawn from. On unless an answer says otherwise. `cardsStepsOn` is
+  // the summary's, which the cards' figures came with. `rowsStepsOn` is the
+  // rows' -- what the table, the Action dropdown and the bulk actions go by --
+  // and the summary's while there are no rows on hand. Before the summary has
+  // arrived the session's view stands in for it, so the row of cards -- and
+  // the workbook taken off it -- is right from the first draw.
+  const cardsStepsOn = summary ? stepsOnIn(summary) : csdOn.hospital;
+  // On the ageing view no rows are read here, so `data` is whatever the view
+  // before it left behind -- answered, perhaps, before the switch was thrown.
+  // There the summary's word stands instead: it is read again whenever the
+  // session learns of a change, on every view.
+  const rowsOnHand = Boolean(data) && status !== TURNAROUND;
+  const rowsStepsOn = rowsOnHand ? stepsOnIn(data) : cardsStepsOn;
+
   // Acting on several GRNs paid by the same cheque in one action, instead of
   // one dropdown per row. `multiMode` is the checkbox column showing at all;
   // `selected` is which GRN numbers are ticked within it. Both live here
@@ -262,12 +282,43 @@ export default function AccountsDepartment() {
       });
   }, []);
 
+  // The summary: the cards' figures, and the counts on the View and Status
+  // dropdowns. `csdOn.hospital` is not read here: it is listed so the summary
+  // is asked for again once the session learns the CSD steps switch has been
+  // thrown, since which stage cards stand and what the Accounts Queue counts
+  // both follow it.
+  //
+  // Only the latest request may answer. A switch thrown while an earlier
+  // summary was still on its way would otherwise let that one land last, and
+  // leave the cards counted under the setting that had just been left.
   useEffect(() => {
+    let superseded = false;
     api
       .summary(batchId, { q, location, msme })
-      .then(({ summary: s }) => setSummary(s))
-      .catch((err) => setError(err.message));
-  }, [batchId, q, location, msme]);
+      .then(({ summary: s }) => {
+        if (!superseded) setSummary(s);
+      })
+      .catch((err) => {
+        if (!superseded) setError(err.message);
+      });
+    return () => {
+      superseded = true;
+    };
+  }, [batchId, q, location, msme, csdOn.hospital]);
+
+  // What each answer says of that switch, held against the session's own view
+  // of it -- see noteCsdSteps in context/AuthContext.jsx. The page goes by its
+  // answers either way; this is how the sidebar, which goes by the session,
+  // hears of a switch thrown while the page stayed open. The session is only
+  // asked for again when an answer disagrees with it.
+  useEffect(() => {
+    if (summary) noteCsdSteps('hospital', stepsOnIn(summary));
+  }, [summary, noteCsdSteps]);
+  // Only rows that are on hand for the view showing: an answer left behind by
+  // an earlier view says what was true then, not now.
+  useEffect(() => {
+    if (rowsOnHand) noteCsdSteps('hospital', stepsOnIn(data));
+  }, [data, rowsOnHand, noteCsdSteps]);
 
   const loadRows = useCallback(() => {
     // Every call supersedes the one before: an answer for a request that is no
@@ -328,6 +379,11 @@ export default function AccountsDepartment() {
     ageSortKey,
     ageSortDir,
     ageSortAsOf,
+    // Not sent with the request: the rows are answered under the hospitals'
+    // CSD steps switch, so when the session learns it was thrown they are read
+    // again, as the summary is -- and the table follows the switch at once
+    // rather than at the next filter.
+    csdOn.hospital,
   ]);
 
   useEffect(loadRows, [loadRows]);
@@ -360,11 +416,17 @@ export default function AccountsDepartment() {
    * journey -- see the predicates in services/resultsViews.js, which the
    * results screen applies to the same rows. Only the CSD one asks anything of
    * this account, so only it takes the grant.
+   *
+   * Receiving goes by the CSD steps switch the rows were answered under: off,
+   * a GRN still at CSD can be received too (see awaitsAccounts in
+   * services/csdSteps.js), and the category follows. Wrapped rather than
+   * handed over bare, because every() and filter() pass a row's index in the
+   * place the switch is read from.
    */
   const canBulkCsd = (row) => bulkCsdEligible(row, canHandToCsd(can));
-  const canBulkReceive = bulkReceiveEligible;
+  const canBulkReceive = (row) => bulkReceiveEligible(row, rowsStepsOn);
   const canBulkForward = bulkForwardEligible;
-  const bulkCategory = (row) => bulkCategoryOf(row, canHandToCsd(can));
+  const bulkCategory = (row) => bulkCategoryOf(row, canHandToCsd(can), rowsStepsOn);
 
   /**
    * Ticking one row also ticks every other row on the page still eligible for
@@ -447,7 +509,10 @@ export default function AccountsDepartment() {
     }
   }
 
-  /** Acknowledge every ticked row CSD has handed back, in one go. */
+  /**
+   * Acknowledge every ticked row CSD has handed back, in one go -- and, with
+   * the CSD steps off, every one still at CSD (see canBulkReceive).
+   */
   async function receiveSelected() {
     if (selectedRows.length === 0) return;
     setBulkSending(true);
@@ -459,6 +524,10 @@ export default function AccountsDepartment() {
       loadRows();
     } catch (err) {
       setError(err.message);
+      // Drawn with the CSD steps off, a refusal may mean they have been
+      // switched back on since: the rows are read again, which brings the
+      // switch they are now answered under.
+      if (!rowsStepsOn) loadRows();
     } finally {
       setBulkSending(false);
     }
@@ -662,14 +731,28 @@ export default function AccountsDepartment() {
   // The Action dropdown's options, with the counts the rows came back with --
   // how many each leaves inside the card as it stands. The ageing view's rows
   // are not these, so it offers them without counts.
-  const actionFilters = actionFilterOptions(isAccountsSection(status) ? data?.actionCounts : null);
+  //
+  // The list goes by the CSD steps switch the rows were answered under: off,
+  // the stages only CSD could move a GRN through are not offered -- bar the
+  // Action in force, which stays on the list while it is narrowing the table.
+  // CSD rejected stays on offer while the summary still counts a rejected GRN,
+  // as its card stays on the row. See actionFilterOptions.
+  const actionFilters = actionFilterOptions(isAccountsSection(status) ? data?.actionCounts : null, {
+    stepsOn: rowsStepsOn,
+    selected: action,
+    rejected: summary?.csd?.REJECTED?.count ?? 0,
+  });
 
   // The cards this view shows, in the order CARDS_FOR names them -- the "Not
   // in Vendor Master" card only while there are such GRNs (SUPPLY_TYPE_CARDS).
+  // And the CSD stage cards by the CSD steps switch the summary was answered
+  // under: all four with the steps on; off, only CSD Rejected while it has
+  // GRNs, and whichever one the table is narrowed to. See csdCardShown.
   const cards = (CARDS_FOR[status] ?? [])
     .map((id) => CARD_BY_ID[id])
     .filter(Boolean)
-    .filter((card) => cardShown(card, summary, supplyType));
+    .filter((card) => cardShown(card, summary, supplyType))
+    .filter((card) => csdCardShown(card, summary, progress, cardsStepsOn));
   // The row as drawn: on Accounts each group's title ahead of its cards --
   // Accounts, then CSD. The Cheque Not Prepared row as it is. Drawing only:
   // the export reads `cards`. See titledCards.
@@ -680,7 +763,7 @@ export default function AccountsDepartment() {
 
   /**
    * What Export Excel will hand back: this view's own sheet, then a sheet per
-   * card below it -- the four CSD stages and the cheque pair on Accounts, and
+   * card below it -- the CSD stages shown and the cheque pair on Accounts, and
    * on the ageing view its one sheet alone, that row having no cards of its
    * own here. Read off the rendered cards, so the file and the row agree; the
    * button's tooltip reads the length, to stop promising a sheet per card
@@ -690,7 +773,7 @@ export default function AccountsDepartment() {
 
   /**
    * The view showing as one workbook: its own sheet, then a sheet per card on
-   * the row below -- the four CSD stages and the cheque pair on Accounts,
+   * the row below -- the CSD stages shown and the cheque pair on Accounts,
    * nothing beside it on the ageing view. Same shape as the results screen's
    * export, off the same shared card declarations (see sectionSheets in
    * services/resultsViews.js), so the Accounts sheets read identically on
@@ -1181,12 +1264,14 @@ export default function AccountsDepartment() {
           onSpansChange={setSpans}
         />
       ) : loading && !data ? (
-        <div className="loading">Loading…</div>
+        <Loading />
       ) : (
         data && (
           <>
             {/* The Cheque Not Prepared section is Accounts rows, laid out as the
-                GRN view -- the cheque columns would be empty on every one. */}
+                GRN view -- the cheque columns would be empty on every one.
+                `csdSteps` is the switch these rows were answered under, which
+                decides whether a GRN still at CSD offers Received. */}
             <ResultsTable
               rows={data.rows}
               status={inChequeNotPrepared ? VALID : status}
@@ -1199,6 +1284,7 @@ export default function AccountsDepartment() {
               ageingAsOf={ageingAsOf}
               ageSort={activeAgeSort}
               onAgeSort={selectAgeSort}
+              csdSteps={rowsStepsOn}
             />
             <div className="pager">
               <span className="pager__info">

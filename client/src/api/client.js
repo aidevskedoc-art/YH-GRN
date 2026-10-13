@@ -125,9 +125,12 @@ export const api = {
   /* --- Activity log -------------------------------------------------------
      Administrator-only. Who did what and when, newest first, with the counts,
      action catalogue and people the screen's cards and filters are built from.
-     `all` drops the pagination, for the export. */
-  listLogs: ({ page = 1, pageSize = 20, q, category, action, userId, from, to, deleted, all } = {}) => {
+     `source` is which of the screen's two logs: 'pharmacy' for OP Pharmacy's,
+     anything else for the hospitals'. `all` drops the pagination, for the
+     export. */
+  listLogs: ({ page = 1, pageSize = 20, q, source, category, action, userId, from, to, deleted, all } = {}) => {
     const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+    if (source) params.set('source', source);
     if (q) params.set('q', q);
     // Only tracked deletions: uploads and files, users, branches.
     if (deleted) params.set('deleted', '1');
@@ -383,7 +386,10 @@ export const api = {
   /**
    * Acknowledge one GRN CSD marked Moved to accounts, by its CSD dispatch id
    * -- the results table's own Action column offers this once csdStage
-   * reaches MOVED_TO_ACCOUNTS, rather than a queue screen of its own.
+   * reaches MOVED_TO_ACCOUNTS, rather than a queue screen of its own. With the
+   * hospitals' CSD steps switched off it is offered as soon as the GRN has
+   * been sent, and the server takes it straight from CSD (see awaitsAccounts
+   * in services/csdSteps.js).
    */
   receiveAccountsReturn: (id) => request(`/accounts-returns/${id}/receive`, { method: 'PATCH' }),
 
@@ -413,6 +419,18 @@ export const api = {
   updateBranch: (id, body) => request(`/config/branches/${id}`, { method: 'PATCH', body }),
 
   deleteBranch: (id) => request(`/config/branches/${id}`, { method: 'DELETE' }),
+
+  /**
+   * The hospitals' CSD steps switch: `{ enabled, inFlight }` -- whether a
+   * handover still goes through CSD's own stages, and how many handovers stand
+   * where (`queued`, `received`, `approved`, `rejected`, `handedBack`), for the
+   * Configuration screen to say what throwing it will meet. Both calls need
+   * that screen. Every other screen is told the switch with its own answers.
+   */
+  csdSteps: () => request('/config/csd-steps'),
+
+  /** Switch them on or off. `enabled` is a boolean; answers as csdSteps does. */
+  setCsdSteps: (enabled) => request('/config/csd-steps', { method: 'PATCH', body: { enabled } }),
 
   /* --- OP Pharmacy ---------------------------------------------------------
      The pharmacies' own upload and branches: the calls above over again,
@@ -447,6 +465,11 @@ export const api = {
 
   /** Answers with `relinked`, as create and update do -- see routes/phConfig.js. */
   phDeleteBranch: (id) => request(`/op-pharmacy/config/branches/${id}`, { method: 'DELETE' }),
+
+  /** OP Pharmacy's own CSD steps switch -- csdSteps and setCsdSteps above, for the pharmacies' queue. */
+  phCsdSteps: () => request('/op-pharmacy/config/csd-steps'),
+  phSetCsdSteps: (enabled) =>
+    request('/op-pharmacy/config/csd-steps', { method: 'PATCH', body: { enabled } }),
 
   /**
    * The figures the Pharmacy Results cards read -- how many GRNs stand at each
@@ -485,7 +508,11 @@ export const api = {
    */
   phUpdateCsdDates: (id, dates) => request(`/op-pharmacy/csd/${id}/dates`, { method: 'PATCH', body: dates }),
 
-  /** Acknowledge one pharmacy GRN CSD marked Moved to accounts, by its CSD dispatch id. */
+  /**
+   * Acknowledge one pharmacy GRN CSD marked Moved to accounts, by its CSD
+   * dispatch id -- or, with OP Pharmacy's CSD steps switched off, one still at
+   * CSD, which the server then takes straight from there.
+   */
   phReceiveAccountsReturn: (id) => request(`/op-pharmacy/accounts-returns/${id}/receive`, { method: 'PATCH' }),
 
   /** Record where Accounts sent a received pharmacy GRN on to -- the shape forwardAccountsReturn takes. */

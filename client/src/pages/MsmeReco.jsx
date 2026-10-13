@@ -25,6 +25,7 @@ import { Fragment, useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client.js';
 import FileDrop from '../components/FileDrop.jsx';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
+import Loading from '../components/Loading.jsx';
 import { IconAlert, IconArrowRight, IconPlus, IconX } from '../components/icons.jsx';
 import { exportMsmeReco, MSME_STATUS_LABELS } from '../services/exporter.js';
 import { singlePress } from '../services/press.js';
@@ -448,7 +449,7 @@ export default function MsmeReco() {
         </div>
       )}
 
-      {loading && !data && <div className="loading">Loading…</div>}
+      {loading && !data && <Loading />}
 
       {/* No picking a reco: every vendor is on screen once, from the latest
           reco that had it. This line is the latest reco itself. */}

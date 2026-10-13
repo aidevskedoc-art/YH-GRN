@@ -14,9 +14,10 @@
 import express from 'express';
 import { query } from '../db/pool.js';
 import { requireAuth, requireScreen } from '../middleware/auth.js';
-import { asyncHandler } from '../middleware/error.js';
+import { asyncHandler, tablesNotMigrated } from '../middleware/error.js';
 import { changedFields, logActivity } from '../services/activityLog.js';
 import { normKey } from '../services/normalize.js';
+import { csdSteps, saveCsdSteps, inFlight } from '../services/csdSteps.js';
 
 export const configRouter = express.Router();
 
@@ -291,4 +292,75 @@ configRouter.delete(
     });
     return res.status(204).end();
   }),
+);
+
+/* --------------------------------------------------------------------------
+   The CSD steps switch: whether the hospitals' handovers still go through the
+   CSD department's own stages -- see services/csdSteps.js for what switching it
+   off changes, which is three rules and no stored row.
+
+   Both routes need the Configuration screen, reading included, unlike the
+   branches above: only that screen asks, and every other screen is told the
+   switch with its own answers (the session, and `csdStepsOff` on the results).
+   -------------------------------------------------------------------------- */
+
+/** The hospitals' queue, for the counts the screen puts in the question it asks before the switch is thrown. */
+const HANDOVERS = 'csd_dispatches';
+
+/**
+ * GET /api/config/csd-steps
+ *
+ * Whether the steps are on, and how many handovers stand where -- so the screen
+ * can say what throwing the switch will meet before it is thrown.
+ */
+configRouter.get(
+  '/csd-steps',
+  requireScreen('config'),
+  asyncHandler(async (req, res) => {
+    const [steps, counts] = await Promise.all([csdSteps(), inFlight(HANDOVERS)]);
+    res.json({ enabled: steps.hospital, inFlight: counts });
+  }),
+);
+
+/**
+ * PATCH /api/config/csd-steps
+ *
+ * Body: { enabled }. A real boolean and nothing else -- "false" as a string is
+ * true to anything that only asks whether it is there, and this is not a
+ * setting to get backwards.
+ *
+ * Nothing is written to a handover either way: the ones part-way through CSD
+ * stay where they are, and what changes is what may be done with them next.
+ */
+configRouter.patch(
+  '/csd-steps',
+  requireScreen('config'),
+  asyncHandler(async (req, res) => {
+    const enabled = req.body?.enabled;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ error: 'Say whether the CSD steps are to be on or off.' });
+    }
+
+    // Where the switch stands and the counts, both before anything is saved:
+    // nothing after the save can then fail, so a switch that was thrown is
+    // always answered as thrown, and always reaches the activity log.
+    const [steps, counts] = await Promise.all([csdSteps(), inFlight(HANDOVERS)]);
+    const before = steps.hospital;
+    await saveCsdSteps('hospital', enabled, req.user.id);
+
+    // Only a switch that moved: saving it where it already stood changed nothing.
+    if (before !== enabled) {
+      logActivity(req, {
+        action: 'CSD_STEPS_UPDATE',
+        target: 'Hospitals',
+        summary: `Switched the CSD steps ${enabled ? 'on' : 'off'} for the hospitals`,
+        details: { from: before, to: enabled, inFlight: counts },
+      });
+    }
+    return res.json({ enabled, inFlight: counts });
+  }),
+  // The table is added by a migration. Until it has been run there is nowhere
+  // to keep the switch, and this says so rather than "something went wrong".
+  // On this route alone: the branch routes above have never needed it.
+  tablesNotMigrated('The settings'),
 );

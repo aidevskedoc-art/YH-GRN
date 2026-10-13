@@ -12,7 +12,7 @@ import {
   RowStatus,
 } from '../components/ResultsTable.jsx';
 import { useConfirm } from '../components/ConfirmDialog.jsx';
-import { IconArrowRight, IconCheck, IconSend, IconUndo, IconX } from '../components/icons.jsx';
+import { IconArrowRight, IconCheck, IconSend, IconTrash, IconUndo, IconX } from '../components/icons.jsx';
 import BackButton, { useSectionTrail } from '../components/BackButton.jsx';
 import LocationFilter from '../components/LocationFilter.jsx';
 import MsmeFilter from '../components/MsmeFilter.jsx';
@@ -20,11 +20,13 @@ import PairCard from '../components/PairCard.jsx';
 import TurnaroundView from '../components/TurnaroundView.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from '../components/VendorCells.jsx';
 import ViewModeRadios from '../components/ViewModeRadios.jsx';
+import Loading from '../components/Loading.jsx';
 import { chequeNotRequired, chequePrepared, paymentNotRequired } from '../services/cheque.js';
 import { expandCheques } from '../services/chequeGroups.js';
+import { awaitsAccounts, stepsOnIn } from '../services/csdSteps.js';
 import { exportPharmacySection, turnaroundColumns, turnaroundSheetRows } from '../services/exporter.js';
 import { singlePress } from '../services/press.js';
-import { PHARMACY_CHAIN, spanLabel } from '../services/stages.js';
+import { PHARMACY_CHAIN, chainFor, spanLabel, spansIn } from '../services/stages.js';
 import {
   ACCOUNTS_CHEQUE_VIEW,
   ACCOUNTS_GRN_VIEW,
@@ -44,12 +46,12 @@ import {
   NOT_IN_BPAD,
   NOT_INTEGRATED_CARD,
   NOT_REQUIRED_PAIR,
-  PROGRESS_LABELS,
   SUPPLY_TYPE_CARDS,
   TURNAROUND,
   TURNAROUND_TAB,
   VALID,
   actionFilterOptions,
+  actionLabel,
   bulkCategory as bulkCategoryOf,
   bulkCsdEligible,
   bulkForwardEligible,
@@ -57,6 +59,7 @@ import {
   canHandToPhCsd,
   cardShown,
   csdCardFigures,
+  csdCardShown,
   deptLabel,
   isAccountsDept,
   isAccountsFromDay,
@@ -85,8 +88,9 @@ import { OP_PHARMACY_LABELS, opPharmacyGrant, opPharmacyPath } from '../services
  * GRNs / Cheques switch; the Location dropdown, the MSME dropdown and the
  * search box are the page's scope; and a GRN that has reached accounts can be
  * sent to CSD or to Records and taken back, acknowledged by Accounts once CSD
- * hand it back, and sent on to Bank, Vendor or Courier -- one row at a time,
- * or several with Select multiple.
+ * hand it back (straight after it is sent, with OP Pharmacy's CSD steps
+ * switched off -- see rowsStepsOn below), and sent on to Bank, Vendor or
+ * Courier -- one row at a time, or several with Select multiple.
  *
  * It reads its cards, their wording and their figures with the helpers the
  * hospital pages read their own with (services/resultsViews.js), draws the
@@ -461,9 +465,11 @@ function MatchState({ row }) {
  * while it was in Accounts and has been held before it since, by a later BPAD
  * status: where it went still has to be said, or nothing here would. `sent`
  * and `filed` are the row's own, or the page's word that a send has just
- * landed and the reload has not (isSent, isFiled).
+ * landed and the reload has not (isSent, isFiled). `stepsOn` is OP Pharmacy's
+ * CSD steps switch as the row was answered under it (rowsStepsOn on the page),
+ * on unless said -- RowStatus says what it changes.
  */
-function StatusCell({ row, sent = row.csdSent, filed = row.recordsSent }) {
+function StatusCell({ row, sent = row.csdSent, filed = row.recordsSent, stepsOn = true }) {
   if (row.status === 'PENDING' && !sent && !filed) return dash;
   return (
     <RowStatus
@@ -482,6 +488,7 @@ function StatusCell({ row, sent = row.csdSent, filed = row.recordsSent }) {
       priorRejection={row.priorRejection}
       filed={filed}
       clearedOn={row.chequeClearedOn}
+      stepsOn={stepsOn}
     />
   );
 }
@@ -618,7 +625,10 @@ const VENDOR_HEADS = (
  */
 export default function PharmacyResults({ desk = 'results' }) {
   const navigate = useNavigate();
-  const { can } = useAuth();
+  // `isAdmin` is for the Delete a row offers with the CSD steps switched off
+  // (canDeleteHandover); `csdOn` and `noteCsdSteps` are the session's view of
+  // that switch, and how it is told what this page's answers say of it.
+  const { can, isAdmin, csdOn, noteCsdSteps } = useAuth();
   const { tabs: TABS, home: HOME, ageCards } = DESKS[desk] ?? DESKS.results;
 
   const [summary, setSummary] = useState(null);
@@ -717,6 +727,25 @@ export default function PharmacyResults({ desk = 'results' }) {
   // the search box says (bpad.onFile), so typing does not change the view.
   const registerOnFile = (s?.bpad?.onFile ?? 0) > 0;
 
+  // OP Pharmacy's CSD steps switch (services/csdSteps.js), read off the
+  // answers on hand rather than off the session, so each part of the page is
+  // drawn the way its own figures were worked out: the cards by the summary's
+  // word, the rows by their own answer's. On unless an answer says otherwise
+  // -- and while it is on, the page is exactly what it has always been.
+  //
+  // `data` is whichever view was loaded last, and the BPAD view's answer never
+  // says: its rows are the bill status's, with no handover to them. So the
+  // rows' switch is read off a results answer only, and goes by the summary's
+  // while there is none on hand. Before the summary has arrived the session's
+  // view stands in for it, so the row of cards -- and the workbook taken off
+  // it -- is right from the first draw.
+  const cardsStepsOn = s ? stepsOnIn(s) : csdOn.pharmacy;
+  // Nor on the GRN age view, which reads its own rows in its own component:
+  // `data` there is whatever the view before it left behind, answered perhaps
+  // before the switch was thrown.
+  const rowsAnswer = data && data.view !== BPAD && status !== TURNAROUND ? data : null;
+  const rowsStepsOn = rowsAnswer ? stepsOnIn(rowsAnswer) : cardsStepsOn;
+
   // Which rows to ask for, as against which view is showing: the same but on
   // Total GRNS with its filter set, where the view decides the layout and the
   // filter the population.
@@ -780,8 +809,24 @@ export default function PharmacyResults({ desk = 'results' }) {
     byCheque, dept, notIntegrated, accountsFrom, page, pageSize,
   ]);
 
-  useEffect(loadSummary, [loadSummary]);
-  useEffect(loadRows, [loadRows]);
+  // The summary again when the session's view of OP Pharmacy's CSD steps
+  // changes (csdOn.pharmacy): the cards were counted under the other setting,
+  // and turning a page or changing a filter asks for the rows alone. The rows
+  // again too: they were answered under that setting, and the table should
+  // follow the switch at once rather than at the next filter.
+  useEffect(loadSummary, [loadSummary, csdOn.pharmacy]);
+  useEffect(loadRows, [loadRows, csdOn.pharmacy]);
+
+  // What each answer says of that switch, told to the session, which is what
+  // the sidebar goes by: this is how it hears of a switch thrown while the
+  // page stayed open (noteCsdSteps in context/AuthContext.jsx). The summary's
+  // word and the results rows' -- never the BPAD rows', which do not say.
+  useEffect(() => {
+    if (s) noteCsdSteps('pharmacy', stepsOnIn(s));
+  }, [s, noteCsdSteps]);
+  useEffect(() => {
+    if (rowsAnswer) noteCsdSteps('pharmacy', stepsOnIn(rowsAnswer));
+  }, [rowsAnswer, noteCsdSteps]);
 
   function refresh() {
     loadSummary();
@@ -905,8 +950,9 @@ export default function PharmacyResults({ desk = 'results' }) {
   const describeSection = (view) => TABS.find((tab) => tab.status === view)?.label ?? view;
 
   /* ---- Sending a GRN, taking it back, and Accounts' two steps once CSD hand
-     it back. The hospital table's own send, takeBack, receiveAccounts and
-     forward (components/ResultsTable.jsx). ---- */
+     it back -- or, with the CSD steps off, once it is sent. The hospital
+     table's own send, takeBack, deleteHandover, receiveAccounts and forward
+     (components/ResultsTable.jsx). ---- */
 
   // Handing over is Accounts' side of the handover, so this screen's own
   // grant is enough -- see canHandToPhCsd, and CSD_HANDOVER in the server's
@@ -945,11 +991,15 @@ export default function PharmacyResults({ desk = 'results' }) {
   // document as a cheque prepared, and it has none to hand over. One already
   // out with CSD from before is still received and sent on like any other.
   const canBulkCsd = (row) => !justLanded(row) && !row.cashPayment && bulkCsdEligible(row, canCsd);
-  const canBulkReceive = bulkReceiveEligible;
+  // A hand-back Accounts have not acknowledged -- or, with the CSD steps off,
+  // any GRN sent to CSD that they have not: see awaitsAccounts. Wrapped rather
+  // than handed over as it is, because filter() and every() pass the row's
+  // index second, which is where the shared predicate takes the switch.
+  const canBulkReceive = (row) => bulkReceiveEligible(row, rowsStepsOn);
   const canBulkForward = bulkForwardEligible;
   const bulkCategory = (row) => {
     if (justLanded(row)) return null;
-    const category = bulkCategoryOf(row, canCsd);
+    const category = bulkCategoryOf(row, canCsd, rowsStepsOn);
     return category === 'CSD' && row.cashPayment ? null : category;
   };
 
@@ -1084,7 +1134,73 @@ export default function PharmacyResults({ desk = 'results' }) {
     }
   }
 
-  /** Accounts' first move on a GRN CSD have handed back: acknowledge it -- and the rest of its cheque. */
+  /**
+   * Whether the administrator's Delete is offered on a row: a handover that
+   * can no longer be taken back -- the rule the CS Department screen offers its
+   * own Delete by -- and by GRN only, since Delete removes one handover and a
+   * row per cheque stands for several.
+   *
+   * Only read with the CSD steps switched off, which is when that screen's
+   * OP Pharmacy queue is not there to do it from.
+   */
+  const canDeleteHandover = (row) =>
+    Boolean(isAdmin && !byCheque && row.csdDispatchId && !TAKE_BACK_STAGES.includes(row.csdStage || 'QUEUED'));
+
+  /** Where a GRN stands once its handover is deleted -- for the question, and the button's tooltip. */
+  const afterDelete = (row) =>
+    row.status === 'PENDING'
+      ? 'It is not in Accounts now, so it cannot be sent again until the BPAD bill status has the bill at Accounts and the Vendor Age report lists it.'
+      : 'It goes back to Accounts as a GRN that was never handed over.';
+
+  /**
+   * Delete a handover that can no longer be taken back -- the hospital table's
+   * deleteHandover, which says why it is offered here once the CSD steps are
+   * switched off. With Received one click after Send, a cheque received by
+   * mistake would otherwise have no way back.
+   *
+   * One row, not the cheque every other move here carries: this is a
+   * correction to one row somebody got wrong. Administrator-only, and the
+   * server says so too (requireAdmin on the route).
+   *
+   * What it says happens next depends on where the GRN stands, as takeBack's
+   * question does: one held before Accounts by a later BPAD status does not go
+   * back to Accounts, and cannot be sent again while that lasts.
+   */
+  async function deleteHandover(row) {
+    const ok = await confirm({
+      title: 'Delete this handover?',
+      message: [
+        `GRN ${row.dprNo} and its CSD record — everything recorded on it since it was sent — will be deleted. This cannot be undone.`,
+        afterDelete(row),
+      ],
+      confirmLabel: 'Delete handover',
+    });
+    if (!ok) return;
+
+    beginBusy([row]);
+    setError('');
+    try {
+      await api.phDeleteCsdRecord(row.csdDispatchId);
+      // Back with Accounts: no longer one a send has just landed on.
+      setJustSent((prev) => {
+        if (!prev.has(row.id)) return prev;
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
+      latestRefresh.current();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(new Set());
+    }
+  }
+
+  /**
+   * Accounts' first move on a GRN CSD have handed back -- or, with the CSD
+   * steps off, on any GRN sent to CSD (canBulkReceive): acknowledge it, and
+   * the rest of its cheque.
+   */
   async function receiveAccounts(row) {
     beginBusy([row]);
     setError('');
@@ -1095,6 +1211,10 @@ export default function PharmacyResults({ desk = 'results' }) {
       latestRefresh.current();
     } catch (err) {
       setError(err.message);
+      // Drawn with the CSD steps off, a refusal may mean they have been
+      // switched back on since: the page is read again, which brings the
+      // switch its rows are now answered under.
+      if (!rowsStepsOn) latestRefresh.current();
     } finally {
       setBusy(new Set());
     }
@@ -1198,8 +1318,11 @@ export default function PharmacyResults({ desk = 'results' }) {
   const allSelectedReceive = selectedRows.length > 0 && selectedRows.every(canBulkReceive);
   const allSelectedForward = selectedRows.length > 0 && selectedRows.every(canBulkForward);
 
-  /** Run one bulk action over the ticked rows, then let go of the selection and reload. */
-  async function bulk(eligible, act, { onError = setError, done, landed } = {}) {
+  /**
+   * Run one bulk action over the ticked rows, then let go of the selection and
+   * reload. `failed` is what else a refusal calls for, beyond saying so.
+   */
+  async function bulk(eligible, act, { onError = setError, done, landed, failed } = {}) {
     if (selectedRows.length === 0) return;
     setBulkSending(true);
     onError('');
@@ -1212,6 +1335,7 @@ export default function PharmacyResults({ desk = 'results' }) {
       latestRefresh.current();
     } catch (err) {
       onError(err.message);
+      failed?.();
     } finally {
       setBulkSending(false);
     }
@@ -1221,7 +1345,14 @@ export default function PharmacyResults({ desk = 'results' }) {
     bulk(canBulkCsd, (row) => api.phSendToCsd(row), {
       landed: (targets) => setJustSent((prev) => new Set([...prev, ...targets.map((r) => r.id)])),
     });
-  const receiveSelected = () => bulk(canBulkReceive, (row) => api.phReceiveAccountsReturn(row.csdDispatchId));
+  // A refusal, on a page drawn with the CSD steps off, may mean they have been
+  // switched back on since: read again, as receiveAccounts does.
+  const receiveSelected = () =>
+    bulk(canBulkReceive, (row) => api.phReceiveAccountsReturn(row.csdDispatchId), {
+      failed: () => {
+        if (!rowsStepsOn) latestRefresh.current();
+      },
+    });
   const forwardSelectedSimple = (to) =>
     bulk(canBulkForward, (row) => api.phForwardAccountsReturn(row.csdDispatchId, { to }));
   const submitBulkForward = (fields) => {
@@ -1264,7 +1395,11 @@ export default function PharmacyResults({ desk = 'results' }) {
       // No status on file: a GRN Store card would report on a file nobody uploaded.
       .filter((card) => card.kind !== 'missing' || registerOnFile)
       // The "Not in Vendor Master" card, only while there are such GRNs.
-      .filter((card) => cardShown(card, s, supplyType)),
+      .filter((card) => cardShown(card, s, supplyType))
+      // The CSD stage cards, only while the summary was counted with the CSD
+      // steps on -- bar CSD Rejected while any GRN is, and the one narrowing
+      // the table (csdCardShown). A card left off is a sheet left out too.
+      .filter((card) => csdCardShown(card, s, progress, cardsStepsOn)),
     // The BPAD view's row: its own count, the status's desks, then Not
     // Integrated in Accounts. The Accounts desk opens the Accounts view.
     ...(status === BPAD && (s?.bpadRegister?.count ?? 0) > 0
@@ -1375,12 +1510,18 @@ export default function PharmacyResults({ desk = 'results' }) {
   }
   // The Action dropdown's options are the keys the rows came back counted
   // under -- the server's own list. Until they arrive only the one chosen is
-  // offered.
+  // offered. With the CSD steps off for those rows, CSD's own stages are not
+  // offered, bar the one chosen -- and CSD rejected while the summary still
+  // counts a rejected GRN, as its card stays on the row (actionFilterOptions).
   const actionCounts = isAccountsSection(status) && data?.view === status ? data.actionCounts : null;
   const actionFilters = actionCounts
-    ? actionFilterOptions(actionCounts)
+    ? actionFilterOptions(actionCounts, {
+        stepsOn: rowsStepsOn,
+        selected: action,
+        rejected: s?.csd?.REJECTED?.count ?? 0,
+      })
     : action
-      ? [{ value: action, label: PROGRESS_LABELS[action] ?? action, count: null }]
+      ? [{ value: action, label: actionLabel(action, rowsStepsOn) ?? action, count: null }]
       : [];
 
   const section = TABS.find((tab) => tab.status === rowStatus) ?? TABS[0];
@@ -1412,16 +1553,29 @@ export default function PharmacyResults({ desk = 'results' }) {
       // switch is hidden and the workbook is per GRN with it.
       const sheetByCheque = (sheet) =>
         byCheque && sheet.status === VALID && !sheet.supplyType && !NO_CHEQUE_PROGRESS.has(sheet.progress);
+      // The run the GRN age sheet is laid out over: the pharmacies' chain, or
+      // its shorter form where the rows come back measured with the CSD steps
+      // off (chainFor in services/stages.js). Only the answer says which, so
+      // loadSheet sets it and columnsFor -- asked for a sheet's columns once
+      // that sheet's rows are in -- reads it.
+      let chain = PHARMACY_CHAIN;
       // The GRN age report narrowed to GRN-to-Cheque is not the same report as
-      // the whole of it, so it does not arrive under the same name.
-      const measured =
-        status === TURNAROUND && spans.length > 0 ? ` ${spans.map(spanLabel).join(' ')}` : '';
+      // the whole of it, so it does not arrive under the same name. Named once
+      // the rows are in, by the spans the sheet actually measures: one picked
+      // before the CSD steps were switched off may end at a checkpoint that
+      // run no longer has, and it heads no column in the file.
+      const fileName = () => {
+        const measured = status === TURNAROUND ? spansIn(chain, spans) : [];
+        const named = measured.length > 0 ? ` ${measured.map(spanLabel).join(' ')}` : '';
+        return `OP Pharmacy ${bucketLabel(section)}${named}${byCheque ? ' Cheque View' : ''}`;
+      };
       await exportPharmacySection(exportSheets, {
-        fileName: `OP Pharmacy ${bucketLabel(section)}${measured}${byCheque ? ' Cheque View' : ''}`,
+        fileName,
         columnsFor: (sheet) =>
           sheet.status === TURNAROUND
-            ? // The table's own columns, over the pharmacies' chain.
-              turnaroundColumns(spans, PHARMACY_CHAIN)
+            ? // The table's own columns, over the run its rows were measured
+              // on and the spans that run can still measure.
+              turnaroundColumns(spansIn(chain, spans), chain)
             : sheet.status === BPAD
               ? EXPORT_COLUMNS[BPAD]
               : sheetByCheque(sheet)
@@ -1433,8 +1587,9 @@ export default function PharmacyResults({ desk = 'results' }) {
           if (sheet.status === TURNAROUND) {
             // Every GRN in scope, with its day counts, Total and spans worked
             // out as the table works them out.
-            const { rows: aged } = await api.phTurnaround({ q, location, msme, all: true });
-            return turnaroundSheetRows(aged, spans, PHARMACY_CHAIN);
+            const aged = await api.phTurnaround({ q, location, msme, all: true });
+            chain = chainFor(PHARMACY_CHAIN, stepsOnIn(aged));
+            return turnaroundSheetRows(aged.rows, spansIn(chain, spans), chain);
           }
           const answer =
             sheet.status === BPAD
@@ -1453,9 +1608,15 @@ export default function PharmacyResults({ desk = 'results' }) {
                   view: sheetByCheque(sheet) ? ACCOUNTS_CHEQUE_VIEW : undefined,
                   all: true,
                 });
+          // Answered with the CSD steps off, the rows are told so, as the
+          // hospital sheets' are (sheetRows in services/exporter.js): their
+          // CSD Status then reads as the Status column does on screen. A BPAD
+          // answer never says so, and its sheet has no such column.
+          const stepsOff = !stepsOnIn(answer);
           // Words where the sheet would otherwise carry a flag.
           return answer.rows.map((r) => ({
             ...r,
+            ...(stepsOff ? { csdStepsOff: true } : {}),
             recordsLabel: r.recordsSent ? 'Sent to Records' : null,
             paymentState: paymentState(r),
           }));
@@ -1507,12 +1668,18 @@ export default function PharmacyResults({ desk = 'results' }) {
         {/* A pending GRN has nothing to hand over -- unless it already was:
             sent or filed while in Accounts, and held before it since by a
             later BPAD status. That one keeps its take-back and Accounts'
-            steps, or its handover could not be finished from this page. */}
+            steps, or its handover could not be finished from this page.
+
+            Accounts' own picker once a GRN is theirs to receive or send on:
+            one CSD have handed back -- and, with the CSD steps switched off,
+            any GRN sent to CSD (awaitsAccounts). With the steps on that second
+            test adds nothing: it is true only of a handed-back row, which the
+            first already is. */}
         {row.status === 'PENDING' && !isSent(row) && !isFiled(row) ? (
           <span className="table__miss" title="Not in Accounts yet — nothing to hand over">
             &mdash;
           </span>
-        ) : row.csdStage === 'MOVED_TO_ACCOUNTS' ? (
+        ) : row.csdStage === 'MOVED_TO_ACCOUNTS' || awaitsAccounts(row, rowsStepsOn) ? (
           <AccountsStagePicker
             row={row}
             busy={busy.has(row.id)}
@@ -1539,6 +1706,41 @@ export default function PharmacyResults({ desk = 'results' }) {
             onSend={send}
             onTakeBack={takeBack}
           />
+        )}
+        {/* The CSD steps are switched off: the two things the CS Department
+            screen used to be the place for, stacked under the picker. Take
+            back, while the GRN is still CSD's to give back -- the picker above
+            is Accounts' own by then and has no room for it, so it is the Send
+            picker again, in the one state that draws that button. And an
+            administrator's Delete, where it no longer is. */}
+        {!rowsStepsOn && awaitsAccounts(row, false) && canTakeBackCsd(row) && (
+          <SendPicker
+            row={row}
+            sent
+            filed={false}
+            busy={busy.has(row.id)}
+            canCsd={canCsd}
+            canSendCsd={false}
+            canFile={false}
+            canTakeBackCsd
+            canTakeBackFiled={false}
+            onSend={send}
+            onTakeBack={takeBack}
+          />
+        )}
+        {!rowsStepsOn && canDeleteHandover(row) && (
+          <button
+            type="button"
+            className="csd csd--delete"
+            disabled={busy.has(row.id)}
+            onClick={() => deleteHandover(row)}
+            title={`Delete the CSD record for GRN ${row.dprNo}. ${afterDelete(row)}`}
+          >
+            <span className="csd__icon">
+              <IconTrash size={14} />
+            </span>
+            Delete
+          </button>
         )}
       </div>
     </td>
@@ -1647,7 +1849,7 @@ export default function PharmacyResults({ desk = 'results' }) {
                 )}
               </td>
               <td>
-                <StatusCell row={row} sent={isSent(row)} filed={isFiled(row)} />
+                <StatusCell row={row} sent={isSent(row)} filed={isFiled(row)} stepsOn={rowsStepsOn} />
               </td>
               {actionCell(row)}
             </tr>
@@ -1787,7 +1989,7 @@ export default function PharmacyResults({ desk = 'results' }) {
                 </>
               )}
               <td>
-                <StatusCell row={row} sent={isSent(row)} filed={isFiled(row)} />
+                <StatusCell row={row} sent={isSent(row)} filed={isFiled(row)} stepsOn={rowsStepsOn} />
               </td>
               {actionCell(row)}
             </tr>
@@ -2407,6 +2609,7 @@ export default function PharmacyResults({ desk = 'results' }) {
             updateDates={api.phUpdateCsdDates}
             sourceDated={false}
             chain={PHARMACY_CHAIN}
+            side="pharmacy"
           />
         </>
       ) : status === BPAD && summary && !registerOnFile && !msme ? (
@@ -2420,7 +2623,7 @@ export default function PharmacyResults({ desk = 'results' }) {
           {OP_PHARMACY_LABELS.upload} to see which desk each bill is with.
         </div>
       ) : loading && !shown ? (
-        <div className="loading">Loading…</div>
+        <Loading />
       ) : (
         shown && (
           <>

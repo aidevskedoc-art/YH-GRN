@@ -4,6 +4,7 @@ import { nextAgeSort, todayIso } from '../services/ageing.js';
 import { BpadAgeDays, bpadAgeHeaderTitle, formatAmountOrDash, formatDate, SortableTh } from './ResultsTable.jsx';
 import PageSizeSelect, { usePageSize } from './PageSize.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
+import Loading from './Loading.jsx';
 
 /**
  * The BPAD register's entries for the GRNs in this upload.
@@ -157,7 +158,7 @@ export default function BpadView({
   }
 
   if (error) return <div className="alert alert--error">{error}</div>;
-  if (loading && !data) return <div className="loading">Loading…</div>;
+  if (loading && !data) return <Loading />;
   if (!data) return null;
 
   const { rows, total, totalPages } = data;

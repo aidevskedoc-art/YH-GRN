@@ -28,6 +28,11 @@ export const STAGE_LABELS = {
   receivedToForwarded: 'Cheque Forwarded',
   // CSD's approval to the day the bank actually paid, off the statement.
   approvedToClearance: 'Cheque Clearance',
+  // The two that stand in for CSD's own once the CSD steps are switched off
+  // (see chainFor below), under the names of the columns they replace: sent
+  // to CSD to Accounts having it back, and from there to the bank paying.
+  sentToAccountsReceived: 'Accounts Received',
+  accountsReceivedToClearance: 'Cheque Clearance',
   // The end-to-end figure, measured PR to Cheque.
   prToCheque: 'PR to Cheque',
   // ...and the OP Pharmacies', whose run starts at the GRN.
@@ -121,9 +126,12 @@ export function daysBetween(fromIso, toIso) {
  * purchase (see PHARMACY_CHAIN below). The start is never its own end -- a row
  * that has got no further than where it began has no run to measure, which is
  * blank rather than nought days.
+ *
+ * `ends` is the checkpoints the run can end at, latest first: CHAIN_END unless
+ * said, a chain's own `end` where it has left some out (chainFor below).
  */
-export function totalDays(row, from = 'indentDate') {
-  const end = CHAIN_END.find((key) => key !== from && row[key]);
+export function totalDays(row, from = 'indentDate', ends = CHAIN_END) {
+  const end = ends.find((key) => key !== from && row[key]);
   return end ? daysBetween(row[from], row[end]) : null;
 }
 
@@ -171,13 +179,19 @@ export function checkpointLabel(key) {
 }
 
 /**
- * A chain: the checkpoints a report draws, the stages its export counts, and
- * the checkpoint its row total is measured from.
+ * A chain: the checkpoints a report draws, the stages its export counts, the
+ * checkpoint its row total is measured from, and the ones it can be measured
+ * to (`end`, latest first -- see CHAIN_END).
  *
  * The hospitals' is the lists above, whole, and it is what the table, the span
  * picker and the export read unless they are handed another.
  */
-export const HOSPITAL_CHAIN = { checkpoints: CHECKPOINTS, stageKeys: STAGE_KEYS, start: 'indentDate' };
+export const HOSPITAL_CHAIN = {
+  checkpoints: CHECKPOINTS,
+  stageKeys: STAGE_KEYS,
+  start: 'indentDate',
+  end: CHAIN_END,
+};
 
 /** What a pharmacy purchase has no date for: the three checkpoints ahead of the GRN, and the stages to them. */
 const BEFORE_GRN = new Set(['indentDate', 'poDate', 'securityDate', 'prToPo', 'poToSecurity', 'securityToGrn']);
@@ -192,7 +206,66 @@ export const PHARMACY_CHAIN = {
   checkpoints: CHECKPOINTS.filter((c) => !BEFORE_GRN.has(c.key)),
   stageKeys: STAGE_KEYS.filter((key) => !BEFORE_GRN.has(key)),
   start: 'grnDate',
+  end: CHAIN_END,
 };
+
+/**
+ * A chain with the CSD steps switched off -- withoutCsdSteps in the server's
+ * services/turnaround.js, which owns what is measured and is kept in step with
+ * this by hand.
+ *
+ * Without CSD's own three checkpoints (Received, Approved, Moved To Accounts)
+ * and the three stages only they could measure; and with the two stages either
+ * side re-anchored on the one stamp left between sending a GRN to CSD and
+ * sending it on -- Accounts receiving it. Each stands where the stage it
+ * replaces stood, so the columns keep their order.
+ *
+ * `end` loses the same three: the row total is measured to the furthest
+ * checkpoint a row has reached, and one the table no longer shows would leave
+ * a total no pair of dates on screen accounts for. A GRN that did go through
+ * CSD before the switch was thrown still has those dates; this chain does not
+ * draw them or count to them.
+ */
+const CSD_OWN_CHECKPOINTS = new Set(['csdReceived', 'csdApproved', 'movedToAccountsAt']);
+const CSD_OWN_STAGES = new Set(['receivedToApproved', 'approvedToMovedToAccounts', 'movedToAccountsToReceived']);
+const DIRECT_STAGE = {
+  csdToReceived: 'sentToAccountsReceived',
+  approvedToClearance: 'accountsReceivedToClearance',
+};
+
+function withoutCsdSteps(chain) {
+  return {
+    ...chain,
+    checkpoints: chain.checkpoints.filter((c) => !CSD_OWN_CHECKPOINTS.has(c.key)),
+    stageKeys: chain.stageKeys.filter((key) => !CSD_OWN_STAGES.has(key)).map((key) => DIRECT_STAGE[key] ?? key),
+    end: chain.end.filter((key) => !CSD_OWN_CHECKPOINTS.has(key)),
+  };
+}
+
+/** Worked out once each, so a chain is the same object every time it is asked for. */
+const DIRECT_CHAINS = new Map([HOSPITAL_CHAIN, PHARMACY_CHAIN].map((chain) => [chain, withoutCsdSteps(chain)]));
+
+/**
+ * The chain a report was measured over: `chain` itself while the CSD steps are
+ * on, its shorter form once they are off. `stepsOn` is read off the answer the
+ * report is drawing (stepsOnIn in services/csdSteps.js) rather than off the
+ * session, so the checkpoints drawn are the ones the server's stages run
+ * between.
+ */
+export function chainFor(chain, stepsOn = true) {
+  if (stepsOn) return chain;
+  return DIRECT_CHAINS.get(chain) ?? withoutCsdSteps(chain);
+}
+
+/**
+ * The spans a chain can still measure: the ones whose two ends it draws. A
+ * span picked before the CSD steps were switched off may run to a checkpoint
+ * the report no longer has, and would otherwise head a column of blanks.
+ */
+export function spansIn(chain, spans = []) {
+  const drawn = new Set(chain.checkpoints.map((c) => c.key));
+  return spans.filter((span) => drawn.has(span.from) && drawn.has(span.to));
+}
 
 /**
  * A span: one pair of checkpoints, `{ from, to }`, measured on demand.

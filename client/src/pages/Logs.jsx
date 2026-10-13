@@ -8,16 +8,65 @@
  * through (see services/activityLog.js). This screen reads it back, newest
  * first, with the filters to find one GRN's history or one person's day.
  *
+ * Two logs, one screen: the hospitals' and OP Pharmacy's. The Select View
+ * dropdown at the top says which of the two this is showing -- see SOURCES
+ * below -- and everything under it is the one screen over whichever is chosen.
+ *
  * Entries are kept for 90 days.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { api } from '../api/client.js';
 import { exportLogs } from '../services/exporter.js';
 import { singlePress } from '../services/press.js';
 import PageSizeSelect, { usePageSize } from '../components/PageSize.jsx';
+import Loading from '../components/Loading.jsx';
 
 /** Matches the other screens' search boxes. */
 const SEARCH_DELAY_MS = 300;
+
+/**
+ * The two logs the Select View dropdown chooses between, and the few places
+ * the screen words them differently.
+ *
+ * Which entries each holds is the server's to say (PHARMACY_ACTIONS in its
+ * services/activityLog.js): OP Pharmacy's own actions are its log, and
+ * everything else is the hospitals' -- their GRN work, and with it the entries
+ * that belong to neither side (accounts, the vendor screens), which is the log
+ * as this screen has always shown it. The categories follow: the server sends
+ * the ones the chosen log is filed under, so OP Pharmacy's has no Users card.
+ *
+ *  - `deletedHint`, `deletedTitle`: what the Deleted card gathers. The same
+ *    tracked deletions for both, of which OP Pharmacy has only its branches.
+ *  - `emptyText`: the table's one line when the log has nothing in it at all.
+ *
+ * The choice lives in the URL (`?source=pharmacy`), as the CS Department
+ * screen's does, so a link can open OP Pharmacy's log and a reload keeps it.
+ * Anything unrecognised is the hospitals', which is what the screen has always
+ * opened on.
+ */
+const HOSPITAL = 'hospital';
+const PHARMACY = 'pharmacy';
+
+const SOURCES = {
+  [HOSPITAL]: {
+    key: HOSPITAL,
+    label: 'Hospital logs',
+    deletedHint: 'uploads, files, vendor recos, users, branches',
+    deletedTitle: 'Show only deleted uploads, files, HIS vs FOCUS recos, users and branches',
+    emptyText: 'No activity recorded yet',
+  },
+  [PHARMACY]: {
+    key: PHARMACY,
+    label: 'Pharmacy logs',
+    deletedHint: 'pharmacy branches',
+    deletedTitle: 'Show only deleted pharmacy branches',
+    emptyText: 'No OP Pharmacy activity recorded yet',
+  },
+};
+
+/** Both logs, in the order the dropdown lists them. */
+const SOURCE_OPTIONS = [SOURCES[HOSPITAL], SOURCES[PHARMACY]];
 
 /** Each category's colour, borrowed from the existing card and pill tones. */
 const CATEGORY_TONES = {
@@ -113,6 +162,9 @@ function LogDetails({ entry }) {
 }
 
 export default function Logs() {
+  const [params, setParams] = useSearchParams();
+  const source = SOURCES[String(params.get('source') || '').toLowerCase() === PHARMACY ? PHARMACY : HOSPITAL];
+
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = usePageSize();
@@ -139,24 +191,47 @@ export default function Logs() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // Page 7 of one filter is rarely a page of the next.
+  // Page 7 of one filter is rarely a page of the next -- nor of the other log.
   useEffect(() => {
     setPage(1);
-  }, [category, userId, from, to, deleted]);
+  }, [category, userId, from, to, deleted, source]);
 
-  const filters = { q, category, userId, from, to, deleted };
+  const filters = { q, source: source.key, category, userId, from, to, deleted };
+
+  // Only the latest request may answer: the log and its filters can change
+  // faster than the server replies, and an answer for one log must never land
+  // under the other's name.
+  const request = useRef(0);
 
   const load = useCallback(() => {
+    const mine = ++request.current;
     setLoading(true);
     setError('');
     api
-      .listLogs({ page, pageSize, q, category, userId, from, to, deleted })
-      .then(setData)
-      .catch((err) => setError(err.message))
-      .finally(() => setLoading(false));
-  }, [page, pageSize, q, category, userId, from, to, deleted]);
+      .listLogs({ page, pageSize, q, source: source.key, category, userId, from, to, deleted })
+      .then((answer) => mine === request.current && setData(answer))
+      .catch((err) => mine === request.current && setError(err.message))
+      .finally(() => mine === request.current && setLoading(false));
+  }, [page, pageSize, q, source, category, userId, from, to, deleted]);
 
   useEffect(load, [load]);
+
+  /**
+   * Switch between the hospitals' log and OP Pharmacy's.
+   *
+   * The category goes with it: the two are not filed under the same set -- OP
+   * Pharmacy has nothing under Users or the vendor screens -- so one chosen
+   * here may not exist there. The rows go too, rather than stand under the
+   * other log's name until the reload lands. The person, the dates and the
+   * search stay: "what did this account do today" is asked of both logs.
+   */
+  function selectSource(next) {
+    if (next === source.key) return;
+    setCategory('');
+    setData(null);
+    setLoading(true);
+    setParams(next === HOSPITAL ? {} : { source: next }, { replace: true });
+  }
 
   /** A category card toggles its filter; pressing the chosen one again clears it. */
   function toggleCategory(key) {
@@ -185,7 +260,7 @@ export default function Logs() {
     setError('');
     setNotice('');
     try {
-      const result = await exportLogs(filters, describeDetails);
+      const result = await exportLogs(filters, describeDetails, { pharmacy: source.key === PHARMACY });
       if (result.truncated) {
         setNotice(
           `The file holds the newest ${result.count.toLocaleString('en-IN')} of ${result.total.toLocaleString(
@@ -217,6 +292,24 @@ export default function Logs() {
           </p>
         </div>
         <div className="page__actions">
+          {/* Which of the two logs this is. Up here rather than in the toolbar
+              with the filters: it is not a narrowing of the log below but the
+              choice of which log that is, as on the CS Department screen. */}
+          <label className="picker">
+            <span className="picker__label">Select View</span>
+            <select
+              className="field__input picker__input"
+              value={source.key}
+              onChange={(e) => selectSource(e.target.value)}
+              title="Show the hospitals' activity log or OP Pharmacy's"
+            >
+              {SOURCE_OPTIONS.map((option) => (
+                <option key={option.key} value={option.key}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
           <button className="ghost" type="button" onClick={load} disabled={loading}>
             {loading ? 'Refreshing…' : 'Refresh'}
           </button>
@@ -244,23 +337,20 @@ export default function Logs() {
               {`${data.counts.week.toLocaleString('en-IN')} in the last 7 days`}
             </div>
           </button>
-          {/* Deleted uploads and files, vendor recos, users and branches.
-              Combines with a category card -- Uploads + Deleted is just the
-              deleted uploads. */}
+          {/* The tracked deletions of the log being shown: uploads and files,
+              vendor recos, users and branches in the hospitals', branches in
+              OP Pharmacy's. Combines with a category card -- Uploads + Deleted
+              is just the deleted uploads. */}
           <button
             type="button"
             className={`card stat stat--rejected ${deleted ? 'is-active' : ''}`}
             onClick={singlePress(() => setDeleted((v) => !v))}
             aria-pressed={deleted}
-            title={
-              deleted
-                ? 'Showing deletions only — press again for every entry'
-                : 'Show only deleted uploads, files, HIS vs FOCUS recos, users and branches'
-            }
+            title={deleted ? 'Showing deletions only — press again for every entry' : source.deletedTitle}
           >
             <div className="stat__label">Deleted</div>
             <div className="stat__value">{(data.counts.deleted ?? 0).toLocaleString('en-IN')}</div>
-            <div className="stat__hint">uploads, files, vendor recos, users, branches</div>
+            <div className="stat__hint">{source.deletedHint}</div>
           </button>
           {categories.map((c) => (
             <button
@@ -357,12 +447,12 @@ export default function Logs() {
       {notice && <div className="alert alert--info">{notice}</div>}
 
       {loading && !data ? (
-        <div className="loading">Loading…</div>
+        <Loading />
       ) : (
         data && (
           <>
             <div className="table-wrap table-wrap--sticky">
-              <table className="table">
+              <table className="table log-table">
                 <thead>
                   <tr>
                     <th>Time</th>
@@ -377,7 +467,7 @@ export default function Logs() {
                   {data.rows.length === 0 && (
                     <tr>
                       <td className="table__empty" colSpan={6}>
-                        {anyFilter ? 'No activity matches these filters' : 'No activity recorded yet'}
+                        {anyFilter ? 'No activity matches these filters' : source.emptyText}
                       </td>
                     </tr>
                   )}
@@ -397,7 +487,9 @@ export default function Logs() {
                       </td>
                       <td>{entry.actionLabel}</td>
                       <td className="table__mono">
-                        {entry.target || <span className="table__miss">&mdash;</span>}
+                        <div className="table__wrap log-target">
+                          {entry.target || <span className="table__miss">&mdash;</span>}
+                        </div>
                       </td>
                       <td>
                         <LogDetails entry={entry} />

@@ -1,9 +1,10 @@
 import { useId, useState } from 'react';
 import { api } from '../api/client.js';
-import { IconCheck, IconSend, IconSortBoth, IconSortDown, IconSortUp, IconUndo } from './icons.jsx';
+import { IconCheck, IconSend, IconSortBoth, IconSortDown, IconSortUp, IconTrash, IconUndo } from './icons.jsx';
 import { useAuth } from '../context/AuthContext.jsx';
 import Sheet from './Sheet.jsx';
 import { chequePrepared } from '../services/cheque.js';
+import { awaitsAccounts } from '../services/csdSteps.js';
 import { ageingDays, asBpadAgeRow, bpadAgeDays, bpadDesk, grnStoreAgeDays, todayIso } from '../services/ageing.js';
 import { useConfirm } from './ConfirmDialog.jsx';
 import VendorCells, { VENDOR_CELL_COUNT } from './VendorCells.jsx';
@@ -419,18 +420,34 @@ export function bpadAgeHeaderTitle(asOf) {
 // Exported, with AccountsStagePicker below, for Pharmacy Results: its rows
 // carry these same fields off the pharmacies' own queue, and the Status and
 // Action cells have to read exactly as they do here.
-export function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, forwardedName, forwardedMobile, forwardedDate, forwardedCourierName, forwardedDocketNo, forwardedRemarks, rejectRemarks, priorRejection, filed, clearedOn }) {
+//
+// `stepsOn` is the CSD steps switch the row was answered under (see
+// services/csdSteps.js), on unless said.
+export function RowStatus({ sent, stage, accountsStage, forwardedTo, forwardedRoute, forwardedName, forwardedMobile, forwardedDate, forwardedCourierName, forwardedDocketNo, forwardedRemarks, rejectRemarks, priorRejection, filed, clearedOn, stepsOn = true }) {
   // Only where there is no current one -- see PriorRejection.
   const prior = !rejectRemarks && priorRejection ? priorRejection : null;
+  // With the CSD steps switched off there are no stages of CSD's left to
+  // report: a GRN Accounts have not received yet reads "Sent to CSD" wherever
+  // CSD had got to with it before the switch was thrown -- which is also what
+  // the Accounts queue it is counted in is named for. Short of one they
+  // rejected, which still says so: that is not waiting on Accounts.
+  const awaiting =
+    !stepsOn &&
+    sent &&
+    !forwardedTo &&
+    stage !== 'REJECTED' &&
+    !(stage === 'MOVED_TO_ACCOUNTS' && accountsStage === 'RECEIVED');
   // Records has no stages, so there is one thing to say about it and this is
   // it. A GRN cannot be at both destinations -- the dropdown that sends it goes
   // away once it has gone -- so the two never have to be shown together.
   const destination = sent
-    ? stage === 'MOVED_TO_ACCOUNTS'
-      ? forwardedTo
-        ? { label: forwardedLabel(forwardedTo, forwardedRoute), tone: 'approved' }
-        : ACCOUNTS_RETURN_STATES[accountsStage] || ACCOUNTS_RETURN_STATES.QUEUED
-      : CSD_STAGES[stage] || CSD_STAGES.QUEUED
+    ? awaiting
+      ? CSD_STAGES.QUEUED
+      : stage === 'MOVED_TO_ACCOUNTS'
+        ? forwardedTo
+          ? { label: forwardedLabel(forwardedTo, forwardedRoute), tone: 'approved' }
+          : ACCOUNTS_RETURN_STATES[accountsStage] || ACCOUNTS_RETURN_STATES.QUEUED
+        : CSD_STAGES[stage] || CSD_STAGES.QUEUED
     : filed
       ? RECORDS_STATE
       : null;
@@ -703,7 +720,9 @@ function SendPicker({ row, sent, filed, busy, canCsd, chequeReady, grouped = fal
 
 /**
  * The Action cell once CSD has handed a GRN back (csdStage reaches
- * MOVED_TO_ACCOUNTS): Accounts' own two moves, in the same shape as the CSD
+ * MOVED_TO_ACCOUNTS) -- or, with the CSD steps switched off, as soon as it has
+ * been sent to CSD, since there is no hand-back to wait for then (see
+ * actionPicker): Accounts' own two moves, in the same shape as the CSD
  * screen's own stage picker throughout -- a dropdown resting on the current
  * state, offering what it may still move to, and a disabled button reading
  * the verdict once there is nowhere further to go.
@@ -1029,8 +1048,15 @@ export default function ResultsTable({
   // `onAgeSort` the headers are plain. See SortableTh.
   ageSort = null,
   onAgeSort,
+  // The hospitals' CSD steps switch, as these rows were answered under it --
+  // the page reads it off the rows' own answer (stepsOnIn in
+  // services/csdSteps.js). On unless said, and then this table is exactly what
+  // it has always been. Off, a GRN sent to CSD offers Received straight away
+  // (see awaitsAccounts), with its Take back beneath while it can still be
+  // recalled, and an administrator's Delete where it cannot.
+  csdSteps = true,
 }) {
-  const { can } = useAuth();
+  const { can, isAdmin } = useAuth();
 
   // Three layouts out of two questions: which report's columns does this tab
   // carry?
@@ -1083,6 +1109,8 @@ export default function ResultsTable({
   // the CSD screen's own version of this action uses.
   const [confirm, confirmDialog] = useConfirm();
   const [justFiled, setJustFiled] = useState(() => new Set());
+  // Whether the action in flight is a take-back -- see takeBack.
+  const [recalling, setRecalling] = useState(false);
   const [error, setError] = useState('');
   // The row ForwardDetailsDialog is open for, or null, and which of its two
   // destinations (VENDOR or COURIER) it was opened for -- Others is a door
@@ -1157,8 +1185,9 @@ export default function ResultsTable({
     // the Send picker puts on its CSD option.
     chequePrepared(row) === true;
   const canBulkCsd = (row) => canHandToCsd(can) && canSend(row);
-  const canBulkReceive = (row) =>
-    row.csdStage === 'MOVED_TO_ACCOUNTS' && (row.csdAccountsStage || 'QUEUED') === 'QUEUED';
+  // A hand-back Accounts have not acknowledged -- or, with the CSD steps off,
+  // any GRN sent to CSD that they have not: see awaitsAccounts.
+  const canBulkReceive = (row) => awaitsAccounts(row, csdSteps);
   const canBulkForward = (row) =>
     row.csdStage === 'MOVED_TO_ACCOUNTS' && row.csdAccountsStage === 'RECEIVED' && !row.csdForwardedTo;
   const canBulkSelect = (row) => canBulkCsd(row) || canBulkReceive(row) || canBulkForward(row);
@@ -1292,8 +1321,22 @@ export default function ResultsTable({
    * seconds between CSD approving it and this page reloading, which is what
    * the error is for. From Records it is never refused -- nothing happens to a
    * GRN there to make it too late.
+   *
+   * `recalling` is up for as long as this runs. With the CSD steps switched off
+   * a row carries its Take back under Accounts' own picker, and both go busy
+   * together -- so that button has to know whether the action in flight is its
+   * own before it says "Taking back…" (see the Action cell).
    */
   async function takeBack(row, from = SEND_CSD) {
+    setRecalling(true);
+    try {
+      await recall(row, from);
+    } finally {
+      setRecalling(false);
+    }
+  }
+
+  async function recall(row, from) {
     const fromRecords = from === SEND_RECORDS;
     const place = fromRecords ? 'Records' : 'the CSD queue';
     // The whole cheque went over together, so the whole cheque comes back
@@ -1350,9 +1393,66 @@ export default function ResultsTable({
   }
 
   /**
-   * Accounts' one move on a GRN CSD has handed back: acknowledge it. Keyed on
-   * the CSD dispatch id, not the GRN number -- that is what the endpoint
-   * addresses, and it is the same id whichever tab this table is showing.
+   * Whether the administrator's Delete is offered on a row: a handover that can
+   * no longer be taken back -- the rule the CS Department screen offers its own
+   * Delete by -- on the GRN view only, since Delete removes one handover and a
+   * Cheque view row stands for several.
+   *
+   * Only read with the CSD steps switched off, which is when that screen is
+   * not there to do it from.
+   */
+  const canDeleteHandover = (row) =>
+    Boolean(isAdmin && !byCheque && row.csdDispatchId && !TAKE_BACK_STAGES.includes(row.csdStage || 'QUEUED'));
+
+  /**
+   * Delete a handover that can no longer be taken back -- handleDeleteRecord
+   * on the CS Department screen, offered here once the CSD steps are switched
+   * off and that screen is hidden with them. With Received now one click after
+   * Send, a cheque received by mistake would otherwise have no way back short
+   * of switching the whole side's steps on again.
+   *
+   * One row, as there, not the cheque group every other control in this column
+   * acts on: those are moves in the process, and a cheque moves whole; this is
+   * a correction to one row somebody got wrong.
+   *
+   * Administrator-only, and the server says so too (requireAdmin on the route).
+   */
+  async function deleteHandover(row) {
+    const ok = await confirm({
+      title: 'Delete this handover?',
+      message: [
+        `GRN ${row.dprNo} and its CSD record — everything recorded on it since it was sent — will be deleted. This cannot be undone.`,
+        'It goes back to Accounts as a GRN that was never handed over.',
+      ],
+      confirmLabel: 'Delete handover',
+    });
+    if (!ok) return;
+
+    beginBusy([row]);
+    setError('');
+    try {
+      await api.deleteCsdRecord(row.csdDispatchId);
+      // An optimistic flag from a send made earlier in this page's life would
+      // otherwise go on claiming the row is sent after the reload disagrees.
+      setJustSent((prev) => {
+        const next = new Set(prev);
+        next.delete(row.dprNo);
+        return next;
+      });
+      onSent?.();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(new Set());
+    }
+  }
+
+  /**
+   * Accounts' one move on a GRN CSD has handed back: acknowledge it. With the
+   * CSD steps switched off it is their move on any GRN sent to CSD, taken
+   * straight from there (canBulkReceive). Keyed on the CSD dispatch id, not
+   * the GRN number -- that is what the endpoint addresses, and it is the same
+   * id whichever tab this table is showing.
    */
   async function receiveAccounts(row) {
     beginBusy([row]);
@@ -1364,6 +1464,11 @@ export default function ResultsTable({
       onSent?.();
     } catch (err) {
       setError(err.message);
+      // Drawn with the steps off, a refusal may mean they have been switched
+      // back on since: the rows are read again, which brings the switch they
+      // are now answered under, and the table stops offering what the server
+      // has just turned away.
+      if (!csdSteps) onSent?.();
     } finally {
       setBusy(new Set());
     }
@@ -1425,6 +1530,44 @@ export default function ResultsTable({
       setBusy(new Set());
     }
   }
+
+  /**
+   * The Action cell's control for a row that has reached accounts: Accounts'
+   * own picker once a GRN is theirs to receive or send on, the Send picker
+   * until then.
+   *
+   * "Theirs to receive" is a GRN CSD have handed back -- and, with the CSD
+   * steps switched off, any GRN sent to CSD (awaitsAccounts). With the steps
+   * on that second test adds nothing: it is true only of a handed-back row,
+   * which the first already is.
+   */
+  const actionPicker = (row) =>
+    row.csdStage === 'MOVED_TO_ACCOUNTS' || awaitsAccounts(row, csdSteps) ? (
+      <AccountsStagePicker
+        row={row}
+        busy={busy.has(row.dprNo)}
+        grouped={Boolean(row.chequeNo)}
+        onReceive={receiveAccounts}
+        onForwardSimple={forwardSimple}
+        onOpenForwardForm={(r, to) => {
+          setForwardFormError('');
+          setForwardFormRow(r);
+          setForwardFormTo(to);
+        }}
+      />
+    ) : (
+      <SendPicker
+        row={row}
+        sent={isSent(row)}
+        filed={isFiled(row)}
+        busy={busy.has(row.dprNo)}
+        canCsd={canHandToCsd(can)}
+        chequeReady={chequePrepared(row) === true}
+        grouped={Boolean(row.chequeNo)}
+        onSend={send}
+        onTakeBack={takeBack}
+      />
+    );
 
   return (
     <>
@@ -1741,6 +1884,7 @@ export default function ResultsTable({
                       priorRejection={row.priorRejection}
                       filed={isFiled(row)}
                       clearedOn={row.chequeClearedOn}
+                      stepsOn={csdSteps}
                     />
                   )}
                 </td>
@@ -1756,31 +1900,51 @@ export default function ResultsTable({
                     <span className="table__miss" title="Not in the ageing report yet — nothing to hand over">
                       &mdash;
                     </span>
-                  ) : row.csdStage === 'MOVED_TO_ACCOUNTS' ? (
-                    <AccountsStagePicker
-                      row={row}
-                      busy={busy.has(row.dprNo)}
-                      grouped={Boolean(row.chequeNo)}
-                      onReceive={receiveAccounts}
-                      onForwardSimple={forwardSimple}
-                      onOpenForwardForm={(r, to) => {
-                        setForwardFormError('');
-                        setForwardFormRow(r);
-                        setForwardFormTo(to);
-                      }}
-                    />
+                  ) : csdSteps ? (
+                    actionPicker(row)
                   ) : (
-                    <SendPicker
-                      row={row}
-                      sent={isSent(row)}
-                      filed={isFiled(row)}
-                      busy={busy.has(row.dprNo)}
-                      canCsd={canHandToCsd(can)}
-                      chequeReady={chequePrepared(row) === true}
-                      grouped={Boolean(row.chequeNo)}
-                      onSend={send}
-                      onTakeBack={takeBack}
-                    />
+                    /* The CSD steps are switched off: the same picker, with the
+                       two things the CS Department screen used to be the place
+                       for stacked under it. Take back, while the GRN is still
+                       CSD's to give back -- the picker above is Accounts' own
+                       by then, and has no room for it. And an administrator's
+                       Delete, where it no longer is.
+
+                       Take back steps aside while the row is busy with
+                       something else: Received being recorded would otherwise
+                       have it read "Taking back…" underneath. */
+                    <div className="row-actions">
+                      {actionPicker(row)}
+                      {awaitsAccounts(row, false) &&
+                        canTakeBack(row, canHandToCsd(can)) &&
+                        (!busy.has(row.dprNo) || recalling) && (
+                        <SendPicker
+                          row={row}
+                          sent
+                          filed={false}
+                          busy={busy.has(row.dprNo)}
+                          canCsd={canHandToCsd(can)}
+                          chequeReady={chequePrepared(row) === true}
+                          grouped={Boolean(row.chequeNo)}
+                          onSend={send}
+                          onTakeBack={takeBack}
+                        />
+                      )}
+                      {canDeleteHandover(row) && (
+                        <button
+                          type="button"
+                          className="csd csd--delete"
+                          disabled={busy.has(row.dprNo)}
+                          onClick={() => deleteHandover(row)}
+                          title={`Delete the CSD record for GRN ${row.dprNo} — it goes back to Accounts as never handed over`}
+                        >
+                          <span className="csd__icon">
+                            <IconTrash size={14} />
+                          </span>
+                          Delete
+                        </button>
+                      )}
+                    </div>
                   )}
                 </td>
               )}

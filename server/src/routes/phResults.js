@@ -84,7 +84,14 @@ import {
   vendorSupplyType,
   SUPPLY_TYPE_CHOICES,
 } from '../services/vendorMsme.js';
-import { summarise, dataQuality, gapsFor, PHARMACY_CHAIN } from '../services/turnaround.js';
+import {
+  summarise,
+  dataQuality,
+  gapsFor,
+  PHARMACY_CHAIN,
+  PHARMACY_DIRECT_CHAIN,
+} from '../services/turnaround.js';
+import { csdSteps, stepsEcho, awaitingAccountsSql, CSD_STEP_ACTIONS } from '../services/csdSteps.js';
 
 export const phResultsRouter = express.Router();
 
@@ -389,10 +396,15 @@ const PROGRESS_KEYS = Object.keys(PROGRESS);
  * out. NOT_SENT alone is of every GRN: no card reads it.
  *
  * The rows still filter by PROGRESS itself -- under a status of their own.
+ *
+ * A function of the map it is taken from, so the one with the CSD steps off
+ * (FILTERS_OFF below) gets its own by the same rule.
  */
-const CARD_PROGRESS = Object.fromEntries(
-  PROGRESS_KEYS.map((key) => [key, key === 'NOT_SENT' ? PROGRESS[key] : `(${PROGRESS[key]}) AND a.id IS NOT NULL`]),
-);
+const cardProgress = (progress) =>
+  Object.fromEntries(
+    PROGRESS_KEYS.map((key) => [key, key === 'NOT_SENT' ? progress[key] : `(${progress[key]}) AND a.id IS NOT NULL`]),
+  );
+const CARD_PROGRESS = cardProgress(PROGRESS);
 
 /** The CSD stages the Accounts row has a card for -- CSD_STAGES in results.js. */
 const CSD_STAGES = ['QUEUED', 'RECEIVED', 'APPROVED', 'REJECTED'];
@@ -422,9 +434,12 @@ const ACTIONS = {
 };
 const ACTION_KEYS = Object.keys(ACTIONS);
 
-/** A row of `<key>` count columns, as `{ KEY: n }` over ACTION_KEYS. */
-function actionCountsFrom(row) {
-  return Object.fromEntries(ACTION_KEYS.map((key) => [key, row?.[key.toLowerCase()] ?? 0]));
+/**
+ * A row of `<key>` count columns, as `{ KEY: n }` over ACTION_KEYS -- or over
+ * the keys the Action dropdown offers with the CSD steps off (see FILTERS_OFF).
+ */
+function actionCountsFrom(row, keys = ACTION_KEYS) {
+  return Object.fromEntries(keys.map((key) => [key, row?.[key.toLowerCase()] ?? 0]));
 }
 
 /*
@@ -440,6 +455,41 @@ const NOT_SENT_WHERE =
 /** PROGRESS and ACTIONS as WHERE clauses -- the same answers; see NOT_SENT_WHERE. */
 const PROGRESS_WHERE = { ...PROGRESS, NOT_SENT: NOT_SENT_WHERE };
 const ACTIONS_WHERE = { ...ACTIONS, SEND_TO_CSD: `(${NOT_SENT_WHERE}) AND (${PROGRESS.CHEQUE_PREPARED})` };
+
+/*
+ * The maps above and the keys the Action dropdown offers, as the queries below
+ * take them: one set while OP Pharmacy's CSD steps are on, another once they
+ * are switched off -- FILTERS_ON and FILTERS_OFF in results.js, which says why
+ * the second differs in the two things it does.
+ *
+ * FILTERS_ON is the constants above and nothing else, so with the steps on
+ * every query here is the query it has always been. Every key stays a valid
+ * `progress` and `action` either way: the route checks against PROGRESS and
+ * ACTIONS, not these.
+ */
+const AWAITING_ACCOUNTS = awaitingAccountsSql('c');
+const withStepsOff = (clauses) => ({ ...clauses, RETURNED_BY_CSD: AWAITING_ACCOUNTS });
+const FILTERS_ON = {
+  progress: PROGRESS,
+  cardProgress: CARD_PROGRESS,
+  progressWhere: PROGRESS_WHERE,
+  actions: ACTIONS,
+  actionsWhere: ACTIONS_WHERE,
+  actionKeys: ACTION_KEYS,
+};
+const FILTERS_OFF = {
+  progress: withStepsOff(PROGRESS),
+  cardProgress: cardProgress(withStepsOff(PROGRESS)),
+  progressWhere: withStepsOff(PROGRESS_WHERE),
+  actions: withStepsOff(ACTIONS),
+  actionsWhere: withStepsOff(ACTIONS_WHERE),
+  actionKeys: ACTION_KEYS.filter((key) => !CSD_STEP_ACTIONS.includes(key)),
+};
+
+/** The set for OP Pharmacy's switch as it stands: `on` is csdSteps().pharmacy. */
+function filtersFor(on) {
+  return on ? FILTERS_ON : FILTERS_OFF;
+}
 
 /** The SQL for one Status or Action value out of `clauses`, or null for any. No parameters. */
 function keyedFilter(key, clauses) {
@@ -1234,8 +1284,13 @@ export async function phBpadRows(
  * ones are pending.
  *
  * A cheque is counted as its number within its unit, here as on the CSD queue.
+ *
+ * `stepsOn` is OP Pharmacy's CSD steps switch, on unless said. Off, the
+ * Accounts queue's count, amount and cheque figure are all of the widened
+ * queue (FILTERS_OFF), and the summary says so (`csdStepsOff`).
  */
-export async function phSummary(db, { q, grant, location, msme } = {}) {
+export async function phSummary(db, { q, grant, location, msme, stepsOn = true } = {}) {
+  const filters = filtersFor(stepsOn);
   const scopeOf = { q, grant, location, msme };
   // Every query below adds its own clause to the one scope and binds the same
   // parameters.
@@ -1256,17 +1311,17 @@ export async function phSummary(db, { q, grant, location, msme } = {}) {
     run(
       `SELECT ${PROGRESS_KEYS.map(
         (key) =>
-          `(COUNT(*) FILTER (WHERE ${CARD_PROGRESS[key]}))::int AS ${key.toLowerCase()}_count,
-           COALESCE(SUM(g.total_amount) FILTER (WHERE ${CARD_PROGRESS[key]}), 0) AS ${key.toLowerCase()}_amount`,
+          `(COUNT(*) FILTER (WHERE ${filters.cardProgress[key]}))::int AS ${key.toLowerCase()}_count,
+           COALESCE(SUM(g.total_amount) FILTER (WHERE ${filters.cardProgress[key]}), 0) AS ${key.toLowerCase()}_amount`,
       ).join(', ')},
        -- How many cheques the Accounts queue's GRNs are spread across, and the
        -- ones Accounts have received and not yet sent on: a cheque is handed
        -- back from CSD as one thing. For the two Accounts cards.
        (COUNT(DISTINCT (g.unit_key, a.cheque_no)) FILTER (
-          WHERE ${PROGRESS.RETURNED_BY_CSD} AND COALESCE(a.cheque_no, '') <> ''
+          WHERE ${filters.progress.RETURNED_BY_CSD} AND COALESCE(a.cheque_no, '') <> ''
        ))::int AS accounts_queue_cheques,
        (COUNT(DISTINCT (g.unit_key, a.cheque_no)) FILTER (
-          WHERE ${PROGRESS.ACCOUNTS_RECEIVED} AND COALESCE(a.cheque_no, '') <> ''
+          WHERE ${filters.progress.ACCOUNTS_RECEIVED} AND COALESCE(a.cheque_no, '') <> ''
        ))::int AS accounts_received_cheques,
        -- Of the cash bills, the ones already paid -- for the Cash Payments card
        -- to say how many of its GRNs are paid and how many are still to be.
@@ -1405,6 +1460,8 @@ export async function phSummary(db, { q, grant, location, msme } = {}) {
   summary.bpadRegister = bpad.inRegister;
   const atGrnStore = summary.pendingDepartments.find((d) => d.notInBpad);
   summary.bpadMissing = { count: atGrnStore?.count ?? 0, amount: atGrnStore?.amount ?? 0 };
+  // Said only once the CSD steps are off -- see stepsEcho.
+  Object.assign(summary, stepsEcho(stepsOn));
 
   const up = uploads.rows[0];
   return {
@@ -1444,9 +1501,11 @@ async function chequeRows(
   db,
   {
     status, progress, action, dept, supplyType, q, grant, location, msme, chequeNo, unitKey,
-    all, withActionCounts, page, pageSize,
+    all, withActionCounts, page, pageSize, stepsOn = true,
   },
 ) {
+  // The Status and Action clauses for the CSD steps switch as it stands.
+  const filters = filtersFor(stepsOn);
   const params = [];
   const baseWhere = whereFrom([
     statusFilter(status, params),
@@ -1461,11 +1520,11 @@ async function chequeRows(
   // kept apart so the Action filter's own counts can be taken over it.
   const scopeHitClauses = [
     searchFilter(q, params),
-    keyedFilter(progress, PROGRESS),
+    keyedFilter(progress, filters.progress),
     deskFilter(dept, params),
     supplyTypeFilter(supplyType, VENDOR_CODE),
   ].filter(Boolean);
-  const hitClauses = [...scopeHitClauses, keyedFilter(action, ACTIONS)].filter(Boolean);
+  const hitClauses = [...scopeHitClauses, keyedFilter(action, filters.actions)].filter(Boolean);
   // COALESCE because an ILIKE over a null column is null, not false.
   const hit = `COALESCE((${hitClauses.length > 0 ? hitClauses.join(' AND ') : 'TRUE'}), FALSE)`;
   const order = 'z.grn_batch_id, z.grn_row_no NULLS LAST, z.grn_id';
@@ -1503,13 +1562,13 @@ async function chequeRows(
     // bills is there, which is the same rule that lists it.
     withActionCounts
       ? db.query(
-          `SELECT ${ACTION_KEYS.map(
+          `SELECT ${filters.actionKeys.map(
             (key) => `(COUNT(*) FILTER (WHERE t.${key.toLowerCase()}))::int AS ${key.toLowerCase()}`,
           ).join(', ')}
            FROM (
-             SELECT ${ACTION_KEYS.map(
+             SELECT ${filters.actionKeys.map(
                (key) =>
-                 `BOOL_OR(COALESCE((${scopeHitClauses.length > 0 ? scopeHitClauses.join(' AND ') : 'TRUE'} AND (${ACTIONS[key]})), FALSE)) AS ${key.toLowerCase()}`,
+                 `BOOL_OR(COALESCE((${scopeHitClauses.length > 0 ? scopeHitClauses.join(' AND ') : 'TRUE'} AND (${filters.actions[key]})), FALSE)) AS ${key.toLowerCase()}`,
              ).join(', ')}
              ${RESULT_JOINS} ${baseWhere}
              GROUP BY g.unit_key, a.cheque_no
@@ -1523,13 +1582,14 @@ async function chequeRows(
   return {
     ...(all ? {} : { page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) }),
     total,
-    ...(counted ? { actionCounts: actionCountsFrom(counted.rows[0]) } : {}),
+    ...(counted ? { actionCounts: actionCountsFrom(counted.rows[0], filters.actionKeys) } : {}),
     rows: rows.map((r) => ({
       ...mapRow(r),
       // Every PayableAmount the cheque pays, added up, and how many GRNs.
       chequeAmount: r.cheque_amount ?? null,
       chequeGrnCount: r.cheque_grn_count ?? 0,
     })),
+    ...stepsEcho(stepsOn),
   };
 }
 
@@ -1548,6 +1608,10 @@ async function chequeRows(
  * the pagination, for the export. `withActionCounts` adds `actionCounts`: how
  * many rows each Action value would leave, with every other filter as it
  * stands -- the numbers beside the Action dropdown's options.
+ *
+ * `stepsOn` is OP Pharmacy's CSD steps switch, on unless said: off, the
+ * Accounts queue is every GRN awaiting Received and the answer says so
+ * (`csdStepsOff`) -- see FILTERS_OFF.
  */
 export async function phResultRows(
   db,
@@ -1568,29 +1632,31 @@ export async function phResultRows(
     withActionCounts = false,
     page = 1,
     pageSize = 50,
+    stepsOn = true,
   } = {},
 ) {
   if (String(view || '').toLowerCase() === CHEQUE_VIEW) {
     return chequeRows(db, {
       status, progress, action, dept, supplyType, q, grant, location, msme, chequeNo, unitKey,
-      all, withActionCounts, page, pageSize,
+      all, withActionCounts, page, pageSize, stepsOn,
     });
   }
 
+  const filterSet = filtersFor(stepsOn);
   const params = [];
   // Every filter bar the Action one, which is added on top below -- kept apart
   // so the Action dropdown's counts can be taken over the rest.
   const filters = [
     statusFilter(status, params),
     ...scopeClauses({ q, grant, location, msme }, params),
-    keyedFilter(progress, PROGRESS_WHERE),
+    keyedFilter(progress, filterSet.progressWhere),
     deskFilter(dept, params),
     // The Cheque Not Prepared section's Stents / Regular cards: the vendor's
     // Supply Type off the Vendor Master. No parameter; see supplyTypeFilter.
     supplyTypeFilter(supplyType, VENDOR_CODE),
     ...chequeFilters({ chequeNo, unitKey }, params),
   ];
-  const where = whereFrom([...filters, keyedFilter(action, ACTIONS_WHERE)]);
+  const where = whereFrom([...filters, keyedFilter(action, filterSet.actionsWhere)]);
 
   const [{ rows: countRows }, { rows }, counted] = await Promise.all([
     db.query(`SELECT COUNT(*)::int AS total ${RESULT_JOINS} ${where}`, params),
@@ -1603,8 +1669,8 @@ export async function phResultRows(
         ),
     withActionCounts
       ? db.query(
-          `SELECT ${ACTION_KEYS.map(
-            (key) => `(COUNT(*) FILTER (WHERE ${ACTIONS[key]}))::int AS ${key.toLowerCase()}`,
+          `SELECT ${filterSet.actionKeys.map(
+            (key) => `(COUNT(*) FILTER (WHERE ${filterSet.actions[key]}))::int AS ${key.toLowerCase()}`,
           ).join(', ')}
            ${RESULT_JOINS} ${whereFrom(filters)}`,
           params,
@@ -1616,8 +1682,9 @@ export async function phResultRows(
   return {
     ...(all ? {} : { page, pageSize, totalPages: Math.max(1, Math.ceil(total / pageSize)) }),
     total,
-    ...(counted ? { actionCounts: actionCountsFrom(counted.rows[0]) } : {}),
+    ...(counted ? { actionCounts: actionCountsFrom(counted.rows[0], filterSet.actionKeys) } : {}),
     rows: rows.map(mapRow),
+    ...stepsEcho(stepsOn),
   };
 }
 
@@ -1698,8 +1765,16 @@ function turnaroundDates(r) {
  * `all` is the export's: every row in scope and no paging, as phBpadRows
  * answers it. The rows are then the population the figures are counted over,
  * so they are read once.
+ *
+ * `stepsOn` is OP Pharmacy's CSD steps switch, on unless said: off, the run is
+ * measured without the three stages only CSD could record
+ * (PHARMACY_DIRECT_CHAIN), and the answer says so (`csdStepsOff`).
  */
-export async function phTurnaround(db, { q, grant, location, msme, page = 1, pageSize = 50, all = false } = {}) {
+export async function phTurnaround(
+  db,
+  { q, grant, location, msme, page = 1, pageSize = 50, all = false, stepsOn = true } = {},
+) {
+  const chain = stepsOn ? PHARMACY_CHAIN : PHARMACY_DIRECT_CHAIN;
   const params = [];
   const where = whereFrom([`a.id IS NOT NULL`, ...scopeClauses({ q, grant, location, msme }, params)]);
 
@@ -1730,8 +1805,8 @@ export async function phTurnaround(db, { q, grant, location, msme, page = 1, pag
   }
 
   const dated = population.map((r) => ({ grnNo: r.grn_no, ...turnaroundDates(r) }));
-  const { stages, overall } = summarise(dated, PHARMACY_CHAIN);
-  const { era, impossible, backwards } = dataQuality(dated, { chain: PHARMACY_CHAIN });
+  const { stages, overall } = summarise(dated, chain);
+  const { era, impossible, backwards } = dataQuality(dated, { chain });
   const total = dated.length;
 
   return {
@@ -1780,8 +1855,9 @@ export async function phTurnaround(db, { q, grant, location, msme, page = 1, pag
         csdStage: r.csd_stage,
         ...turnaroundDates(r),
       };
-      return { ...row, gaps: gapsFor(row, PHARMACY_CHAIN) };
+      return { ...row, gaps: gapsFor(row, chain) };
     }),
+    ...stepsEcho(stepsOn),
   };
 }
 
@@ -1789,13 +1865,15 @@ export async function phTurnaround(db, { q, grant, location, msme, page = 1, pag
 phResultsRouter.get(
   '/summary',
   asyncHandler(async (req, res) => {
-    // The grant is read off the signed-in user, never off the request.
+    // The grant is read off the signed-in user, never off the request -- and
+    // the CSD steps switch off the settings.
     res.json(
       await phSummary(POOL, {
         q: req.query.q,
         location: req.query.location,
         msme: req.query.msme,
         grant: branchFor(req.user),
+        stepsOn: (await csdSteps()).pharmacy,
       }),
     );
   }),
@@ -1816,6 +1894,7 @@ phResultsRouter.get(
         page,
         pageSize,
         all: String(req.query.all || '') === '1',
+        stepsOn: (await csdSteps()).pharmacy,
       }),
     );
   }),
@@ -1906,6 +1985,7 @@ phResultsRouter.get(
         withActionCounts: String(req.query.actionCounts || '') === '1' && !chequeNo,
         page,
         pageSize,
+        stepsOn: (await csdSteps()).pharmacy,
       }),
     );
   }),

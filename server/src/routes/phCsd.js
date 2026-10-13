@@ -48,6 +48,7 @@ import { folded } from '../services/phIngest.js';
 import { phBranchScope, phBranchPick, phBranchAccountNo } from '../services/phBranchScope.js';
 import { logActivity } from '../services/activityLog.js';
 import { msmeFilter, phVendorCode, vendorColumns, vendorFields } from '../services/vendorMsme.js';
+import { csdSteps, stepsOffRefusal, TAKE_BACK_WITH_ACCOUNTS } from '../services/csdSteps.js';
 import { PH_CASH_TO_RECORDS, PH_NOT_IN_ACCOUNTS, PH_WRONG_UNIT, phGrnStanding } from './phResults.js';
 import {
   MAX_PAGE_SIZE,
@@ -691,9 +692,13 @@ export async function updatePhCsdDates(db, id, body = {}) {
  * Take a GRN back off the queue -- DELETE /api/csd/:id. Refused once CSD have
  * acted, here as well as in the two screens that offer the button.
  *
+ * `stepsOn` is OP Pharmacy's CSD steps switch, on unless said: off, the reason
+ * given for a handover that has reached Accounts says where it is rather than
+ * that CSD handed it back -- see TAKE_BACK_WITH_ACCOUNTS.
+ *
  * @returns `{ gone }`, the row as it was
  */
-export async function takeBackPhCsd(db, id) {
+export async function takeBackPhCsd(db, id, stepsOn = true) {
   if (!Number.isInteger(id)) return refuse(400, 'Unknown row.');
 
   const { rows } = await db.query(
@@ -704,10 +709,11 @@ export async function takeBackPhCsd(db, id) {
 
   const { dpr_no: dprNo, stage } = rows[0];
   if (!TAKE_BACK_STAGES.includes(stage)) {
-    return refuse(
-      409,
-      `GRN ${dprNo} cannot be taken back: ${NO_TAKE_BACK_REASON[stage] || 'CSD have already acted on it'}.`,
-    );
+    const reason =
+      stage === 'MOVED_TO_ACCOUNTS' && !stepsOn
+        ? TAKE_BACK_WITH_ACCOUNTS
+        : NO_TAKE_BACK_REASON[stage] || 'CSD have already acted on it';
+    return refuse(409, `GRN ${dprNo} cannot be taken back: ${reason}.`);
   }
 
   // The stage again in the DELETE itself, so a take-back cannot land either
@@ -801,6 +807,13 @@ phCsdRouter.patch(
   '/:id/stage',
   CSD_QUEUE,
   asyncHandler(async (req, res) => {
+    // With OP Pharmacy's CSD steps switched off there are no stages to move
+    // through -- see PATCH /api/csd/:id/stage. Here rather than in
+    // movePhCsdStage: the switch is the route's to read, the move is the rule.
+    if (!(await csdSteps()).pharmacy) {
+      return res.status(409).json({ error: stepsOffRefusal('pharmacy') });
+    }
+
     const id = Number(req.params.id);
     const answer = await movePhCsdStage(POOL, id, req.body?.stage, req.body?.remarks, req.user.id);
     if (refused(res, answer)) return undefined;
@@ -857,7 +870,7 @@ phCsdRouter.delete(
   CSD_HANDOVER,
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    const answer = await takeBackPhCsd(POOL, id);
+    const answer = await takeBackPhCsd(POOL, id, (await csdSteps()).pharmacy);
     if (refused(res, answer)) return undefined;
 
     const { gone } = answer;
