@@ -449,11 +449,17 @@ export const NOT_REQUIRED_PAIR = {
  * A `progress` card like the cheque pair, reading RETURNED_BY_CSD (see PROGRESS
  * in routes/results.js) -- the same clause as the Action dropdown's "Accounts
  * queue" option. Cheques and GRNs swap with the view, as on Cheque Prepared.
+ *
+ * Neutral, like the cheque cards it stands beside (see CHEQUE_CARDS). It used
+ * to wear the brand orange of its "Handover by CSD" pill, and Accounts Received
+ * the green of its own, which set the two apart from those cards as if they
+ * were verdicts on the row. The pills in the Status column keep those
+ * colours; the cards are filters like their neighbours, so they are drawn
+ * like them. The Accounts count that heads the group keeps its green.
  */
 export const ACCOUNTS_QUEUE_CARD = {
   progress: 'RETURNED_BY_CSD',
   label: 'Accounts Queue',
-  tone: 'moved_to_accounts',
   value: (summary) => summary?.accountsQueueCheques ?? 0,
   hint: (summary) => {
     const grns = summary?.progress?.RETURNED_BY_CSD?.count ?? 0;
@@ -468,13 +474,11 @@ export const ACCOUNTS_QUEUE_CARD = {
  * the queue it is taken from.
  *
  * Same shape as the Accounts Queue, reading ACCOUNTS_RECEIVED (see PROGRESS in
- * routes/results.js). The green of its own "Accounts received" pill in the
- * Status column, as the queue card wears its pill's brand orange.
+ * routes/results.js), and neutral with it -- see the note there.
  */
 export const ACCOUNTS_RECEIVED_CARD = {
   progress: 'ACCOUNTS_RECEIVED',
   label: 'Accounts Received',
-  tone: 'approved',
   value: (summary) => summary?.accountsReceivedCheques ?? 0,
   hint: (summary) => {
     const grns = summary?.progress?.ACCOUNTS_RECEIVED?.count ?? 0;

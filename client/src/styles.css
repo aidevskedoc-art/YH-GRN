@@ -2173,8 +2173,11 @@ select.picker__input:disabled { opacity: 0.55; cursor: not-allowed; }
 .stat--approved { --stat-tint: var(--ok-soft); --stat-key: var(--ok); }
 .stat--approved .stat__value, .stat--approved .stat__amount { color: var(--ok); }
 .stat--rejected { --stat-tint: var(--danger-soft); --stat-key: var(--danger); }
-/* The Accounts Queue: handed back by CSD, in the same brand tone as its
-   "Handover by CSD" pill in the Status column. */
+/* The brand tone as a card, matching the "Handover by CSD" pill in the Status
+   column. The Accounts Queue card wore it until it went neutral with the
+   cheque cards beside it (see ACCOUNTS_QUEUE_CARD in
+   services/resultsViews.js); the Activity logs' Vendor Master card still does
+   (CATEGORY_TONES in pages/Logs.jsx). */
 .stat--moved_to_accounts { --stat-tint: var(--brand-100); --stat-key: var(--brand); }
 .stat--moved_to_accounts .stat__value, .stat--moved_to_accounts .stat__amount { color: var(--brand-700); }
 .stat--rejected .stat__value, .stat--rejected .stat__amount { color: var(--danger); }
